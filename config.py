@@ -21,6 +21,13 @@ DEFAULT_CONFIG = {
     "restore_clipboard": True,
     "sample_rate": 16000,
     "provider": "xai",
+    "smart_formatting": True,
+    "sound_cues": True,
+    "vocabulary": [],       # terms sent to the STT API as recognition hints
+    "corrections": {},      # {"heard": "replacement"} applied after transcription
+    "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
+    "repaste_hotkey": "ctrl+alt+v",
+    "fix_hotkey": "ctrl+alt+f",
 }
 
 

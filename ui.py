@@ -13,12 +13,14 @@ marshalled onto the Tk main loop via a queue drained by root.after().
 import pathlib
 import queue
 import threading
+import time
 import tkinter as tk
 import tkinter.font  # noqa: F401  (ensures font submodule is loaded)
 import webbrowser
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 import keyboard
+import pyperclip
 import pystray
 from PIL import Image, ImageDraw, ImageTk
 
@@ -125,6 +127,26 @@ def _toggle_images(size=(40, 22)):
     return out
 
 
+def apply_dark_titlebar(win):
+    """Give a Toplevel a dark title bar via the DWM immersive-dark attribute."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        value = ctypes.c_int(1)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(hwnd), attr,
+                ctypes.byref(value), ctypes.sizeof(value),
+            ) == 0:
+                break
+        win.withdraw()   # DWM repaints the frame on remap
+        win.deiconify()
+    except Exception:
+        pass
+
+
 # --- Tray ---------------------------------------------------------------------
 
 def create_tray(on_settings: Callable[[], None], on_quit: Callable[[], None]) -> pystray.Icon:
@@ -154,12 +176,16 @@ class SettingsWindow:
         on_save: Callable[[dict], None],
         on_capture_start: Optional[Callable[[], None]] = None,
         on_capture_end: Optional[Callable[[], None]] = None,
+        history_getter: Optional[Callable[[], List[Tuple[float, str]]]] = None,
+        on_repaste: Optional[Callable[[str], None]] = None,
     ):
         self._root = root
         self._config = config
         self._on_save = on_save
         self._on_capture_start = on_capture_start
         self._on_capture_end = on_capture_end
+        self._history_getter = history_getter
+        self._on_repaste = on_repaste
         self._win = None
         self._queue: "queue.Queue" = queue.Queue()
         self._capturing = False
@@ -206,7 +232,7 @@ class SettingsWindow:
         win.configure(bg=BASE)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", self._close)
-        win.geometry("640x430")
+        win.geometry("640x500")
 
         # Sidebar ------------------------------------------------------------
         side = tk.Frame(win, bg=MANTLE, width=180)
@@ -228,12 +254,12 @@ class SettingsWindow:
         self._content = tk.Frame(win, bg=BASE)
         self._content.pack(side="left", fill="both", expand=True)
 
-        for section in ("General", "API Key", "About"):
+        for section in ("General", "Dictionary", "History", "API Key", "About"):
             self._nav_items[section] = self._make_nav_item(side, section)
 
         self._select_section("General")
 
-        self._apply_dark_titlebar()
+        apply_dark_titlebar(self._win)
         self._set_window_icons()
         self._center()
         self._raise()
@@ -298,6 +324,10 @@ class SettingsWindow:
         pane.pack(fill="both", expand=True, padx=28, pady=(22, 16))
         if section == "General":
             self._build_general(pane)
+        elif section == "Dictionary":
+            self._build_dictionary(pane)
+        elif section == "History":
+            self._build_history(pane)
         elif section == "API Key":
             self._build_api_key(pane)
         else:
@@ -395,6 +425,34 @@ class SettingsWindow:
         self._autostart_lbl.bind("<Button-1>", self._toggle_autostart)
         self._hint(pane, "Launch quietly in the tray when you sign in.")
 
+        tk.Frame(pane, bg=BASE, height=14).pack()
+        self._make_toggle(
+            pane, "Smart formatting", "smart_formatting",
+            "Adds spaces and fixes capitalization to match where you're typing.")
+
+        tk.Frame(pane, bg=BASE, height=14).pack()
+        self._make_toggle(
+            pane, "Sound cues", "sound_cues",
+            "Soft tick when recording starts and stops.")
+
+    def _make_toggle(self, pane, label, key, hint):
+        """A label + switch row bound to a boolean config key (immediate-apply)."""
+        row = tk.Frame(pane, bg=BASE)
+        row.pack(fill="x")
+        tk.Label(row, text=label, bg=BASE, fg=SUBTEXT,
+                 font=LABEL_FONT).pack(side="left")
+        state = {"on": bool(self._config.get(key, True))}
+        sw = tk.Label(row, image=self._toggle_imgs[int(state["on"])], bg=BASE,
+                      cursor="hand2")
+        sw.pack(side="right")
+
+        def toggle(_e=None):
+            state["on"] = not state["on"]
+            sw.config(image=self._toggle_imgs[int(state["on"])])
+            self._apply(**{key: state["on"]})
+        sw.bind("<Button-1>", toggle)
+        self._hint(pane, hint)
+
     def _build_api_key(self, pane):
         self._header(pane, "API Key")
 
@@ -457,19 +515,252 @@ class SettingsWindow:
             os.startfile(CONFIG_PATH.parent)
         link.bind("<Button-1>", open_folder)
 
+    # Dictionary ----------------------------------------------------------------
+
+    def _scroll_list(self, parent, height):
+        """A dark, scrollable region; returns its inner Frame.
+
+        The scrollbar is a hand-drawn thumb (native tk.Scrollbar ignores colours
+        on Windows) that auto-hides when the content fits.
+        """
+        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=1,
+                        highlightbackground=SURFACE1)
+        wrap.pack(fill="x")
+        canvas = tk.Canvas(wrap, bg=MANTLE, height=height, highlightthickness=0,
+                           bd=0)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar = tk.Canvas(wrap, bg=MANTLE, width=8, height=height,
+                        highlightthickness=0, bd=0)
+        bar.pack(side="right", fill="y")
+        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
+        inner = tk.Frame(canvas, bg=MANTLE)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def refresh(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            first, last = canvas.yview()
+            bh = bar.winfo_height()
+            if last - first >= 0.999:
+                bar.coords(thumb, 0, 0, 0, 0)          # fits — hide thumb
+            else:
+                bar.coords(thumb, 2, first * bh + 1, 7, last * bh - 1)
+
+        def wheel(e):
+            canvas.yview_scroll(-int(e.delta / 120), "units")
+            refresh()
+
+        def drag(e):
+            bh = max(bar.winfo_height(), 1)
+            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
+            refresh()
+
+        inner.bind("<Configure>", refresh)
+        canvas.bind("<Configure>",
+                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
+        for w in (canvas, inner, bar):
+            w.bind("<MouseWheel>", wheel)
+        bar.bind("<Button-1>", drag)
+        bar.bind("<B1-Motion>", drag)
+        return inner
+
+    def _list_row(self, parent, text, on_remove):
+        """One term/pair row: text on the left, a ✕ remove label on the right."""
+        row = tk.Frame(parent, bg=MANTLE)
+        row.pack(fill="x")
+        tk.Label(row, text=text, bg=MANTLE, fg=TEXT, font=FONT, anchor="w",
+                 padx=10, pady=4).pack(side="left", fill="x", expand=True)
+        x = tk.Label(row, text="✕", bg=MANTLE, fg=MUTED, font=FONT,
+                     cursor="hand2", padx=10)
+        x.pack(side="right")
+        x.bind("<Enter>", lambda _e: x.config(fg=RED))
+        x.bind("<Leave>", lambda _e: x.config(fg=MUTED))
+        x.bind("<Button-1>", lambda _e: on_remove())
+
+    def _build_dictionary(self, pane):
+        self._header(pane, "Dictionary")
+
+        # Vocabulary ---------------------------------------------------------
+        self._label(pane, "Vocabulary")
+        self._hint(pane, "Words and names the transcriber should recognize "
+                         "(sent as hints with every request).", pady=(0, 6))
+        row = tk.Frame(pane, bg=BASE)
+        row.pack(fill="x")
+        self._vocab_var = tk.StringVar()
+        entry = tk.Entry(
+            row, textvariable=self._vocab_var, font=FONT, bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        entry.pack(side="left", fill="x", expand=True, ipady=6)
+        entry.bind("<Return>", lambda _e: self._add_vocab())
+        self._make_button(row, "Add", self._add_vocab,
+                          kind="accent").pack(side="left", padx=(8, 0))
+        tk.Frame(pane, bg=BASE, height=8).pack()
+        self._vocab_inner = self._scroll_list(pane, height=76)
+        self._render_vocab()
+
+        tk.Frame(pane, bg=BASE, height=16).pack()
+
+        # Corrections --------------------------------------------------------
+        self._label(pane, "Corrections")
+        self._hint(pane, "Always replace a misheard phrase with the right one. "
+                         "Undertone also learns these when you fix a dictation.",
+                   pady=(0, 6))
+        row2 = tk.Frame(pane, bg=BASE)
+        row2.pack(fill="x")
+        self._corr_heard = tk.StringVar()
+        self._corr_right = tk.StringVar()
+        e1 = tk.Entry(
+            row2, textvariable=self._corr_heard, font=FONT, bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        e1.pack(side="left", fill="x", expand=True, ipady=6)
+        tk.Label(row2, text="→", bg=BASE, fg=SUBTEXT, font=FONT,
+                 padx=8).pack(side="left")
+        e2 = tk.Entry(
+            row2, textvariable=self._corr_right, font=FONT, bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        e2.pack(side="left", fill="x", expand=True, ipady=6)
+        e1.bind("<Return>", lambda _e: self._add_correction())
+        e2.bind("<Return>", lambda _e: self._add_correction())
+        self._make_button(row2, "Add", self._add_correction,
+                          kind="accent").pack(side="left", padx=(8, 0))
+        tk.Frame(pane, bg=BASE, height=8).pack()
+        self._corr_inner = self._scroll_list(pane, height=76)
+        self._render_corrections()
+
+    def _render_vocab(self):
+        for w in self._vocab_inner.winfo_children():
+            w.destroy()
+        terms = self._config.get("vocabulary", [])
+        if not terms:
+            tk.Label(self._vocab_inner, text="No terms yet.", bg=MANTLE,
+                     fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
+                     pady=6).pack(fill="x")
+            return
+        for term in terms:
+            self._list_row(self._vocab_inner, term,
+                           lambda t=term: self._remove_vocab(t))
+
+    def _add_vocab(self):
+        term = self._vocab_var.get().strip()
+        terms = list(self._config.get("vocabulary", []))
+        if not term or term in terms:
+            self._vocab_var.set("")
+            return
+        terms.append(term)
+        self._vocab_var.set("")
+        self._apply(vocabulary=terms)
+        self._render_vocab()
+
+    def _remove_vocab(self, term):
+        terms = [t for t in self._config.get("vocabulary", []) if t != term]
+        self._apply(vocabulary=terms)
+        self._render_vocab()
+
+    def _render_corrections(self):
+        for w in self._corr_inner.winfo_children():
+            w.destroy()
+        pairs = self._config.get("corrections", {})
+        if not pairs:
+            tk.Label(self._corr_inner, text="No corrections yet.", bg=MANTLE,
+                     fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
+                     pady=6).pack(fill="x")
+            return
+        for heard, right in pairs.items():
+            self._list_row(self._corr_inner, f"{heard}  →  {right}",
+                           lambda h=heard: self._remove_correction(h))
+
+    def _add_correction(self):
+        heard = self._corr_heard.get().strip()
+        right = self._corr_right.get().strip()
+        if not heard or not right:
+            return
+        pairs = dict(self._config.get("corrections", {}))
+        pairs[heard] = right
+        self._corr_heard.set("")
+        self._corr_right.set("")
+        self._apply(corrections=pairs)
+        self._render_corrections()
+
+    def _remove_correction(self, heard):
+        pairs = {k: v for k, v in self._config.get("corrections", {}).items()
+                 if k != heard}
+        self._apply(corrections=pairs)
+        self._render_corrections()
+
+    # History -------------------------------------------------------------------
+
+    def _build_history(self, pane):
+        self._header(pane, "History")
+        self._hint(pane, "Dictations from this session. Press Ctrl+Alt+V "
+                         "anywhere to re-paste the newest one.", pady=(0, 4))
+        self._hint(pane, "Tip: click into the target app first, then use "
+                         "Ctrl+Alt+V.", pady=(0, 10))
+
+        items = []
+        if self._history_getter is not None:
+            try:
+                items = self._history_getter() or []
+            except Exception:
+                items = []
+
+        inner = self._scroll_list(pane, height=280)
+        if not items:
+            tk.Label(inner, text="Nothing dictated yet this session.",
+                     bg=MANTLE, fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
+                     pady=8).pack(fill="x")
+            return
+
+        for ts, text in items:
+            row = tk.Frame(inner, bg=MANTLE)
+            row.pack(fill="x", pady=1)
+            when = time.strftime("%H:%M", time.localtime(ts))
+            tk.Label(row, text=when, bg=MANTLE, fg=MUTED, font=HINT_FONT,
+                     width=6, anchor="w", padx=10).pack(side="left")
+            self._make_button(row, "Paste",
+                              lambda t=text: self._repaste(t),
+                              small=True).pack(side="right", padx=(0, 8))
+            self._make_button(row, "Copy",
+                              lambda t=text: self._copy(t),
+                              small=True).pack(side="right", padx=(0, 6))
+            preview = text.replace("\n", " ").strip()
+            if len(preview) > 42:
+                preview = preview[:41] + "…"
+            tk.Label(row, text=preview, bg=MANTLE, fg=TEXT, font=FONT,
+                     anchor="w").pack(side="left", fill="x", expand=True,
+                                      padx=(4, 8))
+
+    def _copy(self, text):
+        try:
+            pyperclip.copy(text)
+        except Exception:
+            pass
+        self._flash_saved()
+
+    def _repaste(self, text):
+        # Pasting while this window has focus would land in the window itself.
+        # Minimize first so focus returns to the previous app, then paste.
+        if self._on_repaste is None:
+            return
+        if self._win is not None and self._win.winfo_exists():
+            self._win.iconify()
+        self._root.after(600, lambda: self._on_repaste(text))
+
     # --- Widgets ---------------------------------------------------------------
 
-    def _make_button(self, parent, text, command, kind="surface"):
+    def _make_button(self, parent, text, command, kind="surface", small=False):
         if kind == "accent":
             base_bg, hover_bg, fg = ACCENT, ACCENT_HOVER, "#11111b"
         else:
             base_bg, hover_bg, fg = SURFACE0, SURFACE1, TEXT
         btn = tk.Button(
-            parent, text=text, command=command, font=BTN_FONT,
+            parent, text=text, command=command,
+            font=("Segoe UI Semibold", 9) if small else BTN_FONT,
             bg=base_bg, fg=fg, activebackground=ACCENT_DOWN if kind == "accent"
             else SURFACE1, activeforeground=fg,
-            relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-            highlightthickness=0,
+            relief="flat", bd=0, padx=10 if small else 16, pady=2 if small else 6,
+            cursor="hand2", highlightthickness=0,
         )
         btn._base_bg, btn._hover_bg = base_bg, hover_bg
         btn.bind("<Enter>", lambda e: e.widget.config(bg=e.widget._hover_bg)
@@ -645,27 +936,9 @@ class SettingsWindow:
 
     # --- Window plumbing --------------------------------------------------------
 
-    def _apply_dark_titlebar(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-            self._win.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(self._win.winfo_id())
-            value = ctypes.c_int(1)
-            for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
-                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    wintypes.HWND(hwnd), attr,
-                    ctypes.byref(value), ctypes.sizeof(value),
-                ) == 0:
-                    break
-            self._win.withdraw()   # DWM repaints the frame on remap
-            self._win.deiconify()
-        except Exception:
-            pass
-
     def _center(self):
         self._win.update_idletasks()
-        w, h = 640, 430
+        w, h = 640, 500
         x = (self._win.winfo_screenwidth() - w) // 2
         y = (self._win.winfo_screenheight() - h) // 2 - 30
         self._win.geometry(f"{w}x{h}+{x}+{y}")
@@ -690,3 +963,127 @@ class SettingsWindow:
         if self._win is not None and self._win.winfo_exists():
             self._win.destroy()
         self._win = None
+
+
+# --- Fix dictation window -------------------------------------------------------
+
+class FixWindow:
+    """A small reusable "fix the last dictation" prompt, editable from any thread.
+
+    open() may be called from the hotkey thread; the work is marshalled onto the
+    Tk main loop via a queue drained by root.after(), like SettingsWindow.
+    """
+
+    def __init__(self, root: tk.Tk, on_done: Callable[[str, str], None]):
+        self._root = root
+        self._on_done = on_done
+        self._win = None
+        self._original = ""
+        self._queue: "queue.Queue" = queue.Queue()
+        self._root.after(50, self._drain)
+
+    # --- Public, thread-safe API ------------------------------------------
+
+    def open(self, original_text: str):
+        self._queue.put(("open", original_text))
+
+    # --- Queue plumbing -----------------------------------------------------
+
+    def _drain(self):
+        try:
+            while True:
+                cmd, payload = self._queue.get_nowait()
+                if cmd == "open":
+                    self._open(payload)
+        except queue.Empty:
+            pass
+        finally:
+            self._root.after(50, self._drain)
+
+    # --- Window construction -------------------------------------------------
+
+    def _open(self, original_text):
+        self._original = original_text
+        if self._win is not None and self._win.winfo_exists():
+            self._var.set(original_text)
+            self._reselect()
+            self._raise()
+            return
+
+        win = tk.Toplevel(self._root)
+        self._win = win
+        win.title("Fix dictation")
+        try:
+            win.iconbitmap(str(ICON_ICO))
+        except tk.TclError:
+            pass
+        win.configure(bg=BASE)
+        win.resizable(False, False)
+        win.protocol("WM_DELETE_WINDOW", self._close)
+        win.geometry("560x150")
+
+        pane = tk.Frame(win, bg=BASE)
+        pane.pack(fill="both", expand=True, padx=22, pady=18)
+
+        tk.Label(pane, text="Fix dictation", bg=BASE, fg=TEXT, font=TITLE_FONT,
+                 anchor="w").pack(fill="x", pady=(0, 8))
+
+        self._var = tk.StringVar(value=original_text)
+        self._entry = tk.Entry(
+            pane, textvariable=self._var, font=FONT, bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        self._entry.pack(fill="x", ipady=6)
+        self._entry.bind("<Return>", self._submit)
+        self._entry.bind("<Escape>", self._close)
+        win.bind("<Escape>", self._close)
+
+        tk.Label(pane, text="Enter — learn the fix and paste the corrected "
+                            "text  ·  Esc — cancel. Tip: undo (Ctrl+Z) in the "
+                            "target app first.",
+                 bg=BASE, fg=MUTED, font=HINT_FONT, anchor="w", justify="left",
+                 wraplength=510).pack(fill="x", pady=(12, 0))
+
+        apply_dark_titlebar(win)
+        self._center()
+        self._raise()
+        self._reselect()
+
+    def _reselect(self):
+        self._entry.focus_set()
+        self._entry.selection_range(0, "end")
+        self._entry.icursor("end")
+
+    def _submit(self, _e=None):
+        corrected = self._var.get().strip()
+        original = self._original
+        if not corrected or corrected == original.strip():
+            self._close()
+            return
+        # Hide before calling on_done so the paste lands in the app underneath,
+        # not this window; the delay lets focus return to the previous app.
+        if self._win is not None and self._win.winfo_exists():
+            self._win.withdraw()
+        self._root.after(600, lambda: self._on_done(original, corrected))
+
+    def _center(self):
+        self._win.update_idletasks()
+        w, h = 560, 150
+        x = (self._win.winfo_screenwidth() - w) // 2
+        y = (self._win.winfo_screenheight() - h) // 2 - 60
+        self._win.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _raise(self):
+        win = self._win
+        win.deiconify()
+        win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
+        win.after(200, lambda: win.winfo_exists()
+                  and win.attributes("-topmost", False))
+
+    def _close(self, _e=None):
+        # Reused across opens: hide rather than destroy so the next open is fast
+        # and keeps the already-dark title bar.
+        if self._win is not None and self._win.winfo_exists():
+            self._win.withdraw()

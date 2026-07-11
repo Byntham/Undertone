@@ -11,11 +11,20 @@ class TranscriptionError(Exception):
     """Carries a user-friendly message describing what went wrong."""
 
 
-def transcribe_xai(wav_bytes: bytes, api_key: str, language: str = "en") -> str:
-    """Transcribe WAV audio using the xAI STT API. Returns the text."""
+def transcribe_xai(wav_bytes: bytes, api_key: str, language: str = "en",
+                   vocabulary: list = None) -> str:
+    """Transcribe WAV audio using the xAI STT API. Returns the text.
+
+    vocabulary terms are passed as `keyterm` recognition hints (max 100
+    terms of up to 50 chars each, per the API).
+    """
     url = "https://api.x.ai/v1/stt"
     headers = {"Authorization": f"Bearer {api_key}"}
     data = [("language", language), ("format", "true")]
+    for term in (vocabulary or [])[:100]:
+        term = str(term).strip()[:50]
+        if term:
+            data.append(("keyterm", term))
     files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
 
     try:
@@ -60,9 +69,12 @@ PROVIDERS = {
 }
 
 
-def transcribe(wav_bytes: bytes, api_key: str, language: str = "en") -> str:
+def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
+               vocabulary: list = None) -> str:
     """Transcribe WAV audio bytes, returning the recognized text.
 
+    vocabulary is an optional list of terms the model should recognize;
+    each provider translates it into its own biasing mechanism.
     Raises TranscriptionError with a friendly message on any failure.
     """
     api_key = api_key.strip()
@@ -70,4 +82,4 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en") -> str:
         raise TranscriptionError(
             "No API key configured. Open Settings and enter your xAI API key."
         )
-    return transcribe_xai(wav_bytes, api_key, language)
+    return transcribe_xai(wav_bytes, api_key, language, vocabulary)

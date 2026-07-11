@@ -53,6 +53,10 @@ class PushToTalk:
         parts = normalized.split("+")
         self._parts = [frozenset(keyboard.key_to_scan_codes(p)) for p in parts]
 
+    def matches(self, scan_code: int) -> bool:
+        """True if scan_code belongs to any key of the bound combo."""
+        return any(scan_code in part for part in self._parts)
+
     def _fire(self, callback: Callable[[], None]) -> None:
         try:
             callback()
