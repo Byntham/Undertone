@@ -143,8 +143,7 @@ class App:
             return
 
         paste_text(text, self.cfg.get("restore_clipboard", True))
-        preview = text if len(text) <= 60 else text[:57] + "…"
-        self.overlay.show_message(preview)
+        self.overlay.hide()
 
     # ---- settings / lifecycle ----------------------------------------------
 

@@ -322,12 +322,12 @@ class Overlay:
 
         if cmd == "recording":
             self._state = "recording"
-            self._layout("Listening…", TEXT, mode="bars")
+            self._layout(None, TEXT, mode="bars")
             self._show()
             self._tick_bars()
         elif cmd == "transcribing":
             self._state = "transcribing"
-            self._layout("Transcribing…", TEXT, mode="spinner")
+            self._layout(None, TEXT, mode="spinner")
             self._show()
             self._tick_spinner()
         elif cmd == "message":
@@ -344,11 +344,16 @@ class Overlay:
             self._win.withdraw()
 
     def _layout(self, text, text_color, mode):
-        text = self._ellipsize(text)
-        text_w = int(math.ceil(self._font.getlength(text)))
+        """Size the pill; text=None gives a compact animation-only capsule."""
         lead = BARS_W if mode == "bars" else ICON
-        width = PAD_X + lead + GAP + text_w + PAD_X
-        width = int(math.ceil(width / 8.0)) * 8
+        if text:
+            text = self._ellipsize(text)
+            text_w = int(math.ceil(self._font.getlength(text)))
+            width = PAD_X + lead + GAP + text_w + PAD_X
+            width = int(math.ceil(width / 8.0)) * 8
+        else:
+            text = ""
+            width = PAD_X + lead + PAD_X  # symmetric: content stays centered
 
         self._text = text
         self._text_color = text_color
