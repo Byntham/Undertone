@@ -1,0 +1,7 @@
+# Virtualenv and caches
+.venv/
+__pycache__/
+*.pyc
+
+# Personal API key — never commit
+(PERSONAL API KEY)personal xai speechtotext api key.txt
