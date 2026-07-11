@@ -234,8 +234,32 @@ class SettingsWindow:
         self._select_section("General")
 
         self._apply_dark_titlebar()
+        self._set_window_icons()
         self._center()
         self._raise()
+
+    def _set_window_icons(self):
+        """Set crisp small/big window icons via WM_SETICON.
+
+        Tk's iconbitmap only registers the 16px frame, which Windows then
+        scales up for the taskbar — blurry. Loading each size explicitly
+        from the .ico lets the title bar and taskbar use exact frames.
+        """
+        try:
+            import ctypes
+            IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON = 1, 0x10, 0x80
+            SM_CXSMICON, SM_CXICON = 49, 11
+            user32 = ctypes.windll.user32
+            self._win.update_idletasks()
+            hwnd = user32.GetParent(self._win.winfo_id())
+            for which, metric in ((0, SM_CXSMICON), (1, SM_CXICON)):
+                size = user32.GetSystemMetrics(metric)
+                hicon = user32.LoadImageW(None, str(ICON_ICO), IMAGE_ICON,
+                                          size, size, LR_LOADFROMFILE)
+                if hicon:
+                    user32.SendMessageW(hwnd, WM_SETICON, which, hicon)
+        except Exception:
+            pass
 
     def _make_nav_item(self, parent, section):
         row = tk.Frame(parent, bg=MANTLE, cursor="hand2")

@@ -411,16 +411,16 @@ class Overlay:
         self._win.geometry(f"{int(w)}x{PILL_H}+{self._x}+{self._y}")
 
         was_hidden = self._win.state() == "withdrawn"
-        self._win.deiconify()
+        # Push the new frame while the window is still hidden: a layered
+        # window keeps displaying its last bitmap, so mapping it before the
+        # push would flash the previous state for a frame.
         self._ensure_layered()
-        if was_hidden:
-            self._alpha = 0
-            self._present()
-            self._fade(1)
-        else:
-            self._alpha = int(255 * TARGET_ALPHA)
-            self._present()
+        self._alpha = 0 if was_hidden else int(255 * TARGET_ALPHA)
+        self._present()
+        self._win.deiconify()
         self._win.lift()
+        if was_hidden:
+            self._fade(1)
 
     def _fade(self, step):
         self._alpha = int(255 * TARGET_ALPHA * min(1.0, step / FADE_STEPS))
