@@ -9,3 +9,6 @@ __pycache__/
 # Any variant of the personal key file
 *API KEY*
 *api key*
+
+# Local agent instructions — not for the repo
+CLAUDE.md
