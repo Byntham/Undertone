@@ -25,13 +25,21 @@ DEFAULT_CONFIG = {
 
 
 def _migrate_legacy_dir() -> None:
-    """One-time rename of the old PushToTalkSTT config dir to Undertone."""
+    """One-time move of old PushToTalkSTT settings into the Undertone dir.
+
+    The Undertone dir may already exist without a config (logging creates
+    it first), so a lone legacy config.json is moved over individually.
+    """
     old_dir = pathlib.Path(os.environ["APPDATA"]) / LEGACY_APP_NAME
-    if old_dir.is_dir() and not CONFIG_PATH.parent.exists():
-        try:
+    if not old_dir.is_dir():
+        return
+    try:
+        if not CONFIG_PATH.parent.exists():
             old_dir.rename(CONFIG_PATH.parent)
-        except OSError:
-            pass
+        elif not CONFIG_PATH.exists() and (old_dir / "config.json").is_file():
+            (old_dir / "config.json").rename(CONFIG_PATH)
+    except OSError:
+        pass
 
 
 def load_config() -> dict:
