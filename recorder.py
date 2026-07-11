@@ -33,11 +33,12 @@ class Recorder:
         # indata is a buffer of raw int16 bytes; copy it into our frame list.
         chunk = bytes(indata)
         self._frames.append(chunk)
-        # Live level meter: RMS of the int16 chunk, normalized and smoothed
-        # with a fast-attack/slow-decay envelope.
+        # Live level meter: RMS of the int16 chunk mapped through a power
+        # curve so quiet speech still moves the bars, smoothed with a
+        # fast-attack/slow-decay envelope.
         rms = audioop.rms(chunk, 2)
-        norm = min(1.0, rms / 6000.0)
-        self._level = norm if norm > self._level else self._level * 0.75
+        norm = min(1.0, (rms / 4000.0) ** 0.6)
+        self._level = norm if norm > self._level else self._level * 0.82
 
     def start(self) -> None:
         """Open the input stream and begin accumulating frames.
