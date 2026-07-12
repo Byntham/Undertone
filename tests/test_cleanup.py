@@ -45,6 +45,22 @@ assert cleanup._drop_echoed_context("and then some", "I looked and") == \
     "and then some"
 assert cleanup._drop_echoed_context("done", "unrelated context") == "done"
 
+# Long echo: the model may repeat a whole line of context (seen in the
+# wild in Notepad); the guard must strip echoes of ANY length, not just
+# short tails.
+long_ctx = ("- [Agent model selection](agent-model-selection.md) — Fable "
+            "should be the orchestrator, Opus and Sonnet do the work.")
+echoed = long_ctx + " you can choose based on the task"
+assert cleanup._drop_echoed_context(echoed, long_ctx) == \
+    "you can choose based on the task"
+
+# Length gate: a reply far longer than the dictation is context echo in
+# some unanchorable form — the pass must be discarded, not pasted.
+assert cleanup._plausible_length("short reply", "a dictated sentence here")
+assert cleanup._plausible_length("um so", "um so like the thing")  # shrink ok
+assert not cleanup._plausible_length("x" * 400, "a fifty char dictation" * 2)
+print("  echo + length guards OK")
+
 # Timeout path returns None fast.
 t0 = time.perf_counter()
 out = cleanup.cleanup("hello", None, "", {}, KEY, MODEL, timeout=0.001)

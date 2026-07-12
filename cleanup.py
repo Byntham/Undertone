@@ -59,11 +59,13 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
             timeout: float = 2.5) -> "str | None":
     """Return the polished transcript, or None on any failure/timeout."""
     try:
+        # Transcript goes LAST: the model's continuation instinct then works
+        # on the dictation, not on completing the document context.
         user = json.dumps({
-            "transcript": transcript,
             "text_before_cursor": ctx,
             "app": app,
             "dictionary": corrections or {},
+            "transcript": transcript,
         }, ensure_ascii=False)
         resp = requests.post(
             API_URL,
@@ -86,7 +88,13 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
             resp.json()["choices"][0]["message"]["content"])["text"].strip()
         if not text:
             return None
-        return _drop_echoed_context(text, ctx)
+        text = _drop_echoed_context(text, ctx)
+        if text is not None and not _plausible_length(text, transcript):
+            logging.info("cleanup pass: reply %d chars vs %d-char transcript "
+                         "— discarding as context echo",
+                         len(text), len(transcript))
+            return None
+        return text
     except Exception:
         logging.info("cleanup pass failed", exc_info=True)
         return None
@@ -96,15 +104,28 @@ def _drop_echoed_context(text: str, ctx: "str | None") -> "str | None":
     """Remove a context tail the model may have echoed despite instructions.
 
     Pasting any part of ctx would duplicate on-screen text, so this guard is
-    deterministic: the longest suffix of ctx (up to 40 chars, min 4) that
-    prefixes the reply is cut off.
+    deterministic: the longest suffix of ctx (min 4 chars) that prefixes the
+    reply is cut off, however long the echo is.
     """
     if not ctx:
         return text
     tail = ctx.rstrip()
     low = text.lower()
-    for k in range(min(len(tail), 40), 3, -1):
+    for k in range(len(tail), 3, -1):
         if low.startswith(tail[-k:].lower()):
             text = text[k:].lstrip()
             break
     return text or None
+
+
+def _plausible_length(cleaned: str, transcript: str) -> bool:
+    """Reject replies that are far longer than the dictation itself.
+
+    Cleanup may shrink a transcript (fillers, false starts) and may add a
+    little punctuation, but it never legitimately grows it much. A reply
+    well beyond the transcript's length means the model echoed document
+    context in some form the suffix guard couldn't anchor on (e.g. from
+    mid-context, or paraphrased) — the one failure mode that visibly
+    corrupts the user's document, so the whole pass is discarded instead.
+    """
+    return len(cleaned) <= len(transcript) * 1.5 + 30
