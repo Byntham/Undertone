@@ -523,10 +523,11 @@ class SettingsWindow:
                 adv.pack_forget()
         adv_toggle.bind("<Button-1>", toggle_adv)
 
+        self._model_vars = {}
         self._stt_model_hint = self._model_row(
-            adv, "Transcription model", "stt_model")
+            adv, "Transcription model", "stt")
         self._cleanup_model_hint = self._model_row(
-            adv, "Cleanup model", "cleanup_model")
+            adv, "Cleanup model", "cleanup")
         self._refresh_model_hints()
 
         # Links -----------------------------------------------------------------
@@ -636,6 +637,9 @@ class SettingsWindow:
     def _pick_provider(self, lbl, config_key, name, pid):
         lbl.config(text=name)
         self._apply(**{config_key: pid})
+        # Advanced fields show the newly selected provider's own override.
+        for kind, var in getattr(self, "_model_vars", {}).items():
+            var.set(self._model_override(kind))
         self._refresh_model_hints()
 
     def _key_block(self, pane, label, field):
@@ -662,24 +666,33 @@ class SettingsWindow:
         self._key_vars[field] = var
         self._key_status_lbls[field] = status
 
-    def _model_row(self, parent, label, config_key):
-        """A plain-text model-override entry with a Save button and live hint."""
+    def _model_row(self, parent, label, kind):
+        """A model-override entry (per-provider) with Save and a live hint."""
         self._label(parent, label, pady=(6, 3))
         row = tk.Frame(parent, bg=BASE)
         row.pack(fill="x")
-        var = tk.StringVar(value=self._config.get(config_key, ""))
+        var = tk.StringVar(value=self._model_override(kind))
         entry = tk.Entry(
             row, textvariable=var, font=FONT, bg=SURFACE0, fg=TEXT,
             insertbackground=TEXT, relief="flat", highlightthickness=1,
             highlightbackground=SURFACE1, highlightcolor=ACCENT)
         entry.pack(side="left", fill="x", expand=True, ipady=5)
         self._make_button(
-            row, "Save", lambda: self._save_model(config_key, var),
+            row, "Save", lambda: self._save_model(kind, var),
             kind="accent", small=True).pack(side="right", padx=(6, 0))
         hint = tk.Label(parent, text="", bg=BASE, fg=MUTED, font=HINT_FONT,
                         anchor="w", justify="left", wraplength=390)
         hint.pack(fill="x", pady=(3, 0))
+        self._model_vars[kind] = var
         return hint
+
+    def _model_provider(self, kind):
+        pkey = "provider" if kind == "stt" else "cleanup_provider"
+        return self._config.get(pkey, "xai")
+
+    def _model_override(self, kind):
+        models = self._config.get(kind + "_models") or {}
+        return models.get(self._model_provider(kind), "")
 
     def _build_about(self, pane):
         self._header(pane, "About")
@@ -1022,8 +1035,15 @@ class SettingsWindow:
         self._apply(**{field: self._key_vars[field].get().strip()})
         self._key_status_lbls[field].config(text=self._key_status_text(field))
 
-    def _save_model(self, config_key, var):
-        self._apply(**{config_key: var.get().strip()})
+    def _save_model(self, kind, var):
+        """Store the override under the currently selected provider."""
+        models = dict(self._config.get(kind + "_models") or {})
+        value = var.get().strip()
+        if value:
+            models[self._model_provider(kind)] = value
+        else:
+            models.pop(self._model_provider(kind), None)
+        self._apply(**{kind + "_models": models})
         self._refresh_model_hints()
 
     def _default_model(self, kind, provider):
@@ -1086,7 +1106,8 @@ class SettingsWindow:
             w.writeframes(b"\x00\x00" * 8000)  # 0.5 s of silence
         try:
             from transcriber import DEFAULT_STT_MODELS, transcribe
-            model = self._config.get("stt_model") or DEFAULT_STT_MODELS[provider]
+            model = ((self._config.get("stt_models") or {}).get(provider)
+                     or DEFAULT_STT_MODELS[provider])
             transcribe(buf.getvalue(), key, provider=provider, model=model)
             name = PROVIDER_BY_ID.get(provider, provider)
             result = ("stt", True, f"Transcription works ({name}).")
@@ -1097,7 +1118,7 @@ class SettingsWindow:
     def _test_cleanup_worker(self, key, provider):
         try:
             from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
-            model = (self._config.get("cleanup_model")
+            model = ((self._config.get("cleanup_models") or {}).get(provider)
                      or DEFAULT_CLEANUP_MODELS[provider])
             out = cleanup("testing one two three", None, "", {}, key, model,
                           provider=provider)

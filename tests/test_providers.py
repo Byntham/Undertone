@@ -114,6 +114,27 @@ def test_provider_key_mapping():
     assert config.provider_key(cfg, "unknown") == "X"  # safe fallback
 
 
+def test_legacy_model_fold():
+    # The old shipped xAI default is NOT an override — it must vanish, or
+    # switching cleanup provider sends a grok model id to OpenAI.
+    cfg = {**config.DEFAULT_CONFIG, "stt_models": {}, "cleanup_models": {},
+           "cleanup_model": config._LEGACY_XAI_CLEANUP, "stt_model": ""}
+    config._fold_legacy_models(cfg)
+    assert "cleanup_model" not in cfg and "stt_model" not in cfg
+    assert cfg["cleanup_models"] == {}
+
+    # A real user override folds under the provider it was set for.
+    cfg = {**config.DEFAULT_CONFIG, "stt_models": {}, "cleanup_models": {},
+           "provider": "openai", "stt_model": "whisper-1",
+           "cleanup_provider": "openrouter", "cleanup_model": "meta/llama-x"}
+    config._fold_legacy_models(cfg)
+    assert cfg["stt_models"] == {"openai": "whisper-1"}
+    assert cfg["cleanup_models"] == {"openrouter": "meta/llama-x"}
+
+    assert config.model_override(cfg, "stt", "openai") == "whisper-1"
+    assert config.model_override(cfg, "stt", "xai") == ""
+
+
 def main():
     test_xai_shape()
     test_openai_shape()
@@ -121,6 +142,7 @@ def main():
     test_missing_key_message()
     test_cleanup_endpoints()
     test_provider_key_mapping()
+    test_legacy_model_fold()
     print("ALL TESTS PASSED")
 
 

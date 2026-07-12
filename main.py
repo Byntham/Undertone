@@ -225,7 +225,7 @@ class App:
             text = transcribe(
                 wav, config_mod.provider_key(self.cfg, provider),
                 self.cfg.get("language", "en"), vocabulary,
-                provider, self.cfg.get("stt_model", ""),
+                provider, config_mod.model_override(self.cfg, "stt", provider),
             )
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
@@ -264,7 +264,7 @@ class App:
                 textproc.apply_corrections(text, corrections),
                 ctx, app, corrections,
                 config_mod.provider_key(self.cfg, cprov),
-                self.cfg.get("cleanup_model", ""),
+                config_mod.model_override(self.cfg, "cleanup", cprov),
                 cprov,
             )
             if cleaned is not None:

@@ -9,6 +9,10 @@ Key injection happens from a helper subprocess: the keyboard library hides
 its own injected events from hooks in the same process (is_replaying), so
 in-process keyboard.press() would never reach the app's hook.
 
+NEEDS AN IDLE DESKTOP: pastes land in the foreground window, so touching
+the mouse/keyboard while this runs steals focus and fails the run (the
+clipboard sentinel catches it honestly rather than false-passing).
+
 Two phases:
 - A: real caret context (Notepad's Edit control via the Win32
   EM_GETSEL/WM_GETTEXT tier) — empty field means sentence start, so the

@@ -6,26 +6,19 @@ guards: timeout → None, echo-stripping, and seam() boundary handling of
 the model's output.
 """
 
-import pathlib
 import sys
 import time
 
 sys.path.insert(0, r"C:\Users\graham\Projects\Undertone")
 
 import cleanup
+import config
 import textproc
-from config import DEFAULT_CONFIG
 
-KEY = None
-for line in pathlib.Path(
-        r"C:\Users\graham\Projects\Undertone\(PERSONAL xai API KEY).txt"
-).read_text().splitlines():
-    line = line.strip()
-    if line.startswith("xai-"):
-        KEY = line
-        break
-assert KEY, "no API key found"
-MODEL = DEFAULT_CONFIG["cleanup_model"]
+_cfg = config.load_config()
+KEY = config.provider_key(_cfg, "xai")
+assert KEY, "no xAI API key in config"
+MODEL = config.model_override(_cfg, "cleanup", "xai")
 
 
 def run(transcript, ctx, app="notepad.exe", corrections=None):

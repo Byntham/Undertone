@@ -23,11 +23,11 @@ DEFAULT_CONFIG = {
     "restore_clipboard": True,
     "sample_rate": 16000,
     "provider": "xai",          # STT provider: xai | openai | openrouter
-    "stt_model": "",            # empty = provider default
+    "stt_models": {},           # per-provider overrides; missing = default
     "smart_formatting": True,
     "ai_cleanup": True,
     "cleanup_provider": "xai",
-    "cleanup_model": "",        # empty = provider default
+    "cleanup_models": {},       # per-provider overrides; missing = default
     "sound_cues": True,
     "vocabulary": [],       # terms sent to the STT API as recognition hints
     "corrections": {},      # {"heard": "replacement"} applied after transcription
@@ -47,6 +47,32 @@ KEY_FIELDS = {
 def provider_key(cfg: dict, provider: str) -> str:
     """The stored API key for a provider ("" if none)."""
     return cfg.get(KEY_FIELDS.get(provider, "api_key"), "")
+
+
+def model_override(cfg: dict, kind: str, provider: str) -> str:
+    """The user's model override for kind "stt"/"cleanup" ("" = default)."""
+    return (cfg.get(kind + "_models") or {}).get(provider, "")
+
+
+# The cleanup model that used to ship as a literal default — finding it in a
+# legacy flat field means "no override", not a user choice.
+_LEGACY_XAI_CLEANUP = "grok-4.20-0309-non-reasoning"
+
+
+def _fold_legacy_models(cfg: dict) -> None:
+    """Fold pre-multi-provider flat stt_model/cleanup_model into the
+    per-provider dicts and drop the flat keys.
+
+    A single global model field broke as soon as the provider changed (an
+    xAI model id would be sent to OpenAI verbatim), hence the dicts.
+    """
+    stt = cfg.pop("stt_model", "")
+    cleanup = cfg.pop("cleanup_model", "")
+    if stt:
+        cfg["stt_models"].setdefault(cfg.get("provider", "xai"), stt)
+    if cleanup and cleanup != _LEGACY_XAI_CLEANUP:
+        cfg["cleanup_models"].setdefault(
+            cfg.get("cleanup_provider", "xai"), cleanup)
 
 
 def _migrate_legacy_dir() -> None:
@@ -84,6 +110,12 @@ def load_config() -> dict:
             cfg.update(data)
     except (FileNotFoundError, ValueError, OSError):
         pass
+    # Never hand out DEFAULT_CONFIG's own container objects (a shallow copy
+    # shares them; in-place mutation would pollute the defaults).
+    for key, value in cfg.items():
+        if isinstance(value, (dict, list)):
+            cfg[key] = type(value)(value)
+    _fold_legacy_models(cfg)
     return cfg
 
 
