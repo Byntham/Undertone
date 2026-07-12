@@ -2,6 +2,11 @@
 
 Pastes transcribed text into the focused application via the clipboard and a
 Ctrl+V keystroke, optionally restoring the previous clipboard afterward.
+
+A lock serializes clipboard use against the delayed restore threads, and a
+generation counter makes each restore conditional: if a newer paste has
+taken the clipboard since, the stale restore is skipped rather than
+clobbering it mid-paste.
 """
 
 import sys
@@ -11,13 +16,20 @@ import time
 import keyboard
 import pyperclip
 
+_lock = threading.Lock()
+_generation = 0
 
-def _restore_later(previous: str, delay: float = 0.5) -> None:
+
+def _restore_later(previous: str, generation: int, delay: float = 0.5) -> None:
     time.sleep(delay)
-    try:
-        pyperclip.copy(previous)
-    except Exception as exc:
-        print(f"[injector] clipboard restore failed: {exc}", file=sys.stderr)
+    global _generation
+    with _lock:
+        if generation != _generation:
+            return  # a newer paste owns the clipboard now
+        try:
+            pyperclip.copy(previous)
+        except Exception as exc:
+            print(f"[injector] clipboard restore failed: {exc}", file=sys.stderr)
 
 
 def paste_text(text: str, restore_clipboard: bool = True) -> None:
@@ -29,18 +41,21 @@ def paste_text(text: str, restore_clipboard: bool = True) -> None:
     if not text:
         return
 
-    previous = None
-    try:
-        previous = pyperclip.paste()
-    except Exception:
-        previous = None
+    global _generation
+    with _lock:
+        _generation += 1
+        generation = _generation
+        try:
+            previous = pyperclip.paste()
+        except Exception:
+            previous = None
 
-    pyperclip.copy(text)
-    # Let the target app's focus settle and the clipboard propagate.
-    time.sleep(0.15)
-    keyboard.send("ctrl+v")
+        pyperclip.copy(text)
+        # Let the target app's focus settle and the clipboard propagate.
+        time.sleep(0.15)
+        keyboard.send("ctrl+v")
 
     if restore_clipboard and previous:
         threading.Thread(
-            target=_restore_later, args=(previous,), daemon=True
+            target=_restore_later, args=(previous, generation), daemon=True
         ).start()

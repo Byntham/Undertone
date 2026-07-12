@@ -103,7 +103,7 @@ class App:
             self._on_save_settings,
             on_capture_start=self._pause_hotkey,
             on_capture_end=self._resume_hotkey,
-            history_getter=lambda: list(reversed(self._history)),
+            history_getter=self._history_snapshot,
             on_repaste=self._paste_from_history,
         )
         self.tray = create_tray(
@@ -114,8 +114,16 @@ class App:
         # Dictation history (session-only, in memory) and insertion memory
         # for smart formatting when the caret can't be read (terminals).
         self._history: deque = deque(maxlen=HISTORY_SIZE)
+        self._history_lock = threading.Lock()
         self._last_paste = None          # (foreground hwnd, text, monotonic time)
         self._typed_since_paste = False
+
+        # Everything that transcribes or pastes runs on this single worker,
+        # strictly in order — the clipboard, insertion memory, and history
+        # all assume one writer at a time.
+        self._pipeline_q: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pipeline_loop, name="pipeline",
+                         daemon=True).start()
 
         # Hands-free toggle state (double-tap the hotkey, or dedicated key).
         self._locked = False
@@ -203,9 +211,7 @@ class App:
             self.overlay.hide()
             return
         self.overlay.show_transcribing()
-        threading.Thread(
-            target=self._transcribe_and_paste, args=(wav,), daemon=True
-        ).start()
+        self._pipeline_q.put(("dictate", wav))
 
     def _on_toggle_key(self):
         """Dedicated start/stop key (config "toggle_hotkey")."""
@@ -228,7 +234,27 @@ class App:
                 and not self.ptt.matches(event.scan_code)):
             self._typed_since_paste = True
 
-    # ---- transcription pipeline (worker thread) -----------------------------
+    # ---- transcription pipeline (single worker thread) -----------------------
+
+    def _pipeline_loop(self):
+        while True:
+            kind, payload = self._pipeline_q.get()
+            try:
+                if kind == "dictate":
+                    self._transcribe_and_paste(payload)
+                else:  # "paste" / "repaste"
+                    if kind == "repaste":
+                        self._wait_modifiers_lifted()
+                    self._paste_now(payload)
+            except Exception:
+                logging.exception("Pipeline step failed")
+
+    def _wait_modifiers_lifted(self, budget: float = 1.0):
+        """Let the user release the hotkey's modifiers before sending Ctrl+V."""
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline and any(
+                keyboard.is_pressed(k) for k in ("ctrl", "alt", "shift")):
+            time.sleep(0.02)
 
     def _transcribe_and_paste(self, wav: bytes):
         vocabulary = list(self.cfg.get("vocabulary", []))
@@ -301,36 +327,33 @@ class App:
         return ctx
 
     def _register_paste(self, text: str):
-        self._history.append((time.time(), text))
+        with self._history_lock:
+            self._history.append((time.time(), text))
         self._last_paste = (_foreground_hwnd(), text, time.monotonic())
         self._typed_since_paste = False
 
-    # ---- history / re-paste / fix-last ---------------------------------------
+    def _history_snapshot(self):
+        with self._history_lock:
+            return list(reversed(self._history))
+
+    # ---- history / re-paste ---------------------------------------------------
 
     def _paste_from_history(self, text: str):
         """Paste a history entry (settings History pane; focus already
         returned to the target app by the caller)."""
-        threading.Thread(target=self._paste_now, args=(text,),
-                         daemon=True).start()
+        self._pipeline_q.put(("paste", text))
 
     def _paste_now(self, text: str):
         paste_text(text, self.cfg.get("restore_clipboard", True))
         self._register_paste(text)
 
     def _repaste_last(self):
-        """Global re-paste hotkey: wait for its modifiers to lift, then paste."""
-        if not self._history:
+        """Global re-paste hotkey handler."""
+        snapshot = self._history_snapshot()
+        if not snapshot:
             self.overlay.show_message("Nothing to re-paste yet")
             return
-        text = self._history[-1][1]
-
-        def run():
-            deadline = time.monotonic() + 1.0
-            while time.monotonic() < deadline and any(
-                    keyboard.is_pressed(k) for k in ("ctrl", "alt", "shift")):
-                time.sleep(0.02)
-            self._paste_now(text)
-        threading.Thread(target=run, daemon=True).start()
+        self._pipeline_q.put(("repaste", snapshot[0][1]))
 
     # ---- settings / lifecycle ----------------------------------------------
 

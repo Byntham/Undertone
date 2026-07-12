@@ -93,9 +93,19 @@ def focus_window(pid, timeout=5.0):
         target.clear()
         user32.EnumWindows(enum, 0)
         if target:
-            user32.ShowWindow(target[0], 9)  # SW_RESTORE
+            # Tap Alt first: Windows' foreground lock lets the last
+            # input-sending process claim SetForegroundWindow. The lone Alt
+            # tap arms the target's menu-bar keyboard mode, so tap Escape
+            # right after to disarm it (it would swallow the next Ctrl+V).
+            keyboard_event = ctypes.windll.user32.keybd_event
+            keyboard_event(0x12, 0, 0, 0)      # VK_MENU down
+            keyboard_event(0x12, 0, 2, 0)      # VK_MENU up
+            user32.ShowWindow(target[0], 9)    # SW_RESTORE
             user32.SetForegroundWindow(target[0])
-            time.sleep(0.3)
+            time.sleep(0.2)
+            keyboard_event(0x1B, 0, 0, 0)      # VK_ESCAPE down
+            keyboard_event(0x1B, 0, 2, 0)      # VK_ESCAPE up
+            time.sleep(0.2)
             if user32.GetForegroundWindow() == target[0]:
                 return True
         time.sleep(0.3)
