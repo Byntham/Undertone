@@ -21,7 +21,7 @@ import cleanup as cleanup_mod
 import config as config_mod
 import sounds
 import textproc
-from hotkey import PushToTalk
+from hotkey import PushToTalk, TapStateMachine
 from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
@@ -31,11 +31,6 @@ from ui import SettingsWindow, create_tray
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono
 # int16) are treated as an accidental tap and skipped.
 MIN_AUDIO_BYTES = 16000 * 2 * 0.3
-
-# A release this soon after its press may be the first half of a double-tap
-# (hands-free lock); recording continues until the window below expires.
-SHORT_TAP_S = 0.30
-DOUBLE_TAP_S = 0.40
 
 HISTORY_SIZE = 20
 
@@ -125,11 +120,13 @@ class App:
         threading.Thread(target=self._pipeline_loop, name="pipeline",
                          daemon=True).start()
 
-        # Hands-free toggle state (double-tap the hotkey, or dedicated key).
-        self._locked = False
-        self._press_time = 0.0
-        self._tap_timer = None
-        self._ignore_release = False
+        # Recording gestures (hold / double-tap lock / stray tap) live in a
+        # locked state machine; App only supplies the recording actions.
+        self.gestures = TapStateMachine(
+            on_start=self._start_recording,
+            on_finish=self._finish_recording,
+            on_discard=self._discard_recording,
+        )
 
         caretctx.warm()
         # Any typing other than the hotkey invalidates insertion memory
@@ -149,61 +146,30 @@ class App:
             pass
         self.root.after(50, self._drain_commands)
 
-    # ---- push-to-talk (called on the keyboard hook thread) -----------------
+    # ---- recording actions (invoked by the gesture state machine) ------------
 
     def _on_press(self):
-        now = time.monotonic()
-        if self._locked:
-            # A press while locked ends the hands-free dictation.
-            self._locked = False
-            self._ignore_release = True
-            self._finish_recording()
-            return
-        double_tap = (now - self._press_time) < DOUBLE_TAP_S
-        self._press_time = now
-        self._cancel_tap_timer()
-        if double_tap and self.recorder.is_recording:
-            # Second tap: lock recording on, hands-free.
-            self._locked = True
-            return
-        try:
-            self.recorder.start()
-            if self.cfg.get("sound_cues", True):
-                sounds.play_start()
-            self.overlay.show_recording()
-        except RecorderError as e:
-            self.overlay.show_message(str(e), duration_ms=4000, error=True)
+        self.gestures.press()
 
     def _on_release(self):
-        if self._ignore_release:
-            self._ignore_release = False
-            return
-        if self._locked or not self.recorder.is_recording:
-            return
-        if time.monotonic() - self._press_time < SHORT_TAP_S:
-            # Possible first half of a double-tap: keep recording until the
-            # double-tap window closes, then discard as a stray tap.
-            self._tap_timer = threading.Timer(DOUBLE_TAP_S, self._tap_expired)
-            self._tap_timer.daemon = True
-            self._tap_timer.start()
-            return
-        self._finish_recording()
+        self.gestures.release()
 
-    def _tap_expired(self):
-        if self._locked or not self.recorder.is_recording:
-            return
-        if time.monotonic() - self._press_time < DOUBLE_TAP_S:
-            return  # a second press arrived; not a stray tap
-        self.recorder.stop()
-        self.overlay.hide()
+    def _on_toggle_key(self):
+        """Dedicated start/stop key (config "toggle_hotkey")."""
+        self.gestures.toggle()
 
-    def _cancel_tap_timer(self):
-        if self._tap_timer is not None:
-            self._tap_timer.cancel()
-            self._tap_timer = None
+    def _start_recording(self) -> bool:
+        try:
+            self.recorder.start()
+        except RecorderError as e:
+            self.overlay.show_message(str(e), duration_ms=4000, error=True)
+            return False
+        if self.cfg.get("sound_cues", True):
+            sounds.play_start()
+        self.overlay.show_recording()
+        return True
 
     def _finish_recording(self):
-        self._cancel_tap_timer()
         if self.cfg.get("sound_cues", True):
             sounds.play_stop()
         wav = self.recorder.stop()
@@ -213,21 +179,9 @@ class App:
         self.overlay.show_transcribing()
         self._pipeline_q.put(("dictate", wav))
 
-    def _on_toggle_key(self):
-        """Dedicated start/stop key (config "toggle_hotkey")."""
-        if self.recorder.is_recording:
-            self._locked = False
-            self._finish_recording()
-        else:
-            self._locked = True
-            try:
-                self.recorder.start()
-                if self.cfg.get("sound_cues", True):
-                    sounds.play_start()
-                self.overlay.show_recording()
-            except RecorderError as e:
-                self._locked = False
-                self.overlay.show_message(str(e), duration_ms=4000, error=True)
+    def _discard_recording(self):
+        self.recorder.stop()
+        self.overlay.hide()
 
     def _on_key_activity(self, event):
         if (event.event_type == "down" and event.scan_code
