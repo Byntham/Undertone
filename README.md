@@ -58,10 +58,10 @@ toggles live in **Settings → General**.
 
 ## Settings (tray icon → Settings…)
 
-- **General** — change the shortcut (click *Change*, then press any key or
-  combination, e.g. `ctrl+shift+space`; Esc cancels), pick the spoken
-  language, and toggle *Start with Windows*, *Smart formatting*, and
-  *Sound cues*.
+- **General** — change the push-to-talk and re-paste shortcuts (click
+  *Change*, then press any key or combination, e.g. `ctrl+shift+space`;
+  Esc cancels), pick the spoken language, and toggle *Start with
+  Windows*, *Smart formatting*, *AI cleanup*, and *Sound cues*.
 - **Dictionary** — *Vocabulary*: names and jargon the transcriber should
   recognize (sent as recognition hints with every request). *Corrections*:
   always replace a misheard phrase with the right one.
@@ -74,8 +74,8 @@ toggles live in **Settings → General**.
   `%APPDATA%\Undertone\config.json`; keep that file private.
 - Changes apply immediately — there is no Save button to forget.
 
-The re-paste hotkey and an optional dedicated toggle-mode key can be
-changed in `config.json` (`repaste_hotkey`, `toggle_hotkey`).
+An optional dedicated toggle-mode key can be set in `config.json`
+(`toggle_hotkey`).
 
 ## Privacy
 

@@ -92,6 +92,7 @@ class App:
         # as "typing" for insertion-memory invalidation. Filled at
         # registration time.
         self._extra_hotkey_scancodes: set = set()
+        self._extra_hotkey_handles: list = []
 
         self.recorder = Recorder(sample_rate=self.cfg.get("sample_rate", 16000))
         self.overlay = Overlay(self.root,
@@ -322,20 +323,23 @@ class App:
     # ---- settings / lifecycle ----------------------------------------------
 
     def _pause_hotkey(self):
-        """Suspend push-to-talk while the settings window captures a shortcut."""
+        """Suspend all hotkeys while the settings window captures a shortcut
+        (pressing the re-paste combo during capture must not paste)."""
         try:
             self.ptt.stop()
         except Exception:
             pass
+        self._unregister_extra_hotkeys()
 
     def _resume_hotkey(self):
         try:
             self.ptt.start()
         except ValueError as e:
             self.overlay.show_message(str(e), duration_ms=5000, error=True)
+        self._register_extra_hotkeys()
 
     def _on_save_settings(self, new_cfg: dict):
-        old_hotkey = self.cfg.get("hotkey")
+        old_cfg = self.cfg
         self.cfg = new_cfg
         config_mod.save_config(new_cfg)
         logging.info(
@@ -343,12 +347,19 @@ class App:
             len(new_cfg.get("api_key", "")),
             new_cfg.get("hotkey"),
         )
-        if new_cfg.get("hotkey") != old_hotkey:
+        if new_cfg.get("hotkey") != old_cfg.get("hotkey"):
             try:
                 self.ptt.rebind(new_cfg["hotkey"])
                 self.overlay.show_message(f"Hotkey set to: {new_cfg['hotkey']}")
             except ValueError as e:
                 self.overlay.show_message(str(e), duration_ms=5000, error=True)
+        if any(new_cfg.get(k) != old_cfg.get(k)
+               for k in ("repaste_hotkey", "toggle_hotkey")):
+            self._unregister_extra_hotkeys()
+            self._register_extra_hotkeys()
+            combo = new_cfg.get("repaste_hotkey", "")
+            if combo != old_cfg.get("repaste_hotkey"):
+                self.overlay.show_message(f"Re-paste shortcut: {combo}")
 
     def _quit(self):
         try:
@@ -363,6 +374,8 @@ class App:
 
     def _register_extra_hotkeys(self):
         """Re-paste and optional dedicated toggle hotkeys."""
+        if self._extra_hotkey_handles:
+            return  # already registered
         for combo, callback in (
             (self.cfg.get("repaste_hotkey", ""), self._repaste_last),
             (self.cfg.get("toggle_hotkey", ""), self._on_toggle_key),
@@ -370,7 +383,8 @@ class App:
             if not combo:
                 continue
             try:
-                keyboard.add_hotkey(combo, callback)
+                self._extra_hotkey_handles.append(
+                    keyboard.add_hotkey(combo, callback))
             except Exception:
                 logging.exception("Could not register hotkey %r", combo)
                 continue
@@ -382,6 +396,15 @@ class App:
                         keyboard.key_to_scan_codes(part.strip()))
                 except Exception:
                     pass
+
+    def _unregister_extra_hotkeys(self):
+        for handle in self._extra_hotkey_handles:
+            try:
+                keyboard.remove_hotkey(handle)
+            except Exception:
+                pass
+        self._extra_hotkey_handles.clear()
+        self._extra_hotkey_scancodes.clear()
 
     def run(self):
         logging.info(

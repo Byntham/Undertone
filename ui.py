@@ -361,29 +361,21 @@ class SettingsWindow:
         return lbl
 
     def _build_general(self, pane):
+        # Two shortcut rows plus four toggles overflow the window, so the
+        # whole pane scrolls like Providers does.
+        pane = self._scroll_pane(pane)
         self._header(pane, "General")
 
-        # Shortcut ------------------------------------------------------------
-        self._label(pane, "Push-to-talk shortcut")
-        row = tk.Frame(pane, bg=BASE)
-        row.pack(fill="x")
-        self._hotkey_var = tk.StringVar(value=self._config.get("hotkey", ""))
-        display = tk.Entry(
-            row, textvariable=self._hotkey_var, font=FONT, state="readonly",
-            readonlybackground=SURFACE0, fg=TEXT, relief="flat",
-            highlightthickness=1, highlightbackground=SURFACE1,
-            highlightcolor=ACCENT, insertbackground=TEXT, justify="center",
-        )
-        display.pack(side="left", fill="x", expand=True, ipady=6)
-        self._hotkey_display = display
-        self._change_btn = self._make_button(row, "Change", self._start_capture)
-        self._change_btn.pack(side="left", padx=(8, 0))
-        self._hint(pane,
-                   "Hold this key (or combination) to dictate; release to "
-                   "transcribe. Esc cancels a capture.")
-        self._hotkey_error = tk.Label(pane, text="", bg=BASE, fg=RED,
-                                      font=HINT_FONT, anchor="w")
-        self._hotkey_error.pack(fill="x", pady=(2, 0))
+        # Shortcuts ------------------------------------------------------------
+        self._shortcut_rows = {}
+        self._shortcut_row(
+            pane, "Push-to-talk shortcut", "hotkey",
+            "Hold this key (or combination) to dictate; release to "
+            "transcribe. Esc cancels a capture.")
+        self._shortcut_row(
+            pane, "Re-paste shortcut", "repaste_hotkey",
+            "Pastes your most recent dictation again, wherever your "
+            "cursor is now.")
 
         tk.Frame(pane, bg=BASE, height=14).pack()
 
@@ -1148,15 +1140,41 @@ class SettingsWindow:
 
     # Hotkey capture ------------------------------------------------------------
 
-    def _start_capture(self):
+    def _shortcut_row(self, pane, label, config_key, hint):
+        """A readonly shortcut display + capture-by-pressing Change button."""
+        self._label(pane, label)
+        row = tk.Frame(pane, bg=BASE)
+        row.pack(fill="x")
+        var = tk.StringVar(value=self._config.get(config_key, ""))
+        display = tk.Entry(
+            row, textvariable=var, font=FONT, state="readonly",
+            readonlybackground=SURFACE0, fg=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=SURFACE1,
+            highlightcolor=ACCENT, insertbackground=TEXT, justify="center",
+        )
+        display.pack(side="left", fill="x", expand=True, ipady=6)
+        btn = self._make_button(
+            row, "Change", lambda k=config_key: self._start_capture(k))
+        btn.pack(side="left", padx=(8, 0))
+        self._hint(pane, hint)
+        error = tk.Label(pane, text="", bg=BASE, fg=RED, font=HINT_FONT,
+                         anchor="w")
+        error.pack(fill="x", pady=(2, 0))
+        self._shortcut_rows[config_key] = {
+            "var": var, "display": display, "btn": btn, "error": error,
+        }
+
+    def _start_capture(self, config_key="hotkey"):
         if self._capturing:
             return
+        row = self._shortcut_rows[config_key]
         self._capturing = True
-        self._prev_hotkey = self._hotkey_var.get()
-        self._hotkey_error.config(text="")
-        self._change_btn.config(state="disabled", text="Press keys…", cursor="")
-        self._hotkey_display.config(fg=ACCENT)
-        self._hotkey_var.set("Listening…")
+        self._capture_target = config_key
+        self._prev_hotkey = row["var"].get()
+        row["error"].config(text="")
+        row["btn"].config(state="disabled", text="Press keys…", cursor="")
+        row["display"].config(fg=ACCENT)
+        row["var"].set("Listening…")
         if self._on_capture_start is not None:
             try:
                 self._on_capture_start()
@@ -1176,6 +1194,9 @@ class SettingsWindow:
         if not self._capturing:
             return
         self._capturing = False
+        row = self._shortcut_rows.get(self._capture_target, {})
+        # Switching sections mid-capture destroys the row's widgets.
+        alive = (row and row["display"].winfo_exists())
 
         cancelled = combo is None or combo.strip().lower() in ("esc", "escape")
         if not cancelled:
@@ -1183,19 +1204,16 @@ class SettingsWindow:
                 from hotkey import validate_hotkey
                 new_hotkey = validate_hotkey(combo)
             except ValueError as exc:
-                self._hotkey_error.config(text=str(exc))
+                if alive:
+                    row["error"].config(text=str(exc))
                 cancelled = True
             except ImportError:
                 new_hotkey = combo.strip().lower()
 
-        if self._win is not None and self._win.winfo_exists():
-            if cancelled:
-                self._hotkey_var.set(self._prev_hotkey)
-            else:
-                self._hotkey_var.set(new_hotkey)
-            self._hotkey_display.config(fg=TEXT)
-            self._change_btn.config(state="normal", text="Change",
-                                    cursor="hand2")
+        if alive:
+            row["var"].set(self._prev_hotkey if cancelled else new_hotkey)
+            row["display"].config(fg=TEXT)
+            row["btn"].config(state="normal", text="Change", cursor="hand2")
 
         if self._on_capture_end is not None:
             try:
@@ -1204,7 +1222,7 @@ class SettingsWindow:
                 pass
 
         if not cancelled:
-            self._apply(hotkey=new_hotkey)
+            self._apply(**{self._capture_target: new_hotkey})
 
     # --- Window plumbing --------------------------------------------------------
 
