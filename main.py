@@ -129,8 +129,10 @@ class App:
         )
 
         caretctx.warm()
-        # Any typing other than the hotkey invalidates insertion memory
-        # (the caret has likely moved or text was edited).
+        # Any typing other than Undertone's own hotkeys invalidates insertion
+        # memory (the caret has likely moved or text was edited). Extra
+        # hotkeys' scan codes are collected at registration.
+        self._extra_hotkey_scancodes: set = set()
         keyboard.hook(self._on_key_activity)
 
     # ---- thread marshaling -------------------------------------------------
@@ -185,7 +187,8 @@ class App:
 
     def _on_key_activity(self, event):
         if (event.event_type == "down" and event.scan_code
-                and not self.ptt.matches(event.scan_code)):
+                and not self.ptt.matches(event.scan_code)
+                and event.scan_code not in self._extra_hotkey_scancodes):
             self._typed_since_paste = True
 
     # ---- transcription pipeline (single worker thread) -----------------------
@@ -363,6 +366,15 @@ class App:
                 keyboard.add_hotkey(combo, callback)
             except Exception:
                 logging.exception("Could not register hotkey %r", combo)
+                continue
+            # These keys are Undertone's own — they must not count as
+            # "typing" for insertion-memory invalidation.
+            for part in combo.split("+"):
+                try:
+                    self._extra_hotkey_scancodes.update(
+                        keyboard.key_to_scan_codes(part.strip()))
+                except Exception:
+                    pass
 
     def run(self):
         logging.info(

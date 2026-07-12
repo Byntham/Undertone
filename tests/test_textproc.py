@@ -57,6 +57,11 @@ def test_strip_chat_period():
     assert textproc.strip_chat_period("See you soon.") == "See you soon"
     assert textproc.strip_chat_period("One. Two. Three.") == "One. Two. Three."
     assert textproc.strip_chat_period("Wait...") == "Wait..."
+    # An abbreviation's own period is never stripped.
+    assert textproc.strip_chat_period("I need milk, eggs, etc.") == \
+        "I need milk, eggs, etc."
+    assert textproc.strip_chat_period("Ask Dr.") == "Ask Dr."
+    assert textproc.strip_chat_period("Pi is 3.") == "Pi is 3."
 
 
 def test_seam():

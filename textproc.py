@@ -191,6 +191,8 @@ def strip_chat_period(text: str) -> str:
         return text
     if len(stripped) >= 2 and stripped[-2] in "!?":
         return text
+    if _abbrev_period(stripped):
+        return text  # the period belongs to "etc.", "Dr.", a decimal, ...
     if _count_sentences(stripped) > 2:
         return text
     return stripped[:-1]

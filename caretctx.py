@@ -12,6 +12,7 @@ import ctypes
 import logging
 import queue
 import threading
+import time
 from ctypes import wintypes
 
 # comtypes logs INFO-level cache housekeeping; keep it out of app.log.
@@ -22,6 +23,8 @@ logging.getLogger("comtypes").setLevel(logging.WARNING)
 _queue: "queue.Queue" = queue.Queue()
 _worker_lock = threading.Lock()
 _worker_started = False
+_busy_since = 0.0       # monotonic time the worker entered a COM query; 0 = idle
+_WEDGE_S = 3.0          # a query stuck this long means the provider is hung
 _STOP = object()
 
 
@@ -75,9 +78,15 @@ def _query_before_caret(UIA, automation, n: int):
         if raw:
             tp2 = raw.QueryInterface(UIA.IUIAutomationTextPattern2)
             # GetCaretRange has one [out] isActive plus the retval range;
-            # comtypes returns them as a tuple.
+            # comtypes returns them as a tuple. isActive=False means the
+            # range does NOT represent the live caret (it may sit in a
+            # nested child element) — fall through to the TextPattern
+            # selection path rather than trust a stale range.
             res = tp2.GetCaretRange()
-            caret = res[-1] if isinstance(res, tuple) else res
+            if isinstance(res, tuple) and len(res) >= 2:
+                caret = res[-1] if res[0] else None
+            else:
+                caret = res[-1] if isinstance(res, tuple) else res
     except Exception:
         caret = None
 
@@ -116,38 +125,58 @@ def _query_before_caret(UIA, automation, n: int):
     return text if text is not None else None
 
 
-def _worker_loop():
+def _worker_loop(jobs: "queue.Queue"):
+    global _busy_since
     UIA, automation = _make_uia()
     while True:
-        job = _queue.get()
+        job = jobs.get()
         if job is _STOP:
             break
         if job.cancelled:
             continue
         result = None
         if automation is not None:
+            _busy_since = time.monotonic()
             try:
                 result = _query_before_caret(UIA, automation, job.n)
             except Exception:
                 result = None
+            finally:
+                _busy_since = 0.0
         job.result = result
         job.event.set()
 
 
+def _spawn_worker() -> bool:
+    """Start a worker bound to the CURRENT _queue. Caller holds _worker_lock."""
+    global _worker_started, _busy_since
+    try:
+        t = threading.Thread(
+            target=_worker_loop, args=(_queue,), name="caretctx-uia",
+            daemon=True,
+        )
+        t.start()
+        _worker_started = True
+        _busy_since = 0.0
+        return True
+    except Exception:
+        return False
+
+
 def _ensure_worker() -> bool:
-    global _worker_started
+    global _queue
     with _worker_lock:
         if _worker_started:
+            # Watchdog: a COM call can hang forever and there is no way to
+            # abort it. Abandon the wedged worker (it keeps its old queue,
+            # so it can never steal new jobs) and start a fresh one.
+            if _busy_since and time.monotonic() - _busy_since > _WEDGE_S:
+                logging.warning("caretctx: UIA worker wedged >%.0fs; "
+                                "respawning", _WEDGE_S)
+                _queue = queue.Queue()
+                return _spawn_worker()
             return True
-        try:
-            t = threading.Thread(
-                target=_worker_loop, name="caretctx-uia", daemon=True
-            )
-            t.start()
-            _worker_started = True
-            return True
-        except Exception:
-            return False
+        return _spawn_worker()
 
 
 # --- Public API -------------------------------------------------------------
