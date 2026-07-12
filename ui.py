@@ -66,6 +66,11 @@ def _rgb(h):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+def _pretty_combo(combo: str) -> str:
+    """'ctrl+alt+v' -> 'Ctrl+Alt+V' for display in hints."""
+    return "+".join(p.strip().title() for p in combo.split("+") if p.strip())
+
+
 # --- Pillow-rendered imagery -------------------------------------------------
 
 def _draw_mic(d: ImageDraw.ImageDraw, size: int, color, bg=None):
@@ -885,10 +890,17 @@ class SettingsWindow:
 
     def _build_history(self, pane):
         self._header(pane, "History")
-        self._hint(pane, "Dictations from this session. Press Ctrl+Alt+V "
-                         "anywhere to re-paste the newest one.", pady=(0, 4))
-        self._hint(pane, "Tip: click into the target app first, then use "
-                         "Ctrl+Alt+V.", pady=(0, 10))
+        combo = _pretty_combo(self._config.get("repaste_hotkey", ""))
+        if combo:
+            self._hint(pane, f"Dictations from this session. Press {combo} "
+                             "anywhere to re-paste the newest one.",
+                       pady=(0, 4))
+            self._hint(pane, "Tip: click into the target app first, then "
+                             f"use {combo}.", pady=(0, 10))
+        else:
+            self._hint(pane, "Dictations from this session. Set a re-paste "
+                             "shortcut in General to paste the newest one "
+                             "anywhere.", pady=(0, 10))
 
         items = []
         if self._history_getter is not None:
