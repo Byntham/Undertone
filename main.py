@@ -220,11 +220,12 @@ class App:
         vocabulary = list(self.cfg.get("vocabulary", []))
         vocabulary += [v for v in self.cfg.get("corrections", {}).values()
                        if v not in vocabulary]
+        provider = self.cfg.get("provider", "xai")
         try:
             text = transcribe(
-                wav, self.cfg.get("api_key", ""),
+                wav, config_mod.provider_key(self.cfg, provider),
                 self.cfg.get("language", "en"), vocabulary,
-                self.cfg.get("provider", "xai"),
+                provider, self.cfg.get("stt_model", ""),
             )
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
@@ -258,11 +259,13 @@ class App:
             title = caretctx.get_window_title()
             if title:
                 app = f"{app} ({title})" if app else title
+            cprov = self.cfg.get("cleanup_provider", "xai")
             cleaned = cleanup_mod.cleanup(
                 textproc.apply_corrections(text, corrections),
                 ctx, app, corrections,
-                self.cfg.get("api_key", ""),
+                config_mod.provider_key(self.cfg, cprov),
                 self.cfg.get("cleanup_model", ""),
+                cprov,
             )
             if cleaned is not None:
                 # The model handled the transcript body; rules handle the seam.
@@ -389,10 +392,11 @@ class App:
         self.ptt.start()
         self._register_extra_hotkeys()
         self.tray.run_detached()
-        if not self.cfg.get("api_key"):
+        if not config_mod.provider_key(self.cfg, self.cfg.get("provider", "xai")):
             self.settings.open()
             self.overlay.show_message(
-                "Enter your xAI API key to get started", duration_ms=4000
+                "Enter an API key for your provider to get started",
+                duration_ms=4000,
             )
         else:
             self.overlay.show_message(

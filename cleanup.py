@@ -18,7 +18,19 @@ import logging
 
 import requests
 
-API_URL = "https://api.x.ai/v1/chat/completions"
+# All supported cleanup providers speak the OpenAI chat-completions dialect;
+# only the base URL and model naming differ.
+API_URLS = {
+    "xai": "https://api.x.ai/v1/chat/completions",
+    "openai": "https://api.openai.com/v1/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+}
+
+DEFAULT_CLEANUP_MODELS = {
+    "xai": "grok-4.20-0309-non-reasoning",
+    "openai": "gpt-4o-mini",
+    "openrouter": "openai/gpt-4o-mini",
+}
 
 # Compact on purpose: fewer prompt tokens per dictation, and short direct
 # rules measurably beat prose here (see the probe history in the repo docs).
@@ -56,7 +68,7 @@ _RESPONSE_FORMAT = {
 
 
 def cleanup(transcript, ctx, app, corrections, api_key, model,
-            timeout: float = 2.5) -> "str | None":
+            provider: str = "xai", timeout: float = 2.5) -> "str | None":
     """Return the polished transcript, or None on any failure/timeout."""
     try:
         # Transcript goes LAST: the model's continuation instinct then works
@@ -68,10 +80,10 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
             "transcript": transcript,
         }, ensure_ascii=False)
         resp = requests.post(
-            API_URL,
+            API_URLS.get(provider, API_URLS["xai"]),
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": model,
+                "model": model or DEFAULT_CLEANUP_MODELS.get(provider, ""),
                 "temperature": 0,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},

@@ -1,76 +1,162 @@
 """Speech-to-text transcription for Undertone.
 
-Currently targets the xAI STT API. transcribe() dispatches to a provider
-function so additional providers can be added later.
+Providers: xAI (native /v1/stt with keyterm biasing), OpenAI (multipart
+/v1/audio/transcriptions with a vocabulary prompt), and OpenRouter (JSON
+base64 path so vocabulary can ride provider-specific options — its
+multipart path accepts but ignores `prompt`). transcribe() dispatches via
+PROVIDERS; an empty model means the provider's default.
 """
 
+import base64
+import json
+
 import requests
+
+# Empty model = the provider decides (xAI's endpoint has no model field).
+DEFAULT_STT_MODELS = {
+    "xai": "",
+    "openai": "gpt-4o-mini-transcribe",
+    "openrouter": "openai/whisper-large-v3-turbo",
+}
+
+_TIMEOUT = (10, 120)
 
 
 class TranscriptionError(Exception):
     """Carries a user-friendly message describing what went wrong."""
 
 
-def transcribe_xai(wav_bytes: bytes, api_key: str, language: str = "en",
-                   vocabulary: list = None) -> str:
-    """Transcribe WAV audio using the xAI STT API. Returns the text.
+def _vocab_prompt(vocabulary: list) -> "str | None":
+    terms = [str(t).strip() for t in (vocabulary or []) if str(t).strip()]
+    return ("Vocabulary: " + ", ".join(terms[:100])) if terms else None
 
-    vocabulary terms are passed as `keyterm` recognition hints (max 100
-    terms of up to 50 chars each, per the API).
-    """
-    url = "https://api.x.ai/v1/stt"
-    headers = {"Authorization": f"Bearer {api_key}"}
+
+def _check_response(resp, provider: str) -> None:
+    """Map HTTP failures to friendly TranscriptionErrors (raises)."""
+    if resp.status_code == 200:
+        return
+    if resp.status_code in (401, 403):
+        raise TranscriptionError(
+            f"Invalid {provider} API key. Check it in Settings → Providers.")
+    if resp.status_code == 429:
+        raise TranscriptionError(
+            f"Rate limited by {provider} — wait a moment and try again.")
+    if resp.status_code == 413:
+        raise TranscriptionError(
+            f"Recording too large for the {provider} API.")
+    snippet = resp.text[:200]
+    raise TranscriptionError(
+        f"{provider} API error (HTTP {resp.status_code}): {snippet}")
+
+
+def _post(url: str, provider: str, **kwargs) -> dict:
+    try:
+        resp = requests.post(url, timeout=_TIMEOUT, **kwargs)
+    except requests.RequestException as exc:
+        raise TranscriptionError(
+            f"Could not reach the {provider} API. Check your internet "
+            "connection and try again.") from exc
+    _check_response(resp, provider)
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise TranscriptionError(
+            f"{provider} API returned an unexpected (non-JSON) response."
+        ) from exc
+
+
+def transcribe_xai(wav_bytes: bytes, api_key: str, language: str = "en",
+                   vocabulary: list = None, model: str = "") -> str:
+    """xAI /v1/stt; vocabulary terms become `keyterm` recognition hints."""
     data = [("language", language), ("format", "true")]
     for term in (vocabulary or [])[:100]:
         term = str(term).strip()[:50]
         if term:
             data.append(("keyterm", term))
-    files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-
     try:
         resp = requests.post(
-            url,
-            headers=headers,
+            "https://api.x.ai/v1/stt",
+            headers={"Authorization": f"Bearer {api_key}"},
             data=data,
-            files=files,
-            timeout=(10, 120),
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+            timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
         raise TranscriptionError(
-            "Could not reach xAI API. Check your internet connection and try again."
-        ) from exc
-
-    if resp.status_code in (401, 403) or (
-        resp.status_code == 400 and "Incorrect API key" in resp.text
-    ):
-        raise TranscriptionError("Invalid API key. Check your xAI API key in Settings.")
-    if resp.status_code == 429:
-        raise TranscriptionError("Rate limited by xAI — wait a moment and try again.")
-    if resp.status_code == 413:
-        raise TranscriptionError("Recording too large for the xAI API (500 MB max).")
-    if resp.status_code != 200:
-        snippet = resp.text[:200]
+            "Could not reach the xAI API. Check your internet connection "
+            "and try again.") from exc
+    if resp.status_code == 400 and "Incorrect API key" in resp.text:
         raise TranscriptionError(
-            f"xAI API error (HTTP {resp.status_code}): {snippet}"
-        )
-
+            "Invalid xAI API key. Check it in Settings → Providers.")
+    _check_response(resp, "xAI")
     try:
         payload = resp.json()
     except ValueError as exc:
         raise TranscriptionError(
-            "xAI API returned an unexpected (non-JSON) response."
-        ) from exc
+            "xAI API returned an unexpected (non-JSON) response.") from exc
+    return payload.get("text", "").strip()
 
+
+def transcribe_openai(wav_bytes: bytes, api_key: str, language: str = "en",
+                      vocabulary: list = None, model: str = "") -> str:
+    """OpenAI /v1/audio/transcriptions (multipart, OpenAI-style)."""
+    data = {"model": model or DEFAULT_STT_MODELS["openai"],
+            "language": language}
+    prompt = _vocab_prompt(vocabulary)
+    if prompt:
+        data["prompt"] = prompt
+    payload = _post(
+        "https://api.openai.com/v1/audio/transcriptions", "OpenAI",
+        headers={"Authorization": f"Bearer {api_key}"},
+        data=data,
+        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+    )
+    return payload.get("text", "").strip()
+
+
+def transcribe_openrouter(wav_bytes: bytes, api_key: str,
+                          language: str = "en", vocabulary: list = None,
+                          model: str = "") -> str:
+    """OpenRouter /api/v1/audio/transcriptions via the base64 JSON path.
+
+    The JSON path is used (not multipart) because vocabulary biasing only
+    works through provider-specific options there — the multipart path
+    accepts `prompt` but ignores it. Options are keyed by provider slug and
+    forwarded only to whichever provider serves the request.
+    """
+    body = {
+        "model": model or DEFAULT_STT_MODELS["openrouter"],
+        "input_audio": {
+            "data": base64.b64encode(wav_bytes).decode("ascii"),
+            "format": "wav",
+        },
+        "language": language,
+    }
+    prompt = _vocab_prompt(vocabulary)
+    if prompt:
+        body["provider"] = {"options": {
+            "openai": {"prompt": prompt},
+            "groq": {"prompt": prompt},
+        }}
+    payload = _post(
+        "https://openrouter.ai/api/v1/audio/transcriptions", "OpenRouter",
+        headers={"Authorization": f"Bearer {api_key}",
+                 "Content-Type": "application/json"},
+        data=json.dumps(body),
+    )
     return payload.get("text", "").strip()
 
 
 PROVIDERS = {
     "xai": transcribe_xai,
+    "openai": transcribe_openai,
+    "openrouter": transcribe_openrouter,
 }
 
 
 def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
-               vocabulary: list = None, provider: str = "xai") -> str:
+               vocabulary: list = None, provider: str = "xai",
+               model: str = "") -> str:
     """Transcribe WAV audio bytes, returning the recognized text.
 
     vocabulary is an optional list of terms the model should recognize;
@@ -80,7 +166,7 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
     api_key = api_key.strip()
     if not api_key:
         raise TranscriptionError(
-            "No API key configured. Open Settings and enter your xAI API key."
-        )
+            "No API key configured for the transcription provider. Open "
+            "Settings → Providers and enter one.")
     fn = PROVIDERS.get(provider, transcribe_xai)
-    return fn(wav_bytes, api_key, language, vocabulary)
+    return fn(wav_bytes, api_key, language, vocabulary, model)

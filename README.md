@@ -1,8 +1,8 @@
 # Undertone
 
-Push-to-talk dictation for Windows. Hold a key, speak, release — your words are transcribed via the
-[xAI Speech-to-Text API](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text)
-and pasted into whatever text box has focus.
+Push-to-talk dictation for Windows. Hold a key, speak, release — your words
+are transcribed by your choice of provider (xAI, OpenAI, or OpenRouter) and
+pasted into whatever text box has focus.
 
 ## Setup
 
@@ -19,9 +19,11 @@ Double-click `run.bat`, or:
 .venv\Scripts\python main.py
 ```
 
-The Undertone icon appears in the system tray. Open **Settings → API Key**,
-paste your key from [console.x.ai](https://console.x.ai), click **Save key**
-(use **Test key** to verify it), and you're ready.
+The Undertone icon appears in the system tray. Open **Settings →
+Providers**, pick your transcription and AI-cleanup providers, paste the
+matching API key ([console.x.ai](https://console.x.ai),
+[platform.openai.com](https://platform.openai.com), or
+[openrouter.ai](https://openrouter.ai)), and use the Test buttons to verify.
 
 ## Use
 
@@ -44,15 +46,15 @@ classic Win32 edit-control protocol), falling back to what Undertone itself
 last pasted. In chat apps (Slack, Discord, WhatsApp…) a lone trailing
 period on a short message is dropped.
 
-With **AI cleanup** on, a fast grok model additionally removes filler words
+With **AI cleanup** on, a fast chat model additionally removes filler words
 and false starts ("we should… actually let's just…" keeps only the
 correction), fixes mishearings using your dictionary, and fits the phrasing
 to the surrounding text — adding roughly half a second before the paste.
 The mechanical seam (leading space, sentence-start capital) always stays
 rule-based, and any model failure or timeout falls back silently to the
 rule-based result. Note: with AI cleanup on, the ~300 characters before
-your cursor are sent to xAI along with the audio. Both toggles live in
-**Settings → General**.
+your cursor are sent to the cleanup provider along with the audio. Both
+toggles live in **Settings → General**.
 
 ## Settings (tray icon → Settings…)
 
@@ -65,7 +67,10 @@ your cursor are sent to xAI along with the audio. Both toggles live in
   always replace a misheard phrase with the right one.
 - **History** — this session's dictations, with copy and re-paste. History
   lives in memory only and is gone when the app exits.
-- **API Key** — save and test your xAI key. It is stored locally in
+- **Providers** — choose the transcription and AI-cleanup providers
+  independently (any mix of xAI, OpenAI, OpenRouter), save and test each
+  key, and override model IDs under *Advanced* (empty = a sensible
+  per-provider default). Keys are stored locally in
   `%APPDATA%\Undertone\config.json`; keep that file private.
 - Changes apply immediately — there is no Save button to forget.
 
@@ -74,9 +79,9 @@ changed in `config.json` (`repaste_hotkey`, `toggle_hotkey`).
 
 ## Privacy
 
-Audio goes to the xAI API for transcription and nowhere else. Undertone
-never captures your screen, keeps no audio, and its dictation history is
-in-memory only.
+Audio goes to your chosen transcription provider and nowhere else.
+Undertone never captures your screen, keeps no audio, and its dictation
+history is in-memory only.
 
 ## Notes
 
@@ -84,4 +89,5 @@ in-memory only.
 - Diagnostics are logged to `%APPDATA%\Undertone\app.log`.
 - Pasting into apps running **as Administrator** requires this app to be
   elevated too (Windows blocks synthetic input across integrity levels).
-- `transcriber.py` is structured so other STT providers can be added later.
+- `transcriber.py`'s PROVIDERS registry is the extension point for
+  additional STT providers.

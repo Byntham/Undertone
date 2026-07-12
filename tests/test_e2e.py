@@ -42,8 +42,7 @@ _i = [0]
 failures = []
 
 
-def fake_transcribe(wav, api_key, language="en", vocabulary=None,
-                    provider="xai"):
+def fake_transcribe(wav, api_key, *args, **kwargs):
     print(f"  [e2e] transcribe called: {len(wav)} bytes")
     assert len(wav) > main_mod.MIN_AUDIO_BYTES, "recorder produced audio"
     text = CANNED[_i[0] % len(CANNED)]
@@ -118,6 +117,7 @@ def phase(app, expected, label):
     try:
         time.sleep(1.5)
         assert focus_window(notepad.pid), f"{label}: could not focus Notepad"
+        time.sleep(0.6)  # let Notepad's input queue settle (first-paste flake)
         for _ in range(2):
             inject("keyboard.press('f13'); time.sleep(0.6); "
                    "keyboard.release('f13')")

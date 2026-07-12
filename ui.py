@@ -1,7 +1,7 @@
 """Tray icon and settings window for Undertone.
 
 The settings window is a dark two-pane panel: a sidebar with General /
-API Key / About sections and a content pane. All changes apply immediately
+Providers / About sections and a content pane. All changes apply immediately
 (no Save/Cancel); a transient "Saved" hint confirms each change. Styled by
 hand with plain tk widgets plus Pillow-rendered imagery (tray icon, toggle
 switches) supersampled 4x for crisp edges.
@@ -47,6 +47,18 @@ LANGUAGES = [
     ("Turkish", "tr"), ("Ukrainian", "uk"),
 ]
 LANG_BY_CODE = {code: name for name, code in LANGUAGES}
+
+PROVIDERS_UI = [("xAI", "xai"), ("OpenAI", "openai"), ("OpenRouter", "openrouter")]
+PROVIDER_BY_ID = {pid: name for name, pid in PROVIDERS_UI}
+# provider id -> the config key holding that provider's API key.
+KEY_FIELD_BY_PROVIDER = {
+    "xai": "api_key", "openai": "openai_api_key", "openrouter": "openrouter_api_key",
+}
+PROVIDER_LINKS = [
+    ("console.x.ai", "https://console.x.ai"),
+    ("platform.openai.com", "https://platform.openai.com"),
+    ("openrouter.ai", "https://openrouter.ai"),
+]
 
 
 def _rgb(h):
@@ -249,7 +261,7 @@ class SettingsWindow:
         self._content = tk.Frame(win, bg=BASE)
         self._content.pack(side="left", fill="both", expand=True)
 
-        for section in ("General", "Dictionary", "History", "API Key", "About"):
+        for section in ("General", "Dictionary", "History", "Providers", "About"):
             self._nav_items[section] = self._make_nav_item(side, section)
 
         self._select_section("General")
@@ -323,8 +335,8 @@ class SettingsWindow:
             self._build_dictionary(pane)
         elif section == "History":
             self._build_history(pane)
-        elif section == "API Key":
-            self._build_api_key(pane)
+        elif section == "Providers":
+            self._build_providers(pane)
         else:
             self._build_about(pane)
         # Saved hint anchored bottom-right of the content pane.
@@ -455,46 +467,219 @@ class SettingsWindow:
         sw.bind("<Button-1>", toggle)
         self._hint(pane, hint)
 
-    def _build_api_key(self, pane):
-        self._header(pane, "API Key")
+    def _build_providers(self, pane):
+        # The pane's content exceeds the window once Advanced is expanded, so
+        # everything lives in a borderless BASE-coloured scroll region (thumb
+        # auto-hides while it all fits).
+        body = self._scroll_pane(pane)
 
-        self._label(pane, "xAI API key")
-        row = tk.Frame(pane, bg=BASE)
-        row.pack(fill="x")
-        self._api_var = tk.StringVar(value=self._config.get("api_key", ""))
-        self._api_entry = tk.Entry(
-            row, textvariable=self._api_var, font=FONT, show="•",
-            bg=SURFACE0, fg=TEXT, insertbackground=TEXT, relief="flat",
-            highlightthickness=1, highlightbackground=SURFACE1,
-            highlightcolor=ACCENT,
-        )
-        self._api_entry.pack(side="left", fill="x", expand=True, ipady=6)
-        self._show_btn = self._make_button(row, "Show", self._toggle_show)
-        self._show_btn.pack(side="left", padx=(8, 0))
+        self._header(body, "Providers")
 
-        self._key_status = tk.Label(pane, text=self._key_status_text(),
-                                    bg=BASE, fg=MUTED, font=HINT_FONT,
-                                    anchor="w")
-        self._key_status.pack(fill="x", pady=(6, 0))
+        # Provider dropdowns (styled like the General "Spoken language" one) ---
+        self._provider_row(body, "Transcription", "provider")
+        tk.Frame(body, bg=BASE, height=8).pack()
+        self._provider_row(body, "AI cleanup", "cleanup_provider")
+        self._hint(body,
+                   "Transcription converts your speech; AI cleanup polishes "
+                   "it. Model overrides live under Advanced below.")
 
-        tk.Frame(pane, bg=BASE, height=14).pack()
-        btns = tk.Frame(pane, bg=BASE)
-        btns.pack(fill="x")
-        self._make_button(btns, "Save key", self._save_key,
-                          kind="accent").pack(side="left")
-        self._test_btn = self._make_button(btns, "Test key", self._test_key)
-        self._test_btn.pack(side="left", padx=(8, 0))
+        tk.Frame(body, bg=BASE, height=12).pack()
 
-        self._test_status = tk.Label(pane, text="", bg=BASE, fg=MUTED,
+        # Per-provider API keys ------------------------------------------------
+        self._key_vars = {}
+        self._key_status_lbls = {}
+        self._key_block(body, "xAI API key", "api_key")
+        self._key_block(body, "OpenAI API key", "openai_api_key")
+        self._key_block(body, "OpenRouter API key", "openrouter_api_key")
+
+        # Test buttons + shared status -----------------------------------------
+        tests = tk.Frame(body, bg=BASE)
+        tests.pack(fill="x", pady=(2, 0))
+        self._test_stt_btn = self._make_button(
+            tests, "Test transcription", self._test_transcription, small=True)
+        self._test_stt_btn.pack(side="left")
+        self._test_cleanup_btn = self._make_button(
+            tests, "Test cleanup", self._test_cleanup, small=True)
+        self._test_cleanup_btn.pack(side="left", padx=(8, 0))
+        self._test_status = tk.Label(body, text="", bg=BASE, fg=MUTED,
                                      font=HINT_FONT, anchor="w",
                                      justify="left", wraplength=390)
-        self._test_status.pack(fill="x", pady=(10, 0))
+        self._test_status.pack(fill="x", pady=(6, 0))
 
-        link = tk.Label(pane, text="Get a key at console.x.ai", bg=BASE,
-                        fg=ACCENT, font=HINT_FONT, anchor="w", cursor="hand2")
-        link.pack(fill="x", side="bottom", pady=(12, 0))
-        link.bind("<Button-1>",
-                  lambda _e: webbrowser.open("https://console.x.ai"))
+        # Advanced disclosure: model overrides (collapsed by default) ----------
+        adv_toggle = tk.Label(body, text="Advanced ▸", bg=BASE, fg=SUBTEXT,
+                              font=LABEL_FONT, anchor="w", cursor="hand2")
+        adv_toggle.pack(fill="x", pady=(12, 0))
+        adv = tk.Frame(body, bg=BASE)
+        self._adv_open = False
+
+        def toggle_adv(_e=None):
+            self._adv_open = not self._adv_open
+            adv_toggle.config(text="Advanced ▾" if self._adv_open
+                              else "Advanced ▸")
+            if self._adv_open:
+                adv.pack(fill="x", pady=(4, 0), after=adv_toggle)
+            else:
+                adv.pack_forget()
+        adv_toggle.bind("<Button-1>", toggle_adv)
+
+        self._stt_model_hint = self._model_row(
+            adv, "Transcription model", "stt_model")
+        self._cleanup_model_hint = self._model_row(
+            adv, "Cleanup model", "cleanup_model")
+        self._refresh_model_hints()
+
+        # Links -----------------------------------------------------------------
+        links = tk.Frame(body, bg=BASE)
+        links.pack(fill="x", pady=(14, 0))
+        for i, (text, url) in enumerate(PROVIDER_LINKS):
+            if i:
+                tk.Label(links, text="·", bg=BASE, fg=MUTED,
+                         font=HINT_FONT).pack(side="left", padx=5)
+            lk = tk.Label(links, text=text, bg=BASE, fg=ACCENT, font=HINT_FONT,
+                          cursor="hand2")
+            lk.pack(side="left")
+            lk.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+
+        self._bind_wheel(body)
+
+    def _bind_wheel(self, widget):
+        """Recursively route mouse-wheel events to the scroll pane."""
+        widget.bind("<MouseWheel>", self._scroll_wheel)
+        for child in widget.winfo_children():
+            self._bind_wheel(child)
+
+    def _scroll_pane(self, parent):
+        """A borderless, BASE-coloured vertical scroll region filling parent.
+
+        Mirrors _scroll_list but blends into the pane (no border/MANTLE box)
+        and grows with its parent so the Providers content can overflow the
+        window; the hand-drawn thumb hides itself when everything fits.
+        """
+        canvas = tk.Canvas(parent, bg=BASE, highlightthickness=0, bd=0)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar = tk.Canvas(parent, bg=BASE, width=8, highlightthickness=0, bd=0)
+        bar.pack(side="right", fill="y")
+        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
+        inner = tk.Frame(canvas, bg=BASE)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def refresh(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            first, last = canvas.yview()
+            bh = bar.winfo_height()
+            if last - first >= 0.999:
+                bar.coords(thumb, 0, 0, 0, 0)
+            else:
+                bar.coords(thumb, 2, first * bh + 1, 7, last * bh - 1)
+
+        def wheel(e):
+            canvas.yview_scroll(-int(e.delta / 120), "units")
+            refresh()
+
+        def drag(e):
+            bh = max(bar.winfo_height(), 1)
+            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
+            refresh()
+
+        inner.bind("<Configure>", refresh)
+        canvas.bind("<Configure>",
+                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
+        # Wheel anywhere over the pane scrolls it.
+        for w in (canvas, inner, bar):
+            w.bind("<MouseWheel>", wheel)
+        self._scroll_wheel = wheel
+        bar.bind("<Button-1>", drag)
+        bar.bind("<B1-Motion>", drag)
+        return inner
+
+    def _provider_row(self, pane, label, config_key):
+        """A provider dropdown styled exactly like the language dropdown."""
+        self._label(pane, label)
+        cur = self._config.get(config_key, "xai")
+        ctrl = tk.Frame(pane, bg=SURFACE0, cursor="hand2",
+                        highlightthickness=1, highlightbackground=SURFACE1)
+        ctrl.pack(fill="x")
+        lbl = tk.Label(ctrl, text=PROVIDER_BY_ID.get(cur, cur), bg=SURFACE0,
+                       fg=TEXT, font=FONT, anchor="w", padx=12, pady=7)
+        lbl.pack(side="left", fill="x", expand=True)
+        caret = tk.Label(ctrl, text="⌄", bg=SURFACE0, fg=SUBTEXT, font=FONT,
+                         padx=12)
+        caret.pack(side="right")
+
+        def hover(bg):
+            def fn(_e):
+                for w in (ctrl, lbl, caret):
+                    w.configure(bg=bg)
+            return fn
+        for w in (ctrl, lbl, caret):
+            w.bind("<Button-1>",
+                   lambda _e: self._open_provider_menu(ctrl, lbl, config_key))
+            w.bind("<Enter>", hover(SURFACE1))
+            w.bind("<Leave>", hover(SURFACE0))
+
+    def _open_provider_menu(self, ctrl, lbl, config_key):
+        menu = tk.Menu(
+            self._win, tearoff=0, bg=SURFACE0, fg=TEXT,
+            activebackground=ACCENT, activeforeground=INK,
+            relief="flat", bd=0, font=FONT,
+        )
+        for name, pid in PROVIDERS_UI:
+            menu.add_command(
+                label=f"  {name}",
+                command=lambda n=name, p=pid: self._pick_provider(
+                    lbl, config_key, n, p))
+        x = ctrl.winfo_rootx()
+        y = ctrl.winfo_rooty() + ctrl.winfo_height() + 2
+        menu.tk_popup(x, y)
+
+    def _pick_provider(self, lbl, config_key, name, pid):
+        lbl.config(text=name)
+        self._apply(**{config_key: pid})
+        self._refresh_model_hints()
+
+    def _key_block(self, pane, label, field):
+        """A labelled API-key entry with Show/Save buttons and a status line."""
+        self._label(pane, label, pady=(0, 3))
+        row = tk.Frame(pane, bg=BASE)
+        row.pack(fill="x")
+        var = tk.StringVar(value=self._config.get(field, ""))
+        entry = tk.Entry(
+            row, textvariable=var, font=FONT, show="•", bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        entry.pack(side="left", fill="x", expand=True, ipady=5)
+        save_btn = self._make_button(
+            row, "Save", lambda f=field: self._save_key(f), kind="accent",
+            small=True)
+        save_btn.pack(side="right", padx=(6, 0))
+        show_btn = self._make_button(row, "Show", lambda: None, small=True)
+        show_btn.config(command=lambda: self._toggle_show(entry, show_btn))
+        show_btn.pack(side="right", padx=(6, 0))
+        status = tk.Label(pane, text=self._key_status_text(field), bg=BASE,
+                          fg=MUTED, font=HINT_FONT, anchor="w")
+        status.pack(fill="x", pady=(3, 8))
+        self._key_vars[field] = var
+        self._key_status_lbls[field] = status
+
+    def _model_row(self, parent, label, config_key):
+        """A plain-text model-override entry with a Save button and live hint."""
+        self._label(parent, label, pady=(6, 3))
+        row = tk.Frame(parent, bg=BASE)
+        row.pack(fill="x")
+        var = tk.StringVar(value=self._config.get(config_key, ""))
+        entry = tk.Entry(
+            row, textvariable=var, font=FONT, bg=SURFACE0, fg=TEXT,
+            insertbackground=TEXT, relief="flat", highlightthickness=1,
+            highlightbackground=SURFACE1, highlightcolor=ACCENT)
+        entry.pack(side="left", fill="x", expand=True, ipady=5)
+        self._make_button(
+            row, "Save", lambda: self._save_model(config_key, var),
+            kind="accent", small=True).pack(side="right", padx=(6, 0))
+        hint = tk.Label(parent, text="", bg=BASE, fg=MUTED, font=HINT_FONT,
+                        anchor="w", justify="left", wraplength=390)
+        hint.pack(fill="x", pady=(3, 0))
+        return hint
 
     def _build_about(self, pane):
         self._header(pane, "About")
@@ -503,8 +688,9 @@ class SettingsWindow:
         self._hint(pane,
                    "Hold your shortcut, speak, release — the transcript is "
                    "typed into whatever text box has focus. Transcription "
-                   "runs on the xAI speech-to-text API; audio is sent to "
-                   "xAI only while you hold the key.", pady=(10, 0))
+                   "runs on your configured provider (xAI, OpenAI, or "
+                   "OpenRouter); audio is sent only while you dictate.",
+                   pady=(10, 0))
         self._hint(pane, "Your API key and settings are stored locally in "
                          "your user profile.", pady=(8, 0))
         link = tk.Label(pane, text="Open settings folder", bg=BASE, fg=ACCENT,
@@ -819,37 +1005,77 @@ class SettingsWindow:
         except Exception:
             self._autostart_on = not self._autostart_on
 
-    # API key ---------------------------------------------------------------------
+    # Provider keys & model overrides ---------------------------------------------
 
-    def _key_status_text(self):
-        key = self._config.get("api_key", "")
+    def _key_status_text(self, field):
+        key = self._config.get(field, "")
         if not key:
             return "No key set."
         return f"Key saved · ends in ····{key[-4:]}"
 
-    def _toggle_show(self):
-        showing = self._api_entry["show"] == ""
-        self._api_entry.config(show="•" if showing else "")
-        self._show_btn.config(text="Show" if showing else "Hide")
+    def _toggle_show(self, entry, btn):
+        showing = entry["show"] == ""
+        entry.config(show="•" if showing else "")
+        btn.config(text="Show" if showing else "Hide")
 
-    def _save_key(self):
-        self._apply(api_key=self._api_var.get().strip())
-        self._key_status.config(text=self._key_status_text())
+    def _save_key(self, field):
+        self._apply(**{field: self._key_vars[field].get().strip()})
+        self._key_status_lbls[field].config(text=self._key_status_text(field))
 
-    def _test_key(self):
+    def _save_model(self, config_key, var):
+        self._apply(**{config_key: var.get().strip()})
+        self._refresh_model_hints()
+
+    def _default_model(self, kind, provider):
+        """The provider's built-in default model id ('' if none/unknown)."""
+        try:
+            if kind == "stt":
+                from transcriber import DEFAULT_STT_MODELS
+                return DEFAULT_STT_MODELS.get(provider, "")
+            from cleanup import DEFAULT_CLEANUP_MODELS
+            return DEFAULT_CLEANUP_MODELS.get(provider, "")
+        except Exception:
+            return ""
+
+    def _refresh_model_hints(self):
+        for attr, kind, pkey in (
+            ("_stt_model_hint", "stt", "provider"),
+            ("_cleanup_model_hint", "cleanup", "cleanup_provider"),
+        ):
+            lbl = getattr(self, attr, None)
+            if lbl is None or not lbl.winfo_exists():
+                continue
+            default = self._default_model(kind, self._config.get(pkey, "xai"))
+            tail = f" ({default})" if default else ""
+            lbl.config(text=f"Empty = provider default{tail}.")
+
+    def _test_transcription(self):
+        provider = self._config.get("provider", "xai")
+        field = KEY_FIELD_BY_PROVIDER.get(provider, "api_key")
+        self._start_test("stt", provider, field, self._test_stt_btn,
+                         self._test_stt_worker)
+
+    def _test_cleanup(self):
+        provider = self._config.get("cleanup_provider", "xai")
+        field = KEY_FIELD_BY_PROVIDER.get(provider, "api_key")
+        self._start_test("cleanup", provider, field, self._test_cleanup_btn,
+                         self._test_cleanup_worker)
+
+    def _start_test(self, which, provider, field, btn, worker):
         if self._testing:
             return
-        key = self._api_var.get().strip()
+        var = self._key_vars.get(field)
+        key = var.get().strip() if var is not None else ""
         if not key:
             self._test_status.config(text="Enter a key first.", fg=RED)
             return
         self._testing = True
-        self._test_btn.config(state="disabled")
-        self._test_status.config(text="Testing key…", fg=MUTED)
-        threading.Thread(target=self._test_worker, args=(key,),
+        btn.config(state="disabled")
+        self._test_status.config(text="Testing…", fg=MUTED)
+        threading.Thread(target=worker, args=(key, provider),
                          daemon=True).start()
 
-    def _test_worker(self, key):
+    def _test_stt_worker(self, key, provider):
         import io
         import wave
         buf = io.BytesIO()
@@ -859,21 +1085,45 @@ class SettingsWindow:
             w.setframerate(16000)
             w.writeframes(b"\x00\x00" * 8000)  # 0.5 s of silence
         try:
-            from transcriber import TranscriptionError, transcribe
-            transcribe(buf.getvalue(), key)
-            result = (True, "Key works — you're ready to dictate.")
+            from transcriber import DEFAULT_STT_MODELS, transcribe
+            model = self._config.get("stt_model") or DEFAULT_STT_MODELS[provider]
+            transcribe(buf.getvalue(), key, provider=provider, model=model)
+            name = PROVIDER_BY_ID.get(provider, provider)
+            result = ("stt", True, f"Transcription works ({name}).")
         except Exception as exc:
-            result = (False, str(exc))
+            result = ("stt", False, str(exc))
+        self._queue.put(("tested", result))
+
+    def _test_cleanup_worker(self, key, provider):
+        try:
+            from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
+            model = (self._config.get("cleanup_model")
+                     or DEFAULT_CLEANUP_MODELS[provider])
+            out = cleanup("testing one two three", None, "", {}, key, model,
+                          provider=provider)
+            if out is not None:
+                name = PROVIDER_BY_ID.get(provider, provider)
+                result = ("cleanup", True, f"Cleanup works ({name}).")
+            else:
+                result = ("cleanup", False,
+                          "Cleanup failed — check the key, or see app.log.")
+        except Exception:
+            result = ("cleanup", False,
+                      "Cleanup failed — check the key, or see app.log.")
         self._queue.put(("tested", result))
 
     def _on_tested(self, result):
         self._testing = False
         if self._win is None or not self._win.winfo_exists():
             return
-        ok, message = result
-        self._test_btn.config(state="normal", bg=self._test_btn._base_bg)
-        self._test_status.config(text=("✓ " if ok else "") + message,
-                                 fg=GREEN if ok else RED)
+        which, ok, message = result
+        btn = (self._test_stt_btn if which == "stt"
+               else self._test_cleanup_btn)
+        if btn is not None and btn.winfo_exists():
+            btn.config(state="normal", bg=btn._base_bg)
+        if self._test_status is not None and self._test_status.winfo_exists():
+            self._test_status.config(text=("✓ " if ok else "") + message,
+                                     fg=GREEN if ok else RED)
 
     # Hotkey capture ------------------------------------------------------------
 

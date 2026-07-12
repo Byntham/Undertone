@@ -15,21 +15,38 @@ APP_VERSION = "1.0.0"
 CONFIG_PATH: pathlib.Path = pathlib.Path(os.environ["APPDATA"]) / APP_NAME / "config.json"
 
 DEFAULT_CONFIG = {
-    "api_key": "",
+    "api_key": "",              # xAI key (name kept for config back-compat)
+    "openai_api_key": "",
+    "openrouter_api_key": "",
     "hotkey": "right ctrl",
     "language": "en",
     "restore_clipboard": True,
     "sample_rate": 16000,
-    "provider": "xai",
+    "provider": "xai",          # STT provider: xai | openai | openrouter
+    "stt_model": "",            # empty = provider default
     "smart_formatting": True,
     "ai_cleanup": True,
-    "cleanup_model": "grok-4.20-0309-non-reasoning",
+    "cleanup_provider": "xai",
+    "cleanup_model": "",        # empty = provider default
     "sound_cues": True,
     "vocabulary": [],       # terms sent to the STT API as recognition hints
     "corrections": {},      # {"heard": "replacement"} applied after transcription
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
 }
+
+
+# Which config field holds each provider's API key.
+KEY_FIELDS = {
+    "xai": "api_key",
+    "openai": "openai_api_key",
+    "openrouter": "openrouter_api_key",
+}
+
+
+def provider_key(cfg: dict, provider: str) -> str:
+    """The stored API key for a provider ("" if none)."""
+    return cfg.get(KEY_FIELDS.get(provider, "api_key"), "")
 
 
 def _migrate_legacy_dir() -> None:
