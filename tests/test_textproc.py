@@ -1,4 +1,4 @@
-"""Manual assert-based tests for textproc and learning (no pytest).
+"""Manual assert-based tests for textproc (no pytest).
 
 Run with the venv python:
     .venv\\Scripts\\python.exe tests\\test_textproc.py
@@ -8,12 +8,10 @@ Pure logic only -- no Windows desktop or network needed.
 
 import os
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import textproc  # noqa: E402
-import learning  # noqa: E402
 
 
 def fmt(text, ctx, corrections=None, smart=True):
@@ -61,31 +59,14 @@ def test_strip_chat_period():
     assert textproc.strip_chat_period("Wait...") == "Wait..."
 
 
-def test_learner():
-    with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "sub", "learning.json")
-
-        # Same fix observed twice promotes exactly once (threshold 2).
-        learner = learning.CorrectionLearner(path)
-        assert learner.observe("open the undertone app", "open the Undertone app") == []
-        promoted = learner.observe("run undertone now", "run Undertone now")
-        assert promoted == [("undertone", "Undertone")], promoted
-
-        # Common-word guard: "there" -> "their" is never learned.
-        guard = learning.CorrectionLearner(os.path.join(d, "guard.json"), threshold=1)
-        assert guard.observe("go there now", "go their now") == []
-
-        # Case-only change is learnable.
-        caseonly = learning.CorrectionLearner(os.path.join(d, "case.json"), threshold=1)
-        assert caseonly.observe("hi graham", "hi Graham") == [("graham", "Graham")]
-
-    # Corrupt JSON is tolerated (starts empty).
-    with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "bad.json")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("{not valid json")
-        learner = learning.CorrectionLearner(path, threshold=1)
-        assert learner.observe("say foo", "say bar") == [("foo", "bar")]
+def test_seam():
+    # Boundary pass for AI-cleaned text: spacing plus sentence-start caps
+    # only; mid-sentence casing is the model's job and is left alone.
+    assert textproc.seam("the fix works", "I checked and") == " the fix works"
+    assert textproc.seam("hello there", "Done.") == " Hello there"
+    assert textproc.seam("  padded", "word") == " padded"   # model whitespace
+    assert textproc.seam("anything", None) == "anything"
+    assert textproc.seam("Kept As Is", "I saw") == " Kept As Is"
 
 
 def main():
@@ -93,7 +74,7 @@ def main():
     test_caps()
     test_corrections()
     test_strip_chat_period()
-    test_learner()
+    test_seam()
     print("ALL TESTS PASSED")
 
 

@@ -23,11 +23,10 @@ import sounds
 import textproc
 from hotkey import PushToTalk
 from injector import paste_text
-from learning import CorrectionLearner
 from overlay import Overlay
 from recorder import Recorder, RecorderError
 from transcriber import TranscriptionError, transcribe
-from ui import FixWindow, SettingsWindow, create_tray
+from ui import SettingsWindow, create_tray
 
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono
 # int16) are treated as an accidental tap and skipped.
@@ -107,7 +106,6 @@ class App:
             history_getter=lambda: list(reversed(self._history)),
             on_repaste=self._paste_from_history,
         )
-        self.fixwin = FixWindow(self.root, self._on_fixed)
         self.tray = create_tray(
             on_settings=lambda: self._post(self.settings.open),
             on_quit=lambda: self._post(self._quit),
@@ -118,8 +116,6 @@ class App:
         self._history: deque = deque(maxlen=HISTORY_SIZE)
         self._last_paste = None          # (foreground hwnd, text, monotonic time)
         self._typed_since_paste = False
-        self._learner = CorrectionLearner(
-            config_mod.CONFIG_PATH.parent / "learning.json")
 
         # Hands-free toggle state (double-tap the hotkey, or dedicated key).
         self._locked = False
@@ -336,27 +332,6 @@ class App:
             self._paste_now(text)
         threading.Thread(target=run, daemon=True).start()
 
-    def _open_fix(self):
-        if not self._history:
-            self.overlay.show_message("Nothing to fix yet")
-            return
-        self.fixwin.open(self._history[-1][1])
-
-    def _on_fixed(self, original: str, corrected: str):
-        """FixWindow submitted (Tk thread, target app refocused)."""
-        for wrong, right in self._learner.observe(original, corrected):
-            merged = dict(self.cfg.get("corrections", {}))
-            merged[wrong] = right
-            self.cfg = {**self.cfg, "corrections": merged}
-            config_mod.save_config(self.cfg)
-            # Keep the settings window's private copy in sync.
-            self.settings._config = dict(self.cfg)
-            self.overlay.show_message(f'Learned: "{wrong}" → "{right}"')
-        if self._history:
-            self._history[-1] = (self._history[-1][0], corrected)
-        threading.Thread(target=self._paste_now, args=(corrected,),
-                         daemon=True).start()
-
     # ---- settings / lifecycle ----------------------------------------------
 
     def _pause_hotkey(self):
@@ -400,10 +375,9 @@ class App:
         self.root.destroy()
 
     def _register_extra_hotkeys(self):
-        """Re-paste, fix-last, and optional dedicated toggle hotkeys."""
+        """Re-paste and optional dedicated toggle hotkeys."""
         for combo, callback in (
             (self.cfg.get("repaste_hotkey", ""), self._repaste_last),
-            (self.cfg.get("fix_hotkey", ""), self._open_fix),
             (self.cfg.get("toggle_hotkey", ""), self._on_toggle_key),
         ):
             if not combo:

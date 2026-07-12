@@ -29,7 +29,6 @@ DEFAULT_CONFIG = {
     "corrections": {},      # {"heard": "replacement"} applied after transcription
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
-    "fix_hotkey": "ctrl+alt+f",
 }
 
 

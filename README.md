@@ -32,9 +32,7 @@ paste your key from [console.x.ai](https://console.x.ai), click **Save key**
 - **Double-tap** the shortcut to lock hands-free recording for longer
   dictation; tap once more to finish. Very short taps are ignored.
 - **Ctrl+Alt+V** re-pastes your latest dictation (for when it landed in the
-  wrong window). **Ctrl+Alt+F** opens a small box to fix the last
-  dictation — the corrected text is pasted, and repeated fixes are learned
-  as automatic corrections.
+  wrong window).
 
 ## Smart formatting and AI cleanup
 
@@ -64,16 +62,15 @@ your cursor are sent to xAI along with the audio. Both toggles live in
   *Sound cues*.
 - **Dictionary** — *Vocabulary*: names and jargon the transcriber should
   recognize (sent as recognition hints with every request). *Corrections*:
-  always replace a misheard phrase with the right one; entries are also
-  added automatically when the same fix is made twice via **Ctrl+Alt+F**.
+  always replace a misheard phrase with the right one.
 - **History** — this session's dictations, with copy and re-paste. History
   lives in memory only and is gone when the app exits.
 - **API Key** — save and test your xAI key. It is stored locally in
   `%APPDATA%\Undertone\config.json`; keep that file private.
 - Changes apply immediately — there is no Save button to forget.
 
-The re-paste/fix hotkeys and an optional dedicated toggle-mode key can be
-changed in `config.json` (`repaste_hotkey`, `fix_hotkey`, `toggle_hotkey`).
+The re-paste hotkey and an optional dedicated toggle-mode key can be
+changed in `config.json` (`repaste_hotkey`, `toggle_hotkey`).
 
 ## Privacy
 
