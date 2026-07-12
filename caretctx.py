@@ -293,6 +293,39 @@ def _win32_before_caret(n: int) -> "str | None":
         return None
 
 
+def focus_window(hwnd: int) -> bool:
+    """Bring hwnd to the foreground (best effort); True if it got there.
+
+    Windows blocks SetForegroundWindow from background processes; attaching
+    to the current foreground window's input thread is the sanctioned
+    workaround so a paste can return to the window it was dictated into.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        if not hwnd or not user32.IsWindow(hwnd):
+            return False
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        fg = user32.GetForegroundWindow()
+        fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        my_tid = kernel32.GetCurrentThreadId()
+        attached = fg_tid and fg_tid != my_tid and user32.AttachThreadInput(
+            my_tid, fg_tid, True)
+        try:
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(my_tid, fg_tid, False)
+        for _ in range(10):
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+            time.sleep(0.02)
+        return False
+    except Exception:
+        return False
+
+
 def get_window_title() -> "str | None":
     """Title of the foreground window, or None."""
     try:

@@ -183,7 +183,11 @@ class App:
             self.overlay.hide()
             return
         self.overlay.show_transcribing()
-        self._pipeline_q.put(("dictate", wav))
+        # The paste belongs to the window being dictated into, captured now —
+        # if focus moves (or is stolen) during transcription, it is restored
+        # before pasting.
+        target = (_foreground_hwnd(), caretctx.get_foreground_exe())
+        self._pipeline_q.put(("dictate", (wav, target)))
 
     def _discard_recording(self):
         self.recorder.stop()
@@ -202,7 +206,7 @@ class App:
             kind, payload = self._pipeline_q.get()
             try:
                 if kind == "dictate":
-                    self._transcribe_and_paste(payload)
+                    self._transcribe_and_paste(*payload)
                 else:  # "paste" / "repaste"
                     if kind == "repaste":
                         self._wait_modifiers_lifted()
@@ -217,7 +221,7 @@ class App:
                 keyboard.is_pressed(k) for k in ("ctrl", "alt", "shift")):
             time.sleep(0.02)
 
-    def _transcribe_and_paste(self, wav: bytes):
+    def _transcribe_and_paste(self, wav: bytes, target=None):
         vocabulary = list(self.cfg.get("vocabulary", []))
         vocabulary += [v for v in self.cfg.get("corrections", {}).values()
                        if v not in vocabulary]
@@ -241,10 +245,28 @@ class App:
             self.overlay.show_message("No speech detected", error=True)
             return
 
+        self._return_to_target(target)
         final = self._prepare_text(text)
         paste_text(final, self.cfg.get("restore_clipboard", True))
         self._register_paste(final)
         self.overlay.hide()
+
+    def _return_to_target(self, target):
+        """If focus left the dictation's window, put it back before the
+        caret is read and the paste fires — and log who had taken it."""
+        if not target:
+            return
+        hwnd, exe = target
+        if not hwnd or _foreground_hwnd() == hwnd:
+            return
+        thief = caretctx.get_foreground_exe()
+        title = caretctx.get_window_title()
+        restored = caretctx.focus_window(hwnd)
+        logging.warning(
+            "Focus moved during transcription: %r (%r) took it from %r; "
+            "refocus %s", thief, title, exe,
+            "succeeded" if restored else "FAILED",
+        )
 
     def _prepare_text(self, text: str) -> str:
         """Apply corrections, the optional AI cleanup pass, and
