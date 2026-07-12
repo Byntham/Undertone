@@ -164,21 +164,115 @@ def warm() -> None:
 def text_before_caret(n: int = 120, timeout: float = 0.15) -> "str | None":
     """Up to n characters immediately before the caret in the focused control.
 
-    Returns None if unavailable (no text pattern, timeout, or any error).
-    Callable from any thread, never raises, never blocks beyond ~timeout.
+    Tries UIA TextPattern first, then the Win32 Edit-control protocol
+    (EM_GETSEL/WM_GETTEXT — covers Notepad-class apps whose edit controls
+    predate UIA). Returns None if unavailable (no text pattern, timeout, or
+    any error). Callable from any thread, never raises, never blocks beyond
+    ~timeout.
+    """
+    result = None
+    try:
+        if _ensure_worker():
+            job = _Job(n)
+            _queue.put(job)
+            if job.event.wait(timeout):
+                result = job.result
+            else:
+                # Timed out: tell the worker to skip this job if it hasn't
+                # started. The unique per-call job means a late result can
+                # never surface on a subsequent call.
+                job.cancelled = True
+    except Exception:
+        result = None
+    if result is None:
+        result = _win32_before_caret(n)
+    return result
+
+
+# --- Win32 Edit-control fallback (pure ctypes) -------------------------------
+
+_WM_GETTEXT = 0x000D
+_WM_GETTEXTLENGTH = 0x000E
+_EM_GETSEL = 0x00B0
+_SMTO_ABORTIFHUNG = 0x0002
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+_SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
+_SendMessageTimeoutW.argtypes = [
+    wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),
+]
+
+
+def _send(hwnd, msg, wparam=0, lparam=0, timeout_ms=100):
+    """SendMessageTimeout wrapper; returns the result or None on failure.
+
+    ABORTIFHUNG + timeout so a frozen target app can never stall a paste.
+    """
+    out = ctypes.c_size_t(0)
+    ok = _SendMessageTimeoutW(hwnd, msg, wparam, lparam,
+                              _SMTO_ABORTIFHUNG, timeout_ms,
+                              ctypes.byref(out))
+    return out.value if ok else None
+
+
+def _win32_before_caret(n: int) -> "str | None":
+    """Caret context from a classic Edit/RichEdit control, or None.
+
+    EM_GETSEL packs the selection into LO/HIWORD of the return value, so
+    only controls holding < 64k characters are trusted (plenty for text
+    boxes; huge documents bail out).
     """
     try:
-        if not _ensure_worker():
+        user32 = ctypes.windll.user32
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if not user32.GetGUIThreadInfo(0, ctypes.byref(info)):
             return None
-        job = _Job(n)
-        _queue.put(job)
-        if job.event.wait(timeout):
-            return job.result
-        # Timed out: tell the worker to skip this job if it hasn't started,
-        # and return None. The unique per-call job means a late result can
-        # never surface on a subsequent call.
-        job.cancelled = True
+        hwnd = info.hwndFocus
+        if not hwnd:
+            return None
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if "edit" not in cls.value.lower():
+            return None
+
+        length = _send(hwnd, _WM_GETTEXTLENGTH)
+        if length is None or length >= 0xFFFF:
+            return None
+        sel = _send(hwnd, _EM_GETSEL)
+        if sel is None:
+            return None
+        caret = min(sel & 0xFFFF, length)
+
+        buf = ctypes.create_unicode_buffer(length + 1)
+        if _send(hwnd, _WM_GETTEXT, length + 1,
+                 ctypes.addressof(buf)) is None:
+            return None
+        return buf.value[max(0, caret - n):caret]
+    except Exception:
         return None
+
+
+def get_window_title() -> "str | None":
+    """Title of the foreground window, or None."""
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+        return buf.value or None
     except Exception:
         return None
 

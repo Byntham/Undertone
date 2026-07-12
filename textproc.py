@@ -207,6 +207,26 @@ def _count_sentences(text: str) -> int:
     return n
 
 
+def seam(text: str, ctx: "str | None") -> str:
+    """Boundary-only pass for AI-cleaned text: leading space + sentence cap.
+
+    The cleanup model handles the transcript body (including mid-sentence
+    lowercasing, which needs proper-noun judgment); this fixes only the
+    mechanical seam against ctx, which rules get right more reliably than
+    the model does.
+    """
+    if not text:
+        return text
+    text = text.lstrip()
+    if not text or ctx is None:
+        return text
+    mid_token = _in_url_like(ctx)
+    if not mid_token and _is_sentence_start(ctx) and text[:1].islower():
+        text = text[0].upper() + text[1:]
+    space = _needs_leading_space(ctx, text, mid_token)
+    return (" " if space else "") + text
+
+
 def tail_context(last_paste: str, n: int = 120) -> str:
     """Last n characters of a previous paste, usable as pseudo-ctx."""
     return last_paste[-n:] if last_paste else ""

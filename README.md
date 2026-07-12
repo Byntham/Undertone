@@ -36,14 +36,24 @@ paste your key from [console.x.ai](https://console.x.ai), click **Save key**
   dictation — the corrected text is pasted, and repeated fixes are learned
   as automatic corrections.
 
-## Smart formatting
+## Smart formatting and AI cleanup
 
 Undertone adapts each dictation to where your cursor is: it inserts a space
 when you continue after existing text, lowercases a sentence-case opener
 when you're mid-sentence, and capitalizes at a sentence start. Context comes
-from the focused control where Windows exposes it, falling back to what
-Undertone itself last pasted. In chat apps (Slack, Discord, WhatsApp…) a
-lone trailing period on a short message is dropped. Toggle it all in
+from the focused control where Windows exposes it (UI Automation, or the
+classic Win32 edit-control protocol), falling back to what Undertone itself
+last pasted. In chat apps (Slack, Discord, WhatsApp…) a lone trailing
+period on a short message is dropped.
+
+With **AI cleanup** on, a fast grok model additionally removes filler words
+and false starts ("we should… actually let's just…" keeps only the
+correction), fixes mishearings using your dictionary, and fits the phrasing
+to the surrounding text — adding roughly half a second before the paste.
+The mechanical seam (leading space, sentence-start capital) always stays
+rule-based, and any model failure or timeout falls back silently to the
+rule-based result. Note: with AI cleanup on, the ~300 characters before
+your cursor are sent to xAI along with the audio. Both toggles live in
 **Settings → General**.
 
 ## Settings (tray icon → Settings…)

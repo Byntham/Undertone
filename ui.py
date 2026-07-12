@@ -232,7 +232,7 @@ class SettingsWindow:
         win.configure(bg=BASE)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", self._close)
-        win.geometry("640x500")
+        win.geometry("640x560")
 
         # Sidebar ------------------------------------------------------------
         side = tk.Frame(win, bg=MANTLE, width=180)
@@ -429,6 +429,13 @@ class SettingsWindow:
         self._make_toggle(
             pane, "Smart formatting", "smart_formatting",
             "Adds spaces and fixes capitalization to match where you're typing.")
+
+        tk.Frame(pane, bg=BASE, height=14).pack()
+        self._make_toggle(
+            pane, "AI cleanup", "ai_cleanup",
+            "A fast grok model removes fillers and false starts and fits the "
+            "wording in place. Sends the text near your cursor to xAI along "
+            "with the audio.")
 
         tk.Frame(pane, bg=BASE, height=14).pack()
         self._make_toggle(
@@ -938,7 +945,7 @@ class SettingsWindow:
 
     def _center(self):
         self._win.update_idletasks()
-        w, h = 640, 500
+        w, h = 640, 560
         x = (self._win.winfo_screenwidth() - w) // 2
         y = (self._win.winfo_screenheight() - h) // 2 - 30
         self._win.geometry(f"{w}x{h}+{x}+{y}")

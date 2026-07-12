@@ -22,6 +22,8 @@ DEFAULT_CONFIG = {
     "sample_rate": 16000,
     "provider": "xai",
     "smart_formatting": True,
+    "ai_cleanup": True,
+    "cleanup_model": "grok-4.20-0309-non-reasoning",
     "sound_cues": True,
     "vocabulary": [],       # terms sent to the STT API as recognition hints
     "corrections": {},      # {"heard": "replacement"} applied after transcription

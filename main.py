@@ -17,6 +17,7 @@ import keyboard
 
 import autostart
 import caretctx
+import cleanup as cleanup_mod
 import config as config_mod
 import sounds
 import textproc
@@ -261,24 +262,47 @@ class App:
         self.overlay.hide()
 
     def _prepare_text(self, text: str) -> str:
-        """Apply corrections and context-aware spacing/capitalization."""
+        """Apply corrections, the optional AI cleanup pass, and
+        context-aware spacing/capitalization."""
         smart = self.cfg.get("smart_formatting", True)
         corrections = self.cfg.get("corrections", {})
-        ctx = None
-        if smart:
-            ctx = caretctx.text_before_caret()
-            if ctx is None:
-                # Fall back to what we last pasted, but only while the same
-                # window is focused and nothing was typed since.
-                lp = self._last_paste
-                if (lp and not self._typed_since_paste
-                        and lp[0] == _foreground_hwnd()
-                        and time.monotonic() - lp[2] < 300):
-                    ctx = textproc.tail_context(lp[1])
-        final = textproc.format_transcript(text, ctx, corrections, smart=smart)
-        if smart and caretctx.get_foreground_exe() in textproc.CHAT_APPS:
+        ctx = self._acquire_context() if smart else None
+        exe = caretctx.get_foreground_exe()
+
+        final = None
+        if self.cfg.get("ai_cleanup", True):
+            app = exe or ""
+            title = caretctx.get_window_title()
+            if title:
+                app = f"{app} ({title})" if app else title
+            cleaned = cleanup_mod.cleanup(
+                textproc.apply_corrections(text, corrections),
+                ctx, app, corrections,
+                self.cfg.get("api_key", ""),
+                self.cfg.get("cleanup_model", ""),
+            )
+            if cleaned is not None:
+                # The model handled the transcript body; rules handle the seam.
+                final = textproc.seam(cleaned, ctx) if smart else cleaned
+        if final is None:
+            final = textproc.format_transcript(text, ctx, corrections,
+                                               smart=smart)
+        if smart and exe in textproc.CHAT_APPS:
             final = textproc.strip_chat_period(final)
         return final
+
+    def _acquire_context(self) -> "str | None":
+        """Text before the caret: UIA/Win32 read, else insertion memory."""
+        ctx = caretctx.text_before_caret(300)
+        if ctx is None:
+            # Fall back to what we last pasted, but only while the same
+            # window is focused and nothing was typed since.
+            lp = self._last_paste
+            if (lp and not self._typed_since_paste
+                    and lp[0] == _foreground_hwnd()
+                    and time.monotonic() - lp[2] < 300):
+                ctx = textproc.tail_context(lp[1], 300)
+        return ctx
 
     def _register_paste(self, text: str):
         self._history.append((time.time(), text))
