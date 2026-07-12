@@ -45,10 +45,14 @@ class PushToTalk:
         hotkey: str,
         on_press: Callable[[], None],
         on_release: Callable[[], None],
+        on_other_key: Callable[[int], None] = None,
     ):
         self.hotkey = hotkey
         self.on_press = on_press
         self.on_release = on_release
+        # Called with the scan code of any key-down that is not part of the
+        # combo — lets the app observe typing without a second global hook.
+        self.on_other_key = on_other_key
         self._parts: List[frozenset] = []
         self._down = set()
         self._active = False
@@ -76,6 +80,8 @@ class PushToTalk:
             return
         if event.event_type == "down":
             self._down.add(event.scan_code)
+            if self.on_other_key is not None and not self.matches(event.scan_code):
+                self._fire(lambda: self.on_other_key(event.scan_code))
         elif event.event_type == "up":
             self._down.discard(event.scan_code)
         else:

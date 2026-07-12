@@ -42,7 +42,8 @@ _i = [0]
 failures = []
 
 
-def fake_transcribe(wav, api_key, language="en", vocabulary=None):
+def fake_transcribe(wav, api_key, language="en", vocabulary=None,
+                    provider="xai"):
     print(f"  [e2e] transcribe called: {len(wav)} bytes")
     assert len(wav) > main_mod.MIN_AUDIO_BYTES, "recorder produced audio"
     text = CANNED[_i[0] % len(CANNED)]

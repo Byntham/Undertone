@@ -70,7 +70,7 @@ PROVIDERS = {
 
 
 def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
-               vocabulary: list = None) -> str:
+               vocabulary: list = None, provider: str = "xai") -> str:
     """Transcribe WAV audio bytes, returning the recognized text.
 
     vocabulary is an optional list of terms the model should recognize;
@@ -82,4 +82,5 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
         raise TranscriptionError(
             "No API key configured. Open Settings and enter your xAI API key."
         )
-    return transcribe_xai(wav_bytes, api_key, language, vocabulary)
+    fn = PROVIDERS.get(provider, transcribe_xai)
+    return fn(wav_bytes, api_key, language, vocabulary)

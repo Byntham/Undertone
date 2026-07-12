@@ -27,19 +27,8 @@ from PIL import Image, ImageDraw, ImageTk
 import autostart
 from config import APP_VERSION
 
-# Palette (Catppuccin Mocha).
-BASE = "#1e1e2e"
-MANTLE = "#181825"
-SURFACE0 = "#313244"
-SURFACE1 = "#45475a"
-TEXT = "#cdd6f4"
-SUBTEXT = "#a6adc8"
-MUTED = "#7f849c"
-ACCENT = "#89b4fa"
-ACCENT_HOVER = "#9dc0fc"
-ACCENT_DOWN = "#74a0e8"
-RED = "#f38ba8"
-GREEN = "#a6e3a1"
+from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, BASE, GREEN, INK, MANTLE,
+                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT)
 
 FONT = ("Segoe UI", 10)
 HEADER_FONT = ("Segoe UI Semibold", 14)
@@ -120,7 +109,7 @@ def _toggle_images(size=(40, 22)):
         d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=track)
         knob_r = h // 2 - 8
         cx = (w - h // 2) if on else (h // 2)
-        knob = _rgb("#11111b") if on else _rgb(TEXT)
+        knob = _rgb(INK) if on else _rgb(TEXT)
         d.ellipse((cx - knob_r, h // 2 - knob_r, cx + knob_r, h // 2 + knob_r),
                   fill=knob)
         out.append(ImageTk.PhotoImage(img.resize(size, Image.LANCZOS)))
@@ -178,9 +167,11 @@ class SettingsWindow:
         on_capture_end: Optional[Callable[[], None]] = None,
         history_getter: Optional[Callable[[], List[Tuple[float, str]]]] = None,
         on_repaste: Optional[Callable[[str], None]] = None,
+        config_getter: Optional[Callable[[], dict]] = None,
     ):
         self._root = root
         self._config = config
+        self._config_getter = config_getter
         self._on_save = on_save
         self._on_capture_start = on_capture_start
         self._on_capture_end = on_capture_end
@@ -218,6 +209,10 @@ class SettingsWindow:
     # --- Window construction -------------------------------------------------
 
     def _open(self):
+        # Re-read the authoritative config on every open: the app may have
+        # changed it since (this window's copy is otherwise private).
+        if self._config_getter is not None:
+            self._config = dict(self._config_getter())
         if self._win is not None and self._win.winfo_exists():
             self._raise()
             return
@@ -232,7 +227,7 @@ class SettingsWindow:
         win.configure(bg=BASE)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", self._close)
-        win.geometry("640x560")
+        win.geometry("640x584")
 
         # Sidebar ------------------------------------------------------------
         side = tk.Frame(win, bg=MANTLE, width=180)
@@ -757,7 +752,7 @@ class SettingsWindow:
 
     def _make_button(self, parent, text, command, kind="surface", small=False):
         if kind == "accent":
-            base_bg, hover_bg, fg = ACCENT, ACCENT_HOVER, "#11111b"
+            base_bg, hover_bg, fg = ACCENT, ACCENT_HOVER, INK
         else:
             base_bg, hover_bg, fg = SURFACE0, SURFACE1, TEXT
         btn = tk.Button(
@@ -798,7 +793,7 @@ class SettingsWindow:
     def _open_lang_menu(self):
         menu = tk.Menu(
             self._win, tearoff=0, bg=SURFACE0, fg=TEXT,
-            activebackground=ACCENT, activeforeground="#11111b",
+            activebackground=ACCENT, activeforeground=INK,
             relief="flat", bd=0, font=FONT,
         )
         for name, code in LANGUAGES:
@@ -944,7 +939,7 @@ class SettingsWindow:
 
     def _center(self):
         self._win.update_idletasks()
-        w, h = 640, 560
+        w, h = 640, 584
         x = (self._win.winfo_screenwidth() - w) // 2
         y = (self._win.winfo_screenheight() - h) // 2 - 30
         self._win.geometry(f"{w}x{h}+{x}+{y}")

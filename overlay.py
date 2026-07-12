@@ -25,15 +25,7 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Palette (Catppuccin Mocha).
-BASE = "#1e1e2e"
-SURFACE1 = "#45475a"
-TEXT = "#cdd6f4"
-SUBTEXT = "#a6adc8"
-ACCENT = "#89b4fa"
-RED = "#f38ba8"
-AMBER = "#f9e2af"
-GREEN = "#a6e3a1"
+from theme import ACCENT, BASE, GREEN, RED, SURFACE1, TEXT
 
 PILL_H = 44
 PAD_X = 16

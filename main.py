@@ -88,10 +88,17 @@ class App:
         self._commands: queue.Queue = queue.Queue()
         self.root.after(50, self._drain_commands)
 
+        # Scan codes of Undertone's own extra hotkeys — they must not count
+        # as "typing" for insertion-memory invalidation. Filled at
+        # registration time.
+        self._extra_hotkey_scancodes: set = set()
+
         self.recorder = Recorder(sample_rate=self.cfg.get("sample_rate", 16000))
         self.overlay = Overlay(self.root,
                                level_getter=lambda: self.recorder.level)
-        self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press, self._on_release)
+        self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
+                              self._on_release,
+                              on_other_key=self._on_other_key)
         self.settings = SettingsWindow(
             self.root,
             self.cfg,
@@ -100,6 +107,7 @@ class App:
             on_capture_end=self._resume_hotkey,
             history_getter=self._history_snapshot,
             on_repaste=self._paste_from_history,
+            config_getter=lambda: self.cfg,
         )
         self.tray = create_tray(
             on_settings=lambda: self._post(self.settings.open),
@@ -129,11 +137,6 @@ class App:
         )
 
         caretctx.warm()
-        # Any typing other than Undertone's own hotkeys invalidates insertion
-        # memory (the caret has likely moved or text was edited). Extra
-        # hotkeys' scan codes are collected at registration.
-        self._extra_hotkey_scancodes: set = set()
-        keyboard.hook(self._on_key_activity)
 
     # ---- thread marshaling -------------------------------------------------
 
@@ -185,10 +188,10 @@ class App:
         self.recorder.stop()
         self.overlay.hide()
 
-    def _on_key_activity(self, event):
-        if (event.event_type == "down" and event.scan_code
-                and not self.ptt.matches(event.scan_code)
-                and event.scan_code not in self._extra_hotkey_scancodes):
+    def _on_other_key(self, scan_code: int):
+        """Non-hotkey keydown (from the PushToTalk hook): the caret has
+        likely moved or text was edited, so insertion memory is stale."""
+        if scan_code not in self._extra_hotkey_scancodes:
             self._typed_since_paste = True
 
     # ---- transcription pipeline (single worker thread) -----------------------
@@ -221,6 +224,7 @@ class App:
             text = transcribe(
                 wav, self.cfg.get("api_key", ""),
                 self.cfg.get("language", "en"), vocabulary,
+                self.cfg.get("provider", "xai"),
             )
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
