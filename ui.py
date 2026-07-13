@@ -317,7 +317,8 @@ def apply_dark_titlebar(win):
         win.deiconify()
         win.update_idletasks()
         win.update()
-        get_ancestor = ctypes.windll.user32.GetAncestor
+        # Private WinDLL — never set argtypes on ctypes.windll's shared cache.
+        get_ancestor = ctypes.WinDLL("user32").GetAncestor
         get_ancestor.argtypes = (wintypes.HWND, wintypes.UINT)
         get_ancestor.restype = wintypes.HWND
         hwnd = get_ancestor(wintypes.HWND(win.winfo_id()), 2)  # GA_ROOT
@@ -698,7 +699,10 @@ class SettingsWindow:
         try:
             import ctypes
             from ctypes import wintypes
-            user32 = ctypes.windll.user32
+            # Private WinDLL: setting argtypes on ctypes.windll's cached
+            # functions poisons every other module's calls process-wide
+            # (it broke the overlay's CreateDIBSection once).
+            user32 = ctypes.WinDLL("user32")
             get_ancestor = user32.GetAncestor
             get_ancestor.argtypes = (wintypes.HWND, wintypes.UINT)
             get_ancestor.restype = wintypes.HWND
@@ -831,8 +835,11 @@ class SettingsWindow:
                 _fields_ = [("bmiHeader", BITMAPINFOHEADER),
                             ("bmiColors", wintypes.DWORD * 3)]
 
-            user32 = ctypes.windll.user32
-            gdi32 = ctypes.windll.gdi32
+            # Private WinDLLs — never set argtypes on ctypes.windll's shared
+            # cache (overlay.py calls the same GDI functions with its own
+            # struct types and would fail the poisoned type checks).
+            user32 = ctypes.WinDLL("user32")
+            gdi32 = ctypes.WinDLL("gdi32")
             hwnd = wintypes.HWND(self._client_hwnd)
             user32.GetClientRect.argtypes = (wintypes.HWND,
                                              ctypes.POINTER(wintypes.RECT))
