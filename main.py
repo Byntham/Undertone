@@ -15,6 +15,9 @@ from collections import deque
 
 import keyboard
 
+import theme
+theme.init_dpi()  # before overlay/ui compute pixel metrics or Tk starts
+
 import autostart
 import caretctx
 import cleanup as cleanup_mod
@@ -26,7 +29,7 @@ from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
 from transcriber import TranscriptionError, transcribe
-from ui import SettingsWindow, create_tray
+from ui import SettingsWindow, create_tray, pretty_combo
 
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono
 # int16) are treated as an accidental tap and skipped.
@@ -372,7 +375,8 @@ class App:
         if new_cfg.get("hotkey") != old_cfg.get("hotkey"):
             try:
                 self.ptt.rebind(new_cfg["hotkey"])
-                self.overlay.show_message(f"Hotkey set to: {new_cfg['hotkey']}")
+                self.overlay.show_message(
+                    f"Hotkey set to {pretty_combo(new_cfg['hotkey'])}")
             except ValueError as e:
                 self.overlay.show_message(str(e), duration_ms=5000, error=True)
         if any(new_cfg.get(k) != old_cfg.get(k)
@@ -381,7 +385,8 @@ class App:
             self._register_extra_hotkeys()
             combo = new_cfg.get("repaste_hotkey", "")
             if combo != old_cfg.get("repaste_hotkey"):
-                self.overlay.show_message(f"Re-paste shortcut: {combo}")
+                self.overlay.show_message(
+                    f"Re-paste shortcut set to {pretty_combo(combo)}")
 
     def _quit(self):
         try:
@@ -445,7 +450,8 @@ class App:
             )
         else:
             self.overlay.show_message(
-                f"Ready — hold '{self.cfg['hotkey']}' to dictate", duration_ms=2500
+                f"Ready — hold {pretty_combo(self.cfg['hotkey'])} to dictate",
+                duration_ms=2500,
             )
         self.root.mainloop()
 

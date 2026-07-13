@@ -25,17 +25,19 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
-from theme import ACCENT, BASE, GREEN, RED, SURFACE1, TEXT
+from theme import ACCENT, BASE, GREEN, RED, SURFACE1, TEXT, sc
 
-PILL_H = 44
-PAD_X = 16
-GAP = 10
-ICON = 20               # icon box size (px)
-BARS_W = 32             # width of the level-bars block
-BAR_W = 4
-BAR_GAP = 3
-BAR_MIN = 5
-BAR_MAX = 22
+# Design measures in 96-dpi pixels, scaled once at import (main.py calls
+# theme.init_dpi() before importing this module).
+PILL_H = sc(44)
+PAD_X = sc(16)
+GAP = sc(10)
+ICON = sc(20)           # icon box size (px)
+BARS_W = sc(32)         # width of the level-bars block
+BAR_W = sc(4)
+BAR_GAP = sc(3)
+BAR_MIN = sc(5)
+BAR_MAX = sc(22)
 
 S = 4                   # supersampling factor for Pillow rendering
 POLL_MS = 50
@@ -46,7 +48,7 @@ FADE_STEPS = 4
 FADE_MS = 25
 TARGET_ALPHA = 0.96
 
-FONT_SIZE = 15          # px; ~11pt Segoe UI at 96 dpi
+FONT_SIZE = sc(15)      # px; ~11pt Segoe UI at 96 dpi
 
 # --- Win32 layered-window plumbing -------------------------------------------
 
@@ -404,7 +406,7 @@ class Overlay:
         sw = self._win.winfo_screenwidth()
         sh = self._win.winfo_screenheight()
         self._x = (sw - w) // 2
-        self._y = sh - PILL_H - 80
+        self._y = sh - PILL_H - sc(80)
         self._win.geometry(f"{int(w)}x{PILL_H}+{self._x}+{self._y}")
 
         was_hidden = self._win.state() == "withdrawn"

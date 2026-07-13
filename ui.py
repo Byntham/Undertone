@@ -1,10 +1,12 @@
 """Tray icon and settings window for Undertone.
 
-The settings window is a dark two-pane panel: a sidebar with General /
-Providers / About sections and a content pane. All changes apply immediately
-(no Save/Cancel); a transient "Saved" hint confirms each change. Styled by
-hand with plain tk widgets plus Pillow-rendered imagery (tray icon, toggle
-switches) supersampled 4x for crisp edges.
+The settings window is a dark two-pane panel: an icon sidebar with General /
+Dictionary / History / Providers / About sections and a content pane of
+setting cards. All changes apply immediately (no Save/Cancel); a transient
+"Saved" hint confirms each change. Styled by hand with plain tk widgets plus
+Pillow-rendered imagery (tray icon, toggles, pill buttons, nav glyphs)
+supersampled 4x for crisp edges. All pixel measures go through theme.sc()
+so the window renders correctly on high-DPI displays.
 
 Thread-safety: open() may be called from the pystray thread; work is
 marshalled onto the Tk main loop via a queue drained by root.after().
@@ -15,7 +17,7 @@ import queue
 import threading
 import time
 import tkinter as tk
-import tkinter.font  # noqa: F401  (ensures font submodule is loaded)
+import tkinter.font as tkfont
 import webbrowser
 from typing import Callable, List, Optional, Tuple
 
@@ -27,16 +29,25 @@ from PIL import Image, ImageDraw, ImageTk
 import autostart
 from config import APP_VERSION
 
-from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, BASE, GREEN, INK, MANTLE,
-                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT)
+from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, BANNER_BG,
+                   BANNER_BORDER, BASE, CARD, CARD_BORDER, GREEN, INK, MANTLE,
+                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT, sc)
 
 FONT = ("Segoe UI", 10)
-HEADER_FONT = ("Segoe UI Semibold", 14)
+HEADER_FONT = ("Segoe UI Semibold", 15)
+CARD_TITLE_FONT = ("Segoe UI Semibold", 10)
 LABEL_FONT = ("Segoe UI", 10)
 HINT_FONT = ("Segoe UI", 9)
+GROUP_FONT = ("Segoe UI Semibold", 9)
 BTN_FONT = ("Segoe UI Semibold", 10)
+SMALL_BTN_FONT = ("Segoe UI Semibold", 9)
 NAV_FONT = ("Segoe UI", 10)
-TITLE_FONT = ("Segoe UI Semibold", 11)
+NAV_ACTIVE_FONT = ("Segoe UI Semibold", 10)
+TITLE_FONT = ("Segoe UI Semibold", 12)
+KEY_FONT = ("Segoe UI Semibold", 10)
+
+WIN_W, WIN_H = 780, 724
+SIDEBAR_W = 200
 
 LANGUAGES = [
     ("English", "en"), ("Arabic", "ar"), ("Chinese", "zh"), ("Danish", "da"),
@@ -60,15 +71,18 @@ PROVIDER_LINKS = [
     ("openrouter.ai", "https://openrouter.ai"),
 ]
 
+SECTIONS = ["General", "Dictionary", "History", "Providers", "About"]
+
 
 def _rgb(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def _pretty_combo(combo: str) -> str:
-    """'ctrl+alt+v' -> 'Ctrl+Alt+V' for display in hints."""
-    return "+".join(p.strip().title() for p in combo.split("+") if p.strip())
+def pretty_combo(combo: str) -> str:
+    """'ctrl+alt+v' -> 'Ctrl + Alt + V', 'right ctrl' -> 'Right Ctrl'."""
+    parts = [p.strip() for p in combo.split("+") if p.strip()]
+    return " + ".join(p.title() for p in parts)
 
 
 # --- Pillow-rendered imagery -------------------------------------------------
@@ -115,12 +129,13 @@ def load_app_image(size: int = 64) -> Image.Image:
         return make_tray_image(size)
 
 
-def _toggle_images(size=(40, 22)):
-    """(off, on) PhotoImages for a switch, rendered on the BASE background."""
+def _toggle_images(bg=BASE):
+    """(off, on) PhotoImages for a switch, rendered on the given background."""
+    size = (sc(40), sc(22))
     out = []
     w, h = size[0] * 4, size[1] * 4
     for on in (False, True):
-        img = Image.new("RGB", (w, h), _rgb(BASE))
+        img = Image.new("RGB", (w, h), _rgb(bg))
         d = ImageDraw.Draw(img)
         track = _rgb(ACCENT) if on else _rgb(SURFACE1)
         d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=track)
@@ -131,6 +146,56 @@ def _toggle_images(size=(40, 22)):
                   fill=knob)
         out.append(ImageTk.PhotoImage(img.resize(size, Image.LANCZOS)))
     return out
+
+
+def _round_img(w, h, radius, fill, outline=None, bg=BASE):
+    """A rounded rectangle rendered on a solid background, 4x supersampled."""
+    ss = 4
+    img = Image.new("RGB", (w * ss, h * ss), _rgb(bg))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, w * ss - 1, h * ss - 1), radius=radius * ss,
+                        fill=_rgb(fill),
+                        outline=_rgb(outline) if outline else None, width=ss)
+    return img.resize((w, h), Image.LANCZOS)
+
+
+def _nav_glyph(name: str, color: str, size: int) -> Image.Image:
+    """A simple 4x-supersampled line glyph for the sidebar."""
+    s = size * 4
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = _rgb(color) + (255,)
+    lw = max(2, int(0.085 * s))
+
+    def x(f):
+        return f * s
+
+    if name == "General":        # slider rails with knobs
+        for fy, fx in ((0.22, 0.64), (0.50, 0.34), (0.78, 0.70)):
+            d.line((x(0.10), x(fy), x(0.90), x(fy)), fill=c, width=lw)
+            r = 0.105 * s
+            d.ellipse((x(fx) - r, x(fy) - r, x(fx) + r, x(fy) + r), fill=c)
+    elif name == "Dictionary":   # book with a spine
+        d.rounded_rectangle((x(0.16), x(0.10), x(0.84), x(0.90)),
+                            radius=int(0.10 * s), outline=c, width=lw)
+        d.line((x(0.34), x(0.10), x(0.34), x(0.90)), fill=c, width=lw)
+    elif name == "History":      # clock
+        m = 0.10 * s
+        d.ellipse((m, m, s - m, s - m), outline=c, width=lw)
+        d.line((x(0.5), x(0.52), x(0.5), x(0.26)), fill=c, width=lw)
+        d.line((x(0.5), x(0.52), x(0.68), x(0.60)), fill=c, width=lw)
+    elif name == "Providers":    # cloud silhouette
+        d.ellipse((x(0.08), x(0.40), x(0.56), x(0.82)), fill=c)
+        d.ellipse((x(0.30), x(0.20), x(0.80), x(0.70)), fill=c)
+        d.ellipse((x(0.54), x(0.42), x(0.94), x(0.80)), fill=c)
+        d.rectangle((x(0.26), x(0.58), x(0.76), x(0.82)), fill=c)
+    else:                        # info
+        m = 0.10 * s
+        d.ellipse((m, m, s - m, s - m), outline=c, width=lw)
+        r = 0.065 * s
+        d.ellipse((x(0.5) - r, x(0.30) - r, x(0.5) + r, x(0.30) + r), fill=c)
+        d.line((x(0.5), x(0.44), x(0.5), x(0.72)), fill=c, width=lw)
+    return img.resize((size, size), Image.LANCZOS)
 
 
 def apply_dark_titlebar(win):
@@ -168,6 +233,90 @@ def create_tray(on_settings: Callable[[], None], on_quit: Callable[[], None]) ->
         title="Undertone",
         menu=menu,
     )
+
+
+# --- Pill buttons --------------------------------------------------------------
+
+class RoundButton(tk.Label):
+    """A pill-shaped button: Pillow-rendered background + Tk-rendered text.
+
+    Rendered as a Label with compound="center" so the text stays crisp while
+    the rounded background gets 4x-supersampled anti-aliasing. Supports
+    normal / hover / pressed / disabled states and set_text().
+    """
+
+    def __init__(self, parent, text, command=None, kind="surface",
+                 small=False, bg=BASE, width=None):
+        self._kind = kind
+        self._command = command
+        self._font = SMALL_BTN_FONT if small else BTN_FONT
+        self._h = sc(26) if small else sc(32)
+        self._pad = sc(13) if small else sc(17)
+        self._bg = bg
+        self._fixed_w = width
+        self._enabled = True
+        self._state = "normal"
+        super().__init__(parent, text=text, compound="center",
+                         font=self._font, bd=0, bg=bg, cursor="hand2")
+        self._render(text)
+        self._apply_state("normal")
+        self.bind("<Enter>", lambda _e: self._hover(True))
+        self.bind("<Leave>", lambda _e: self._hover(False))
+        self.bind("<Button-1>", self._press)
+        self.bind("<ButtonRelease-1>", self._release)
+
+    def _render(self, text):
+        f = tkfont.Font(font=self._font)
+        w = self._fixed_w or max(f.measure(text) + 2 * self._pad, self._h * 2)
+        if self._kind == "accent":
+            spec = {"normal": (ACCENT, None, INK),
+                    "hover": (ACCENT_HOVER, None, INK),
+                    "down": (ACCENT_DOWN, None, INK),
+                    "disabled": (SURFACE0, None, MUTED)}
+        else:
+            spec = {"normal": (SURFACE0, SURFACE1, TEXT),
+                    "hover": (SURFACE1, SURFACE1, TEXT),
+                    "down": (SURFACE1, SURFACE1, TEXT),
+                    "disabled": (SURFACE0, SURFACE0, MUTED)}
+        self._imgs, self._fgs = {}, {}
+        for state, (fill, outline, fg) in spec.items():
+            self._imgs[state] = ImageTk.PhotoImage(
+                _round_img(w, self._h, self._h // 2, fill, outline, bg=self._bg))
+            self._fgs[state] = fg
+        self.config(text=text)
+
+    def _apply_state(self, state):
+        self._state = state
+        self.config(image=self._imgs[state], fg=self._fgs[state],
+                    cursor="hand2" if self._enabled else "")
+
+    def _hover(self, inside):
+        if self._enabled:
+            self._apply_state("hover" if inside else "normal")
+
+    def _press(self, _e):
+        if self._enabled:
+            self._apply_state("down")
+
+    def _release(self, e):
+        if not self._enabled:
+            return
+        inside = 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height()
+        self._apply_state("hover" if inside else "normal")
+        if inside and self._command is not None:
+            self._command()
+
+    def set_text(self, text):
+        self._render(text)
+        self._apply_state(self._state if self._enabled else "disabled")
+
+    def enable(self):
+        self._enabled = True
+        self._apply_state("normal")
+
+    def disable(self):
+        self._enabled = False
+        self._apply_state("disabled")
 
 
 # --- Settings window ------------------------------------------------------------
@@ -244,29 +393,30 @@ class SettingsWindow:
         win.configure(bg=BASE)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", self._close)
-        win.geometry("640x584")
+        win.geometry(f"{sc(WIN_W)}x{sc(WIN_H)}")
 
         # Sidebar ------------------------------------------------------------
-        side = tk.Frame(win, bg=MANTLE, width=180)
+        side = tk.Frame(win, bg=MANTLE, width=sc(SIDEBAR_W))
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
 
         brand = tk.Frame(side, bg=MANTLE)
-        brand.pack(fill="x", padx=16, pady=(18, 14))
-        self._brand_icon = ImageTk.PhotoImage(load_app_image(28))
+        brand.pack(fill="x", padx=sc(18), pady=(sc(20), sc(16)))
+        self._brand_icon = ImageTk.PhotoImage(load_app_image(sc(30)))
         tk.Label(brand, image=self._brand_icon, bg=MANTLE).pack(side="left")
-        name = tk.Frame(brand, bg=MANTLE)
-        name.pack(side="left", padx=(8, 0))
-        tk.Label(name, text="Undertone", bg=MANTLE, fg=TEXT,
-                 font=TITLE_FONT, anchor="w").pack(fill="x")
-        tk.Label(name, text=f"v{APP_VERSION}", bg=MANTLE, fg=MUTED,
-                 font=("Segoe UI", 8), anchor="w").pack(fill="x")
+        tk.Label(brand, text="Undertone", bg=MANTLE, fg=TEXT,
+                 font=TITLE_FONT, anchor="w").pack(side="left", padx=(sc(9), 0))
+
+        tk.Label(side, text=f"Version {APP_VERSION}", bg=MANTLE, fg=MUTED,
+                 font=("Segoe UI", 8), anchor="w",
+                 padx=sc(18)).pack(side="bottom", fill="x", pady=(0, sc(14)))
 
         self._nav_items = {}
+        self._nav_glyphs = {}    # (section, state) -> PhotoImage
         self._content = tk.Frame(win, bg=BASE)
         self._content.pack(side="left", fill="both", expand=True)
 
-        for section in ("General", "Dictionary", "History", "Providers", "About"):
+        for section in SECTIONS:
             self._nav_items[section] = self._make_nav_item(side, section)
 
         self._select_section("General")
@@ -299,28 +449,39 @@ class SettingsWindow:
         except Exception:
             pass
 
+    def _glyph(self, section, color):
+        key = (section, color)
+        if key not in self._nav_glyphs:
+            self._nav_glyphs[key] = ImageTk.PhotoImage(
+                _nav_glyph(section, color, sc(17)))
+        return self._nav_glyphs[key]
+
     def _make_nav_item(self, parent, section):
         row = tk.Frame(parent, bg=MANTLE, cursor="hand2")
         row.pack(fill="x", pady=1)
-        bar = tk.Frame(row, bg=MANTLE, width=3)
+        bar = tk.Frame(row, bg=MANTLE, width=sc(3))
         bar.pack(side="left", fill="y")
+        icon = tk.Label(row, image=self._glyph(section, SUBTEXT), bg=MANTLE,
+                        padx=0)
+        icon.pack(side="left", padx=(sc(15), 0), pady=sc(8))
         lbl = tk.Label(row, text=section, bg=MANTLE, fg=SUBTEXT,
-                       font=NAV_FONT, anchor="w", padx=14, pady=7)
+                       font=NAV_FONT, anchor="w", padx=sc(10), pady=sc(8))
         lbl.pack(side="left", fill="x", expand=True)
 
         def enter(_):
             if getattr(self, "_active_section", None) != section:
-                for w in (row, lbl):
+                for w in (row, lbl, icon):
                     w.configure(bg="#1f1f30")
+
         def leave(_):
             if getattr(self, "_active_section", None) != section:
-                for w in (row, lbl):
+                for w in (row, lbl, icon):
                     w.configure(bg=MANTLE)
-        for w in (row, lbl, bar):
+        for w in (row, lbl, bar, icon):
             w.bind("<Enter>", enter)
             w.bind("<Leave>", leave)
             w.bind("<Button-1>", lambda _e, s=section: self._select_section(s))
-        return {"row": row, "bar": bar, "label": lbl}
+        return {"row": row, "bar": bar, "label": lbl, "icon": icon}
 
     def _select_section(self, section):
         self._active_section = section
@@ -328,12 +489,15 @@ class SettingsWindow:
             active = name == section
             bg = SURFACE0 if active else MANTLE
             item["row"].configure(bg=bg)
-            item["label"].configure(bg=bg, fg=TEXT if active else SUBTEXT)
+            item["label"].configure(bg=bg, fg=TEXT if active else SUBTEXT,
+                                    font=NAV_ACTIVE_FONT if active else NAV_FONT)
+            item["icon"].configure(
+                bg=bg, image=self._glyph(name, ACCENT if active else SUBTEXT))
             item["bar"].configure(bg=ACCENT if active else bg)
         for child in self._content.winfo_children():
             child.destroy()
         pane = tk.Frame(self._content, bg=BASE)
-        pane.pack(fill="both", expand=True, padx=28, pady=(22, 16))
+        pane.pack(fill="both", expand=True, padx=sc(28), pady=(sc(20), sc(14)))
         if section == "General":
             self._build_general(pane)
         elif section == "Dictionary":
@@ -347,263 +511,86 @@ class SettingsWindow:
         # Saved hint anchored bottom-right of the content pane.
         self._saved_lbl = tk.Label(self._content, text="", bg=BASE, fg=GREEN,
                                    font=HINT_FONT)
-        self._saved_lbl.place(relx=1.0, rely=1.0, x=-18, y=-12, anchor="se")
+        self._saved_lbl.place(relx=1.0, rely=1.0, x=-sc(18), y=-sc(12),
+                              anchor="se")
 
-    # --- Sections -------------------------------------------------------------
+    # --- Building blocks --------------------------------------------------------
 
     def _header(self, parent, text):
         tk.Label(parent, text=text, bg=BASE, fg=TEXT, font=HEADER_FONT,
-                 anchor="w").pack(fill="x", pady=(0, 16))
+                 anchor="w").pack(fill="x", pady=(0, sc(10)))
 
-    def _label(self, parent, text, pady=(0, 5)):
-        tk.Label(parent, text=text, bg=BASE, fg=SUBTEXT, font=LABEL_FONT,
-                 anchor="w").pack(fill="x", pady=pady)
+    def _group(self, parent, text, first=False):
+        tk.Label(parent, text=text, bg=BASE, fg=SUBTEXT, font=GROUP_FONT,
+                 anchor="w").pack(fill="x", pady=(0 if first else sc(10), sc(5)))
 
-    def _hint(self, parent, text, pady=(5, 0)):
-        lbl = tk.Label(parent, text=text, bg=BASE, fg=MUTED, font=HINT_FONT,
-                       anchor="w", justify="left", wraplength=390)
+    def _hint(self, parent, text, pady=(5, 0), bg=BASE, wrap=470):
+        lbl = tk.Label(parent, text=text, bg=bg, fg=MUTED, font=HINT_FONT,
+                       anchor="w", justify="left", wraplength=sc(wrap))
         lbl.pack(fill="x", pady=pady)
         return lbl
 
-    def _build_general(self, pane):
-        # Two shortcut rows plus four toggles overflow the window, so the
-        # whole pane scrolls like Providers does.
-        pane = self._scroll_pane(pane)
-        self._header(pane, "General")
+    def _card(self, parent, pady=(0, 8)):
+        """A bordered, elevated card; returns the padded inner frame."""
+        outer = tk.Frame(parent, bg=CARD, highlightthickness=1,
+                         highlightbackground=CARD_BORDER)
+        outer.pack(fill="x", pady=(sc(pady[0]), sc(pady[1])))
+        inner = tk.Frame(outer, bg=CARD)
+        inner.pack(fill="both", expand=True, padx=sc(14), pady=sc(9))
+        return inner
 
-        # Shortcuts ------------------------------------------------------------
-        self._shortcut_rows = {}
-        self._shortcut_row(
-            pane, "Push-to-talk shortcut", "hotkey",
-            "Hold this key (or combination) to dictate; release to "
-            "transcribe. Esc cancels a capture.")
-        self._shortcut_row(
-            pane, "Re-paste shortcut", "repaste_hotkey",
-            "Pastes your most recent dictation again, wherever your "
-            "cursor is now.")
+    def _row_card(self, parent, title, hint=None, wrap=310):
+        """A setting card: title + hint on the left, control slot on the right.
 
-        tk.Frame(pane, bg=BASE, height=14).pack()
+        Returns (right_frame, [text widgets]) so callers can add bindings.
+        """
+        inner = self._card(parent)
+        right = tk.Frame(inner, bg=CARD)
+        right.pack(side="right", padx=(sc(14), 0))
+        left = tk.Frame(inner, bg=CARD)
+        left.pack(side="left", fill="x", expand=True)
+        widgets = [inner, left]
+        t = tk.Label(left, text=title, bg=CARD, fg=TEXT, font=CARD_TITLE_FONT,
+                     anchor="w")
+        t.pack(fill="x")
+        widgets.append(t)
+        if hint:
+            h = tk.Label(left, text=hint, bg=CARD, fg=MUTED, font=HINT_FONT,
+                         anchor="w", justify="left", wraplength=sc(wrap))
+            h.pack(fill="x", pady=(sc(2), 0))
+            widgets.append(h)
+        return right, widgets
 
-        # Language -------------------------------------------------------------
-        self._label(pane, "Spoken language")
-        code = self._config.get("language", "en")
-        ctrl = tk.Frame(pane, bg=SURFACE0, cursor="hand2",
-                        highlightthickness=1, highlightbackground=SURFACE1)
-        ctrl.pack(fill="x")
-        self._lang_ctrl = ctrl
-        self._lang_lbl = tk.Label(
-            ctrl, text=LANG_BY_CODE.get(code, code), bg=SURFACE0, fg=TEXT,
-            font=FONT, anchor="w", padx=12, pady=7)
-        self._lang_lbl.pack(side="left", fill="x", expand=True)
-        caret = tk.Label(ctrl, text="⌄", bg=SURFACE0, fg=SUBTEXT,
-                         font=FONT, padx=12)
-        caret.pack(side="right")
-
-        def lang_hover(bg):
-            def fn(_e):
-                for w in (ctrl, self._lang_lbl, caret):
-                    w.configure(bg=bg)
-            return fn
-        for w in (ctrl, self._lang_lbl, caret):
-            w.bind("<Button-1>", lambda _e: self._open_lang_menu())
-            w.bind("<Enter>", lang_hover(SURFACE1))
-            w.bind("<Leave>", lang_hover(SURFACE0))
-
-        tk.Frame(pane, bg=BASE, height=18).pack()
-
-        # Start with Windows -----------------------------------------------------
-        row2 = tk.Frame(pane, bg=BASE)
-        row2.pack(fill="x")
-        tk.Label(row2, text="Start with Windows", bg=BASE, fg=SUBTEXT,
-                 font=LABEL_FONT).pack(side="left")
-        self._toggle_imgs = _toggle_images()
-        self._autostart_on = False
-        try:
-            self._autostart_on = autostart.is_enabled()
-        except Exception:
-            pass
-        self._autostart_lbl = tk.Label(
-            row2, image=self._toggle_imgs[int(self._autostart_on)], bg=BASE,
-            cursor="hand2")
-        self._autostart_lbl.pack(side="right")
-        self._autostart_lbl.bind("<Button-1>", self._toggle_autostart)
-        self._hint(pane, "Launch quietly in the tray when you sign in.")
-
-        tk.Frame(pane, bg=BASE, height=14).pack()
-        self._make_toggle(
-            pane, "Smart formatting", "smart_formatting",
-            "Adds spaces and fixes capitalization to match where you're typing.")
-
-        tk.Frame(pane, bg=BASE, height=14).pack()
-        self._make_toggle(
-            pane, "AI cleanup", "ai_cleanup",
-            "A fast grok model removes fillers and false starts and fits the "
-            "wording in place. Sends the text near your cursor to xAI along "
-            "with the audio.")
-
-        tk.Frame(pane, bg=BASE, height=14).pack()
-        self._make_toggle(
-            pane, "Sound cues", "sound_cues",
-            "Soft tick when recording starts and stops.")
-
-    def _make_toggle(self, pane, label, key, hint):
-        """A label + switch row bound to a boolean config key (immediate-apply)."""
-        row = tk.Frame(pane, bg=BASE)
-        row.pack(fill="x")
-        tk.Label(row, text=label, bg=BASE, fg=SUBTEXT,
-                 font=LABEL_FONT).pack(side="left")
-        state = {"on": bool(self._config.get(key, True))}
-        sw = tk.Label(row, image=self._toggle_imgs[int(state["on"])], bg=BASE,
-                      cursor="hand2")
-        sw.pack(side="right")
+    def _toggle_card(self, parent, title, hint, initial, on_change):
+        """A setting card with a switch; the whole card toggles."""
+        right, widgets = self._row_card(parent, title, hint)
+        state = {"on": bool(initial)}
+        sw = tk.Label(right, image=self._toggle_imgs[int(state["on"])],
+                      bg=CARD, cursor="hand2")
+        sw.pack()
 
         def toggle(_e=None):
             state["on"] = not state["on"]
             sw.config(image=self._toggle_imgs[int(state["on"])])
-            self._apply(**{key: state["on"]})
-        sw.bind("<Button-1>", toggle)
-        self._hint(pane, hint)
+            on_change(state["on"])
+        for w in widgets + [sw, right]:
+            w.bind("<Button-1>", toggle)
+            w.configure(cursor="hand2")
+        return state, sw
 
-    def _build_providers(self, pane):
-        # The pane's content exceeds the window once Advanced is expanded, so
-        # everything lives in a borderless BASE-coloured scroll region (thumb
-        # auto-hides while it all fits).
-        body = self._scroll_pane(pane)
-
-        self._header(body, "Providers")
-
-        # Provider dropdowns (styled like the General "Spoken language" one) ---
-        self._provider_row(body, "Transcription", "provider")
-        tk.Frame(body, bg=BASE, height=8).pack()
-        self._provider_row(body, "AI cleanup", "cleanup_provider")
-        self._hint(body,
-                   "Transcription converts your speech; AI cleanup polishes "
-                   "it. Model overrides live under Advanced below.")
-
-        tk.Frame(body, bg=BASE, height=12).pack()
-
-        # Per-provider API keys ------------------------------------------------
-        self._key_vars = {}
-        self._key_status_lbls = {}
-        self._key_block(body, "xAI API key", "api_key")
-        self._key_block(body, "OpenAI API key", "openai_api_key")
-        self._key_block(body, "OpenRouter API key", "openrouter_api_key")
-
-        # Test buttons + shared status -----------------------------------------
-        tests = tk.Frame(body, bg=BASE)
-        tests.pack(fill="x", pady=(2, 0))
-        self._test_stt_btn = self._make_button(
-            tests, "Test transcription", self._test_transcription, small=True)
-        self._test_stt_btn.pack(side="left")
-        self._test_cleanup_btn = self._make_button(
-            tests, "Test cleanup", self._test_cleanup, small=True)
-        self._test_cleanup_btn.pack(side="left", padx=(8, 0))
-        self._test_status = tk.Label(body, text="", bg=BASE, fg=MUTED,
-                                     font=HINT_FONT, anchor="w",
-                                     justify="left", wraplength=390)
-        self._test_status.pack(fill="x", pady=(6, 0))
-
-        # Advanced disclosure: model overrides (collapsed by default) ----------
-        adv_toggle = tk.Label(body, text="Advanced ▸", bg=BASE, fg=SUBTEXT,
-                              font=LABEL_FONT, anchor="w", cursor="hand2")
-        adv_toggle.pack(fill="x", pady=(12, 0))
-        adv = tk.Frame(body, bg=BASE)
-        self._adv_open = False
-
-        def toggle_adv(_e=None):
-            self._adv_open = not self._adv_open
-            adv_toggle.config(text="Advanced ▾" if self._adv_open
-                              else "Advanced ▸")
-            if self._adv_open:
-                adv.pack(fill="x", pady=(4, 0), after=adv_toggle)
-            else:
-                adv.pack_forget()
-        adv_toggle.bind("<Button-1>", toggle_adv)
-
-        self._model_vars = {}
-        self._stt_model_hint = self._model_row(
-            adv, "Transcription model", "stt")
-        self._cleanup_model_hint = self._model_row(
-            adv, "Cleanup model", "cleanup")
-        self._refresh_model_hints()
-
-        # Links -----------------------------------------------------------------
-        links = tk.Frame(body, bg=BASE)
-        links.pack(fill="x", pady=(14, 0))
-        for i, (text, url) in enumerate(PROVIDER_LINKS):
-            if i:
-                tk.Label(links, text="·", bg=BASE, fg=MUTED,
-                         font=HINT_FONT).pack(side="left", padx=5)
-            lk = tk.Label(links, text=text, bg=BASE, fg=ACCENT, font=HINT_FONT,
-                          cursor="hand2")
-            lk.pack(side="left")
-            lk.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
-
-        self._bind_wheel(body)
-
-    def _bind_wheel(self, widget):
-        """Recursively route mouse-wheel events to the scroll pane."""
-        widget.bind("<MouseWheel>", self._scroll_wheel)
-        for child in widget.winfo_children():
-            self._bind_wheel(child)
-
-    def _scroll_pane(self, parent):
-        """A borderless, BASE-coloured vertical scroll region filling parent.
-
-        Mirrors _scroll_list but blends into the pane (no border/MANTLE box)
-        and grows with its parent so the Providers content can overflow the
-        window; the hand-drawn thumb hides itself when everything fits.
-        """
-        canvas = tk.Canvas(parent, bg=BASE, highlightthickness=0, bd=0)
-        canvas.pack(side="left", fill="both", expand=True)
-        bar = tk.Canvas(parent, bg=BASE, width=8, highlightthickness=0, bd=0)
-        bar.pack(side="right", fill="y")
-        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
-        inner = tk.Frame(canvas, bg=BASE)
-        item = canvas.create_window((0, 0), window=inner, anchor="nw")
-
-        def refresh(*_):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            first, last = canvas.yview()
-            bh = bar.winfo_height()
-            if last - first >= 0.999:
-                bar.coords(thumb, 0, 0, 0, 0)
-            else:
-                bar.coords(thumb, 2, first * bh + 1, 7, last * bh - 1)
-
-        def wheel(e):
-            canvas.yview_scroll(-int(e.delta / 120), "units")
-            refresh()
-
-        def drag(e):
-            bh = max(bar.winfo_height(), 1)
-            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
-            refresh()
-
-        inner.bind("<Configure>", refresh)
-        canvas.bind("<Configure>",
-                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
-        # Wheel anywhere over the pane scrolls it.
-        for w in (canvas, inner, bar):
-            w.bind("<MouseWheel>", wheel)
-        self._scroll_wheel = wheel
-        bar.bind("<Button-1>", drag)
-        bar.bind("<B1-Motion>", drag)
-        return inner
-
-    def _provider_row(self, pane, label, config_key):
-        """A provider dropdown styled exactly like the language dropdown."""
-        self._label(pane, label)
-        cur = self._config.get(config_key, "xai")
-        ctrl = tk.Frame(pane, bg=SURFACE0, cursor="hand2",
-                        highlightthickness=1, highlightbackground=SURFACE1)
-        ctrl.pack(fill="x")
-        lbl = tk.Label(ctrl, text=PROVIDER_BY_ID.get(cur, cur), bg=SURFACE0,
-                       fg=TEXT, font=FONT, anchor="w", padx=12, pady=7)
-        lbl.pack(side="left", fill="x", expand=True)
+    def _dropdown(self, parent, text, on_open, width=170):
+        """A fixed-width dark dropdown control; returns its value label."""
+        ctrl = tk.Frame(parent, bg=SURFACE0, cursor="hand2",
+                        highlightthickness=1, highlightbackground=SURFACE1,
+                        width=sc(width), height=sc(30))
+        ctrl.pack_propagate(False)
+        ctrl.pack()
+        lbl = tk.Label(ctrl, text=text, bg=SURFACE0, fg=TEXT, font=FONT,
+                       anchor="w", padx=sc(11))
+        lbl.pack(side="left", fill="both", expand=True)
         caret = tk.Label(ctrl, text="⌄", bg=SURFACE0, fg=SUBTEXT, font=FONT,
-                         padx=12)
-        caret.pack(side="right")
+                         padx=sc(9))
+        caret.pack(side="right", fill="y")
 
         def hover(bg):
             def fn(_e):
@@ -611,229 +598,194 @@ class SettingsWindow:
                     w.configure(bg=bg)
             return fn
         for w in (ctrl, lbl, caret):
-            w.bind("<Button-1>",
-                   lambda _e: self._open_provider_menu(ctrl, lbl, config_key))
+            w.bind("<Button-1>", lambda _e: on_open(ctrl))
             w.bind("<Enter>", hover(SURFACE1))
             w.bind("<Leave>", hover(SURFACE0))
+        return lbl
 
-    def _open_provider_menu(self, ctrl, lbl, config_key):
+    def _menu(self, entries):
+        """A styled popup menu; entries = [(label, command)]."""
         menu = tk.Menu(
             self._win, tearoff=0, bg=SURFACE0, fg=TEXT,
             activebackground=ACCENT, activeforeground=INK,
             relief="flat", bd=0, font=FONT,
         )
-        for name, pid in PROVIDERS_UI:
-            menu.add_command(
-                label=f"  {name}",
-                command=lambda n=name, p=pid: self._pick_provider(
-                    lbl, config_key, n, p))
+        for label, command in entries:
+            menu.add_command(label=f"  {label}", command=command)
+        return menu
+
+    def _popup_under(self, menu, ctrl):
         x = ctrl.winfo_rootx()
         y = ctrl.winfo_rooty() + ctrl.winfo_height() + 2
         menu.tk_popup(x, y)
 
-    def _pick_provider(self, lbl, config_key, name, pid):
-        lbl.config(text=name)
-        self._apply(**{config_key: pid})
-        # Advanced fields show the newly selected provider's own override.
-        for kind, var in getattr(self, "_model_vars", {}).items():
-            var.set(self._model_override(kind))
-        self._refresh_model_hints()
+    def _entry(self, parent, var, show=None, bg=SURFACE0):
+        return tk.Entry(
+            parent, textvariable=var, font=FONT, show=show or "", bg=bg,
+            fg=TEXT, insertbackground=TEXT, relief="flat",
+            highlightthickness=1, highlightbackground=SURFACE1,
+            highlightcolor=ACCENT)
 
-    def _key_block(self, pane, label, field):
-        """A labelled API-key entry with Show/Save buttons and a status line."""
-        self._label(pane, label, pady=(0, 3))
-        row = tk.Frame(pane, bg=BASE)
-        row.pack(fill="x")
-        var = tk.StringVar(value=self._config.get(field, ""))
-        entry = tk.Entry(
-            row, textvariable=var, font=FONT, show="•", bg=SURFACE0, fg=TEXT,
-            insertbackground=TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=SURFACE1, highlightcolor=ACCENT)
-        entry.pack(side="left", fill="x", expand=True, ipady=5)
-        save_btn = self._make_button(
-            row, "Save", lambda f=field: self._save_key(f), kind="accent",
-            small=True)
-        save_btn.pack(side="right", padx=(6, 0))
-        show_btn = self._make_button(row, "Show", lambda: None, small=True)
-        show_btn.config(command=lambda: self._toggle_show(entry, show_btn))
-        show_btn.pack(side="right", padx=(6, 0))
-        status = tk.Label(pane, text=self._key_status_text(field), bg=BASE,
-                          fg=MUTED, font=HINT_FONT, anchor="w")
-        status.pack(fill="x", pady=(3, 8))
-        self._key_vars[field] = var
-        self._key_status_lbls[field] = status
+    # --- General -----------------------------------------------------------------
 
-    def _model_row(self, parent, label, kind):
-        """A model-override entry (per-provider) with Save and a live hint."""
-        self._label(parent, label, pady=(6, 3))
-        row = tk.Frame(parent, bg=BASE)
-        row.pack(fill="x")
-        var = tk.StringVar(value=self._model_override(kind))
-        entry = tk.Entry(
-            row, textvariable=var, font=FONT, bg=SURFACE0, fg=TEXT,
-            insertbackground=TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=SURFACE1, highlightcolor=ACCENT)
-        entry.pack(side="left", fill="x", expand=True, ipady=5)
-        self._make_button(
-            row, "Save", lambda: self._save_model(kind, var),
-            kind="accent", small=True).pack(side="right", padx=(6, 0))
-        hint = tk.Label(parent, text="", bg=BASE, fg=MUTED, font=HINT_FONT,
-                        anchor="w", justify="left", wraplength=390)
-        hint.pack(fill="x", pady=(3, 0))
-        self._model_vars[kind] = var
-        return hint
+    def _build_general(self, pane):
+        pane = self._scroll_pane(pane)
+        self._header(pane, "General")
 
-    def _model_provider(self, kind):
-        pkey = "provider" if kind == "stt" else "cleanup_provider"
-        return self._config.get(pkey, "xai")
+        provider = self._config.get("provider", "xai")
+        key_field = KEY_FIELD_BY_PROVIDER.get(provider, "api_key")
+        if not self._config.get(key_field, ""):
+            self._setup_banner(pane)
 
-    def _model_override(self, kind):
-        models = self._config.get(kind + "_models") or {}
-        return models.get(self._model_provider(kind), "")
+        self._shortcut_rows = {}
+        self._group(pane, "Shortcuts", first=True)
+        self._shortcut_card(
+            pane, "Push-to-talk", "hotkey",
+            "Hold to dictate, release to transcribe. Double-tap to lock "
+            "hands-free; tap again to finish.")
+        self._shortcut_card(
+            pane, "Re-paste last dictation", "repaste_hotkey",
+            "Pastes your most recent dictation again, wherever your "
+            "cursor is now.")
 
-    def _build_about(self, pane):
-        self._header(pane, "About")
-        tk.Label(pane, text=f"Undertone  ·  version {APP_VERSION}",
-                 bg=BASE, fg=TEXT, font=FONT, anchor="w").pack(fill="x")
-        self._hint(pane,
-                   "Hold your shortcut, speak, release — the transcript is "
-                   "typed into whatever text box has focus. Transcription "
-                   "runs on your configured provider (xAI, OpenAI, or "
-                   "OpenRouter); audio is sent only while you dictate.",
-                   pady=(10, 0))
-        self._hint(pane, "Your API key and settings are stored locally in "
-                         "your user profile.", pady=(8, 0))
-        link = tk.Label(pane, text="Open settings folder", bg=BASE, fg=ACCENT,
-                        font=HINT_FONT, anchor="w", cursor="hand2")
-        link.pack(fill="x", pady=(14, 0))
+        self._group(pane, "Dictation")
+        self._toggle_imgs = _toggle_images(bg=CARD)
 
-        def open_folder(_e):
-            import os
-            from config import CONFIG_PATH
-            os.startfile(CONFIG_PATH.parent)
-        link.bind("<Button-1>", open_folder)
+        right, _ = self._row_card(pane, "Spoken language",
+                                  "The language you dictate in.")
+        code = self._config.get("language", "en")
+        self._lang_lbl = self._dropdown(
+            right, LANG_BY_CODE.get(code, code), self._open_lang_menu)
 
-    # Dictionary ----------------------------------------------------------------
+        self._config_toggle_card(
+            pane, "Smart formatting", "smart_formatting",
+            "Match spacing and capitalization to where you're typing.")
+        self._config_toggle_card(
+            pane, "AI cleanup", "ai_cleanup",
+            "Remove fillers and false starts with a fast grok model. Sends "
+            "the text near your cursor to your cleanup provider.")
+        self._config_toggle_card(
+            pane, "Sound cues", "sound_cues",
+            "Soft tick when recording starts and stops.")
 
-    def _scroll_list(self, parent, height):
-        """A dark, scrollable region; returns its inner Frame.
+        self._group(pane, "System")
+        auto_on = False
+        try:
+            auto_on = autostart.is_enabled()
+        except Exception:
+            pass
+        self._toggle_card(pane, "Start with Windows",
+                          "Launch quietly in the tray when you sign in.",
+                          auto_on, self._set_autostart)
 
-        The scrollbar is a hand-drawn thumb (native tk.Scrollbar ignores colours
-        on Windows) that auto-hides when the content fits.
-        """
-        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=1,
-                        highlightbackground=SURFACE1)
-        wrap.pack(fill="x")
-        canvas = tk.Canvas(wrap, bg=MANTLE, height=height, highlightthickness=0,
-                           bd=0)
-        canvas.pack(side="left", fill="both", expand=True)
-        bar = tk.Canvas(wrap, bg=MANTLE, width=8, height=height,
-                        highlightthickness=0, bd=0)
-        bar.pack(side="right", fill="y")
-        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
-        inner = tk.Frame(canvas, bg=MANTLE)
-        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+        self._bind_wheel(pane)
 
-        def refresh(*_):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            first, last = canvas.yview()
-            bh = bar.winfo_height()
-            if last - first >= 0.999:
-                bar.coords(thumb, 0, 0, 0, 0)          # fits — hide thumb
-            else:
-                bar.coords(thumb, 2, first * bh + 1, 7, last * bh - 1)
+    def _setup_banner(self, pane):
+        outer = tk.Frame(pane, bg=BANNER_BG, highlightthickness=1,
+                         highlightbackground=BANNER_BORDER)
+        outer.pack(fill="x", pady=(0, sc(12)))
+        inner = tk.Frame(outer, bg=BANNER_BG)
+        inner.pack(fill="x", padx=sc(14), pady=sc(12))
+        RoundButton(inner, "Open Providers",
+                    lambda: self._select_section("Providers"),
+                    kind="accent", small=True,
+                    bg=BANNER_BG).pack(side="right", padx=(sc(14), 0))
+        left = tk.Frame(inner, bg=BANNER_BG)
+        left.pack(side="left", fill="x", expand=True)
+        tk.Label(left, text="Finish setting up Undertone", bg=BANNER_BG,
+                 fg=TEXT, font=CARD_TITLE_FONT, anchor="w").pack(fill="x")
+        tk.Label(left, text="Add an API key for your transcription provider "
+                            "to start dictating.",
+                 bg=BANNER_BG, fg=SUBTEXT, font=HINT_FONT, anchor="w",
+                 justify="left", wraplength=sc(330)).pack(
+            fill="x", pady=(sc(2), 0))
 
-        def wheel(e):
-            canvas.yview_scroll(-int(e.delta / 120), "units")
-            refresh()
+    def _config_toggle_card(self, pane, title, key, hint):
+        self._toggle_card(pane, title, hint,
+                          self._config.get(key, True),
+                          lambda on, k=key: self._apply(**{k: on}))
 
-        def drag(e):
-            bh = max(bar.winfo_height(), 1)
-            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
-            refresh()
+    def _set_autostart(self, on):
+        try:
+            autostart.set_enabled(on)
+            self._flash_saved()
+        except Exception:
+            pass
 
-        inner.bind("<Configure>", refresh)
-        canvas.bind("<Configure>",
-                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
-        for w in (canvas, inner, bar):
-            w.bind("<MouseWheel>", wheel)
-        bar.bind("<Button-1>", drag)
-        bar.bind("<B1-Motion>", drag)
-        return inner
+    def _shortcut_card(self, pane, title, config_key, hint):
+        right, _ = self._row_card(pane, title, hint, wrap=270)
+        combo = self._config.get(config_key, "")
+        box = tk.Frame(right, bg=SURFACE0, highlightthickness=1,
+                       highlightbackground=SURFACE1)
+        box.pack(side="left")
+        lbl = tk.Label(box, text=pretty_combo(combo) or "None", bg=SURFACE0,
+                       fg=TEXT, font=KEY_FONT, padx=sc(14), pady=sc(5))
+        lbl.pack()
+        btn = RoundButton(right, "Change",
+                          lambda k=config_key: self._start_capture(k),
+                          small=True, bg=CARD)
+        btn.pack(side="left", padx=(sc(8), 0))
+        error = tk.Label(pane, text="", bg=BASE, fg=RED, font=HINT_FONT,
+                         anchor="w")
+        self._shortcut_rows[config_key] = {
+            "lbl": lbl, "btn": btn, "error": error, "combo": combo,
+        }
 
-    def _list_row(self, parent, text, on_remove):
-        """One term/pair row: text on the left, a ✕ remove label on the right."""
-        row = tk.Frame(parent, bg=MANTLE)
-        row.pack(fill="x")
-        tk.Label(row, text=text, bg=MANTLE, fg=TEXT, font=FONT, anchor="w",
-                 padx=10, pady=4).pack(side="left", fill="x", expand=True)
-        x = tk.Label(row, text="✕", bg=MANTLE, fg=MUTED, font=FONT,
-                     cursor="hand2", padx=10)
-        x.pack(side="right")
-        x.bind("<Enter>", lambda _e: x.config(fg=RED))
-        x.bind("<Leave>", lambda _e: x.config(fg=MUTED))
-        x.bind("<Button-1>", lambda _e: on_remove())
+    # --- Dictionary ----------------------------------------------------------------
 
     def _build_dictionary(self, pane):
+        pane = self._scroll_pane(pane)
         self._header(pane, "Dictionary")
 
-        # Vocabulary ---------------------------------------------------------
-        self._label(pane, "Vocabulary")
-        self._hint(pane, "Words and names the transcriber should recognize "
-                         "(sent as hints with every request).", pady=(0, 6))
-        row = tk.Frame(pane, bg=BASE)
+        self._group(pane, "Vocabulary", first=True)
+        card = self._card(pane)
+        self._hint(card, "Words and names the transcriber should recognize — "
+                         "sent as hints with every request.",
+                   pady=(0, sc(8)), bg=CARD, wrap=470)
+        row = tk.Frame(card, bg=CARD)
         row.pack(fill="x")
         self._vocab_var = tk.StringVar()
-        entry = tk.Entry(
-            row, textvariable=self._vocab_var, font=FONT, bg=SURFACE0, fg=TEXT,
-            insertbackground=TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=SURFACE1, highlightcolor=ACCENT)
-        entry.pack(side="left", fill="x", expand=True, ipady=6)
+        entry = self._entry(row, self._vocab_var)
+        entry.pack(side="left", fill="x", expand=True, ipady=sc(5))
         entry.bind("<Return>", lambda _e: self._add_vocab())
-        self._make_button(row, "Add", self._add_vocab,
-                          kind="accent").pack(side="left", padx=(8, 0))
-        tk.Frame(pane, bg=BASE, height=8).pack()
-        self._vocab_inner = self._scroll_list(pane, height=76)
+        RoundButton(row, "Add", self._add_vocab, kind="accent", small=True,
+                    bg=CARD).pack(side="left", padx=(sc(8), 0))
+        tk.Frame(card, bg=CARD, height=sc(8)).pack()
+        self._vocab_inner = self._scroll_list(card, height=sc(108))
         self._render_vocab()
 
-        tk.Frame(pane, bg=BASE, height=16).pack()
-
-        # Corrections --------------------------------------------------------
-        self._label(pane, "Corrections")
-        self._hint(pane, "Always replace a misheard phrase with the right one.",
-                   pady=(0, 6))
-        row2 = tk.Frame(pane, bg=BASE)
+        self._group(pane, "Corrections")
+        card2 = self._card(pane)
+        self._hint(card2, "Always replace a misheard phrase with the right "
+                          "one.", pady=(0, sc(8)), bg=CARD, wrap=470)
+        row2 = tk.Frame(card2, bg=CARD)
         row2.pack(fill="x")
         self._corr_heard = tk.StringVar()
         self._corr_right = tk.StringVar()
-        e1 = tk.Entry(
-            row2, textvariable=self._corr_heard, font=FONT, bg=SURFACE0, fg=TEXT,
-            insertbackground=TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=SURFACE1, highlightcolor=ACCENT)
-        e1.pack(side="left", fill="x", expand=True, ipady=6)
-        tk.Label(row2, text="→", bg=BASE, fg=SUBTEXT, font=FONT,
-                 padx=8).pack(side="left")
-        e2 = tk.Entry(
-            row2, textvariable=self._corr_right, font=FONT, bg=SURFACE0, fg=TEXT,
-            insertbackground=TEXT, relief="flat", highlightthickness=1,
-            highlightbackground=SURFACE1, highlightcolor=ACCENT)
-        e2.pack(side="left", fill="x", expand=True, ipady=6)
+        e1 = self._entry(row2, self._corr_heard)
+        e1.pack(side="left", fill="x", expand=True, ipady=sc(5))
+        tk.Label(row2, text="→", bg=CARD, fg=SUBTEXT, font=FONT,
+                 padx=sc(8)).pack(side="left")
+        e2 = self._entry(row2, self._corr_right)
+        e2.pack(side="left", fill="x", expand=True, ipady=sc(5))
         e1.bind("<Return>", lambda _e: self._add_correction())
         e2.bind("<Return>", lambda _e: self._add_correction())
-        self._make_button(row2, "Add", self._add_correction,
-                          kind="accent").pack(side="left", padx=(8, 0))
-        tk.Frame(pane, bg=BASE, height=8).pack()
-        self._corr_inner = self._scroll_list(pane, height=76)
+        RoundButton(row2, "Add", self._add_correction, kind="accent",
+                    small=True, bg=CARD).pack(side="left", padx=(sc(8), 0))
+        tk.Frame(card2, bg=CARD, height=sc(8)).pack()
+        self._corr_inner = self._scroll_list(card2, height=sc(108))
         self._render_corrections()
+
+        self._bind_wheel(pane)
 
     def _render_vocab(self):
         for w in self._vocab_inner.winfo_children():
             w.destroy()
         terms = self._config.get("vocabulary", [])
         if not terms:
-            tk.Label(self._vocab_inner, text="No terms yet.", bg=MANTLE,
-                     fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
-                     pady=6).pack(fill="x")
+            self._empty_row(self._vocab_inner, "No terms yet — add names and "
+                                               "jargon the transcriber gets "
+                                               "wrong.")
             return
         for term in terms:
             self._list_row(self._vocab_inner, term,
@@ -860,12 +812,10 @@ class SettingsWindow:
             w.destroy()
         pairs = self._config.get("corrections", {})
         if not pairs:
-            tk.Label(self._corr_inner, text="No corrections yet.", bg=MANTLE,
-                     fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
-                     pady=6).pack(fill="x")
+            self._empty_row(self._corr_inner, "No corrections yet.")
             return
         for heard, right in pairs.items():
-            self._list_row(self._corr_inner, f"{heard}  →  {right}",
+            self._list_row(self._corr_inner, f"{heard}   →   {right}",
                            lambda h=heard: self._remove_correction(h))
 
     def _add_correction(self):
@@ -886,21 +836,20 @@ class SettingsWindow:
         self._apply(corrections=pairs)
         self._render_corrections()
 
-    # History -------------------------------------------------------------------
+    # --- History -------------------------------------------------------------------
 
     def _build_history(self, pane):
         self._header(pane, "History")
-        combo = _pretty_combo(self._config.get("repaste_hotkey", ""))
+        combo = pretty_combo(self._config.get("repaste_hotkey", ""))
         if combo:
-            self._hint(pane, f"Dictations from this session. Press {combo} "
-                             "anywhere to re-paste the newest one.",
-                       pady=(0, 4))
-            self._hint(pane, "Tip: click into the target app first, then "
-                             f"use {combo}.", pady=(0, 10))
+            self._hint(pane, "Dictations from this session, newest first. "
+                             f"Press {combo} anywhere to re-paste the newest "
+                             "one — or click into the target app first and "
+                             "use the buttons here.", pady=(0, sc(12)))
         else:
-            self._hint(pane, "Dictations from this session. Set a re-paste "
-                             "shortcut in General to paste the newest one "
-                             "anywhere.", pady=(0, 10))
+            self._hint(pane, "Dictations from this session, newest first. "
+                             "Set a re-paste shortcut in General to paste "
+                             "the newest one anywhere.", pady=(0, sc(12)))
 
         items = []
         if self._history_getter is not None:
@@ -909,11 +858,11 @@ class SettingsWindow:
             except Exception:
                 items = []
 
-        inner = self._scroll_list(pane, height=280)
+        inner = self._scroll_list(pane, height=sc(500))
         if not items:
-            tk.Label(inner, text="Nothing dictated yet this session.",
-                     bg=MANTLE, fg=MUTED, font=HINT_FONT, anchor="w", padx=10,
-                     pady=8).pack(fill="x")
+            self._empty_row(inner, "Nothing dictated yet this session. Hold "
+                                   "your shortcut and speak — dictations "
+                                   "appear here.")
             return
 
         for ts, text in items:
@@ -921,19 +870,19 @@ class SettingsWindow:
             row.pack(fill="x", pady=1)
             when = time.strftime("%H:%M", time.localtime(ts))
             tk.Label(row, text=when, bg=MANTLE, fg=MUTED, font=HINT_FONT,
-                     width=6, anchor="w", padx=10).pack(side="left")
-            self._make_button(row, "Paste",
-                              lambda t=text: self._repaste(t),
-                              small=True).pack(side="right", padx=(0, 8))
-            self._make_button(row, "Copy",
-                              lambda t=text: self._copy(t),
-                              small=True).pack(side="right", padx=(0, 6))
+                     width=6, anchor="w", padx=sc(10)).pack(side="left")
+            RoundButton(row, "Paste", lambda t=text: self._repaste(t),
+                        small=True, bg=MANTLE).pack(side="right",
+                                                    padx=(0, sc(8)), pady=sc(3))
+            RoundButton(row, "Copy", lambda t=text: self._copy(t),
+                        small=True, bg=MANTLE).pack(side="right",
+                                                    padx=(0, sc(6)), pady=sc(3))
             preview = text.replace("\n", " ").strip()
-            if len(preview) > 42:
-                preview = preview[:41] + "…"
+            if len(preview) > 46:
+                preview = preview[:45] + "…"
             tk.Label(row, text=preview, bg=MANTLE, fg=TEXT, font=FONT,
                      anchor="w").pack(side="left", fill="x", expand=True,
-                                      padx=(4, 8))
+                                      padx=(sc(4), sc(8)))
 
     def _copy(self, text):
         try:
@@ -951,27 +900,342 @@ class SettingsWindow:
             self._win.iconify()
         self._root.after(600, lambda: self._on_repaste(text))
 
-    # --- Widgets ---------------------------------------------------------------
+    # --- Providers -------------------------------------------------------------------
 
-    def _make_button(self, parent, text, command, kind="surface", small=False):
-        if kind == "accent":
-            base_bg, hover_bg, fg = ACCENT, ACCENT_HOVER, INK
+    def _build_providers(self, pane):
+        body = self._scroll_pane(pane)
+        self._header(body, "Providers")
+
+        self._group(body, "Services", first=True)
+        self._key_vars = {}
+        self._key_status_lbls = {}
+        self._model_vars = {}
+
+        right, _ = self._row_card(body, "Transcription",
+                                  "Turns your speech into text.", wrap=250)
+        self._test_stt_btn = RoundButton(right, "Test",
+                                         self._test_transcription,
+                                         small=True, bg=CARD)
+        self._test_stt_btn.pack(side="right", padx=(sc(8), 0))
+        cur = self._config.get("provider", "xai")
+        self._stt_dd = self._dropdown(
+            right, PROVIDER_BY_ID.get(cur, cur),
+            lambda c: self._open_provider_menu(c, "provider"), width=130)
+
+        right, _ = self._row_card(body, "AI cleanup",
+                                  "Polishes the wording before it's pasted.",
+                                  wrap=250)
+        self._test_cleanup_btn = RoundButton(right, "Test",
+                                             self._test_cleanup,
+                                             small=True, bg=CARD)
+        self._test_cleanup_btn.pack(side="right", padx=(sc(8), 0))
+        cur = self._config.get("cleanup_provider", "xai")
+        self._cleanup_dd = self._dropdown(
+            right, PROVIDER_BY_ID.get(cur, cur),
+            lambda c: self._open_provider_menu(c, "cleanup_provider"),
+            width=130)
+
+        self._test_status = tk.Label(body, text="", bg=BASE, fg=MUTED,
+                                     font=HINT_FONT, anchor="w",
+                                     justify="left", wraplength=sc(470))
+        self._test_status.pack(fill="x")
+
+        self._group(body, "API keys")
+        self._key_card(body, "xAI", "api_key")
+        self._key_card(body, "OpenAI", "openai_api_key")
+        self._key_card(body, "OpenRouter", "openrouter_api_key")
+
+        links = tk.Frame(body, bg=BASE)
+        links.pack(fill="x", pady=(sc(2), 0))
+        tk.Label(links, text="Get a key:", bg=BASE, fg=MUTED,
+                 font=HINT_FONT).pack(side="left", padx=(0, sc(6)))
+        for i, (text, url) in enumerate(PROVIDER_LINKS):
+            if i:
+                tk.Label(links, text="·", bg=BASE, fg=MUTED,
+                         font=HINT_FONT).pack(side="left", padx=sc(5))
+            lk = tk.Label(links, text=text, bg=BASE, fg=ACCENT, font=HINT_FONT,
+                          cursor="hand2")
+            lk.pack(side="left")
+            lk.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+
+        # Advanced disclosure: model overrides (collapsed by default) ----------
+        adv_toggle = tk.Label(body, text="Advanced  ▸", bg=BASE, fg=SUBTEXT,
+                              font=GROUP_FONT, anchor="w", cursor="hand2")
+        adv_toggle.pack(fill="x", pady=(sc(14), 0))
+        adv = tk.Frame(body, bg=BASE)
+        self._adv_open = False
+
+        def toggle_adv(_e=None):
+            self._adv_open = not self._adv_open
+            adv_toggle.config(text="Advanced  ▾" if self._adv_open
+                              else "Advanced  ▸")
+            if self._adv_open:
+                adv.pack(fill="x", pady=(sc(6), 0), after=adv_toggle)
+            else:
+                adv.pack_forget()
+            self._bind_wheel(body)
+        adv_toggle.bind("<Button-1>", toggle_adv)
+
+        card = self._card(adv)
+        self._stt_model_hint = self._model_row(card, "Transcription model",
+                                               "stt")
+        tk.Frame(card, bg=CARD, height=sc(10)).pack()
+        self._cleanup_model_hint = self._model_row(card, "Cleanup model",
+                                                   "cleanup")
+        self._refresh_model_hints()
+
+        self._bind_wheel(body)
+
+    def _key_card(self, parent, name, field):
+        """A provider card: name + key status, then entry / Show / Save."""
+        inner = self._card(parent)
+        head = tk.Frame(inner, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=name, bg=CARD, fg=TEXT, font=CARD_TITLE_FONT,
+                 anchor="w").pack(side="left")
+        status = tk.Label(head, text="", bg=CARD, font=HINT_FONT, anchor="e")
+        status.pack(side="right")
+
+        row = tk.Frame(inner, bg=CARD)
+        row.pack(fill="x", pady=(sc(7), 0))
+        var = tk.StringVar(value=self._config.get(field, ""))
+        entry = self._entry(row, var, show="•")
+        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry.bind("<Return>", lambda _e, f=field: self._save_key(f))
+        save_btn = RoundButton(row, "Save",
+                               lambda f=field: self._save_key(f),
+                               kind="accent", small=True, bg=CARD)
+        save_btn.pack(side="right", padx=(sc(6), 0))
+        show_btn = RoundButton(row, "Show", None, small=True, bg=CARD)
+        show_btn._command = lambda: self._toggle_show(entry, show_btn)
+        show_btn.pack(side="right", padx=(sc(6), 0))
+
+        self._key_vars[field] = var
+        self._key_status_lbls[field] = status
+        self._refresh_key_status(field)
+
+    def _refresh_key_status(self, field):
+        key = self._config.get(field, "")
+        lbl = self._key_status_lbls[field]
+        if key:
+            lbl.config(text=f"●  saved · ····{key[-4:]}", fg=GREEN)
         else:
-            base_bg, hover_bg, fg = SURFACE0, SURFACE1, TEXT
-        btn = tk.Button(
-            parent, text=text, command=command,
-            font=("Segoe UI Semibold", 9) if small else BTN_FONT,
-            bg=base_bg, fg=fg, activebackground=ACCENT_DOWN if kind == "accent"
-            else SURFACE1, activeforeground=fg,
-            relief="flat", bd=0, padx=10 if small else 16, pady=2 if small else 6,
-            cursor="hand2", highlightthickness=0,
-        )
-        btn._base_bg, btn._hover_bg = base_bg, hover_bg
-        btn.bind("<Enter>", lambda e: e.widget.config(bg=e.widget._hover_bg)
-                 if str(e.widget["state"]) != "disabled" else None)
-        btn.bind("<Leave>", lambda e: e.widget.config(bg=e.widget._base_bg)
-                 if str(e.widget["state"]) != "disabled" else None)
-        return btn
+            lbl.config(text="no key", fg=MUTED)
+
+    def _open_provider_menu(self, ctrl, config_key):
+        lbl = self._stt_dd if config_key == "provider" else self._cleanup_dd
+        menu = self._menu([
+            (name, lambda n=name, p=pid: self._pick_provider(
+                lbl, config_key, n, p))
+            for name, pid in PROVIDERS_UI])
+        self._popup_under(menu, ctrl)
+
+    def _pick_provider(self, lbl, config_key, name, pid):
+        lbl.config(text=name)
+        self._apply(**{config_key: pid})
+        # Advanced fields show the newly selected provider's own override.
+        for kind, var in self._model_vars.items():
+            var.set(self._model_override(kind))
+        self._refresh_model_hints()
+
+    def _model_row(self, parent, label, kind):
+        """A model-override entry (per-provider) with Save and a live hint."""
+        tk.Label(parent, text=label, bg=CARD, fg=SUBTEXT, font=LABEL_FONT,
+                 anchor="w").pack(fill="x", pady=(0, sc(3)))
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x")
+        var = tk.StringVar(value=self._model_override(kind))
+        entry = self._entry(row, var)
+        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry.bind("<Return>", lambda _e: self._save_model(kind, var))
+        RoundButton(row, "Save", lambda: self._save_model(kind, var),
+                    kind="accent", small=True,
+                    bg=CARD).pack(side="right", padx=(sc(6), 0))
+        hint = tk.Label(parent, text="", bg=CARD, fg=MUTED, font=HINT_FONT,
+                        anchor="w", justify="left", wraplength=sc(440))
+        hint.pack(fill="x", pady=(sc(3), 0))
+        self._model_vars[kind] = var
+        return hint
+
+    def _model_provider(self, kind):
+        pkey = "provider" if kind == "stt" else "cleanup_provider"
+        return self._config.get(pkey, "xai")
+
+    def _model_override(self, kind):
+        models = self._config.get(kind + "_models") or {}
+        return models.get(self._model_provider(kind), "")
+
+    # --- About -----------------------------------------------------------------
+
+    def _build_about(self, pane):
+        box = tk.Frame(pane, bg=BASE)
+        box.pack(expand=True)
+        self._about_icon = ImageTk.PhotoImage(load_app_image(sc(64)))
+        tk.Label(box, image=self._about_icon, bg=BASE).pack(pady=(sc(30), sc(12)))
+        tk.Label(box, text="Undertone", bg=BASE, fg=TEXT,
+                 font=("Segoe UI Semibold", 16)).pack()
+        tk.Label(box, text=f"Version {APP_VERSION}", bg=BASE, fg=MUTED,
+                 font=HINT_FONT).pack(pady=(sc(2), sc(14)))
+        tk.Label(box, text="Push-to-talk dictation for Windows.", bg=BASE,
+                 fg=SUBTEXT, font=FONT).pack()
+        tk.Label(box,
+                 text="Hold your shortcut, speak, release — the transcript "
+                      "is typed into whatever text box has focus. Audio is "
+                      "sent only to your chosen provider, only while you "
+                      "dictate. Your API keys and settings stay on this "
+                      "computer.",
+                 bg=BASE, fg=MUTED, font=HINT_FONT, wraplength=sc(400),
+                 justify="center").pack(pady=(sc(10), sc(20)))
+
+        links = tk.Frame(box, bg=BASE)
+        links.pack()
+        for i, (text, cmd) in enumerate((
+            ("Open settings folder", self._open_config_folder),
+            ("View log", self._open_log),
+        )):
+            if i:
+                tk.Label(links, text="·", bg=BASE, fg=MUTED,
+                         font=HINT_FONT).pack(side="left", padx=sc(8))
+            lk = tk.Label(links, text=text, bg=BASE, fg=ACCENT,
+                          font=HINT_FONT, cursor="hand2")
+            lk.pack(side="left")
+            lk.bind("<Button-1>", lambda _e, c=cmd: c())
+
+    def _open_config_folder(self):
+        import os
+        from config import CONFIG_PATH
+        os.startfile(CONFIG_PATH.parent)
+
+    def _open_log(self):
+        import os
+        from config import CONFIG_PATH
+        log = CONFIG_PATH.parent / "app.log"
+        if log.exists():
+            os.startfile(log)
+        else:
+            os.startfile(CONFIG_PATH.parent)
+
+    # --- Scroll panes -------------------------------------------------------------
+
+    def _bind_wheel(self, widget):
+        """Recursively route mouse-wheel events to the section scroll pane."""
+        widget.bind("<MouseWheel>", self._scroll_wheel)
+        for child in widget.winfo_children():
+            self._bind_wheel(child)
+
+    def _scroll_pane(self, parent):
+        """A borderless, BASE-coloured vertical scroll region filling parent.
+
+        The hand-drawn thumb hides itself while everything fits, so sections
+        that fit look like a plain pane.
+        """
+        canvas = tk.Canvas(parent, bg=BASE, highlightthickness=0, bd=0)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar = tk.Canvas(parent, bg=BASE, width=sc(8), highlightthickness=0,
+                        bd=0)
+        bar.pack(side="right", fill="y")
+        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
+        inner = tk.Frame(canvas, bg=BASE)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def refresh(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            first, last = canvas.yview()
+            bh = bar.winfo_height()
+            if last - first >= 0.999:
+                bar.coords(thumb, 0, 0, 0, 0)
+            else:
+                bar.coords(thumb, 2, first * bh + 1, sc(7), last * bh - 1)
+
+        def wheel(e):
+            canvas.yview_scroll(-int(e.delta / 120), "units")
+            refresh()
+
+        def drag(e):
+            bh = max(bar.winfo_height(), 1)
+            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
+            refresh()
+
+        inner.bind("<Configure>", refresh)
+        canvas.bind("<Configure>",
+                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
+        for w in (canvas, inner, bar):
+            w.bind("<MouseWheel>", wheel)
+        self._scroll_wheel = wheel
+        bar.bind("<Button-1>", drag)
+        bar.bind("<B1-Motion>", drag)
+        return inner
+
+    def _scroll_list(self, parent, height):
+        """A dark, scrollable list region; returns its inner Frame.
+
+        The scrollbar is a hand-drawn thumb (native tk.Scrollbar ignores
+        colours on Windows) that auto-hides when the content fits.
+        """
+        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=1,
+                        highlightbackground=CARD_BORDER)
+        wrap.pack(fill="x")
+        canvas = tk.Canvas(wrap, bg=MANTLE, height=height,
+                           highlightthickness=0, bd=0)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar = tk.Canvas(wrap, bg=MANTLE, width=sc(8), height=height,
+                        highlightthickness=0, bd=0)
+        bar.pack(side="right", fill="y")
+        thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
+        inner = tk.Frame(canvas, bg=MANTLE)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def refresh(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            first, last = canvas.yview()
+            bh = bar.winfo_height()
+            if last - first >= 0.999:
+                bar.coords(thumb, 0, 0, 0, 0)          # fits — hide thumb
+            else:
+                bar.coords(thumb, 2, first * bh + 1, sc(7), last * bh - 1)
+
+        def wheel(e):
+            canvas.yview_scroll(-int(e.delta / 120), "units")
+            refresh()
+            return "break"   # don't also scroll the section pane
+
+        def drag(e):
+            bh = max(bar.winfo_height(), 1)
+            canvas.yview_moveto(min(max(e.y / bh, 0.0), 1.0))
+            refresh()
+
+        inner.bind("<Configure>", refresh)
+        canvas.bind("<Configure>",
+                    lambda e: (canvas.itemconfig(item, width=e.width), refresh()))
+        for w in (canvas, inner, bar):
+            w.bind("<MouseWheel>", wheel)
+        bar.bind("<Button-1>", drag)
+        bar.bind("<B1-Motion>", drag)
+        inner._wheel = wheel
+        return inner
+
+    def _empty_row(self, parent, text):
+        tk.Label(parent, text=text, bg=MANTLE, fg=MUTED, font=HINT_FONT,
+                 anchor="w", justify="left", padx=sc(10), pady=sc(8),
+                 wraplength=sc(420)).pack(fill="x")
+
+    def _list_row(self, parent, text, on_remove):
+        """One term/pair row: text on the left, a ✕ remove label on the right."""
+        row = tk.Frame(parent, bg=MANTLE)
+        row.pack(fill="x")
+        lbl = tk.Label(row, text=text, bg=MANTLE, fg=TEXT, font=FONT,
+                       anchor="w", padx=sc(10), pady=sc(4))
+        lbl.pack(side="left", fill="x", expand=True)
+        x = tk.Label(row, text="✕", bg=MANTLE, fg=MUTED, font=FONT,
+                     cursor="hand2", padx=sc(10))
+        x.pack(side="right")
+        x.bind("<Enter>", lambda _e: x.config(fg=RED))
+        x.bind("<Leave>", lambda _e: x.config(fg=MUTED))
+        x.bind("<Button-1>", lambda _e: on_remove())
+        wheel = getattr(parent, "_wheel", None)
+        if wheel is not None:
+            for w in (row, lbl, x):
+                w.bind("<MouseWheel>", wheel)
 
     # --- Behaviors ---------------------------------------------------------------
 
@@ -993,51 +1257,26 @@ class SettingsWindow:
 
     # Language ----------------------------------------------------------------
 
-    def _open_lang_menu(self):
-        menu = tk.Menu(
-            self._win, tearoff=0, bg=SURFACE0, fg=TEXT,
-            activebackground=ACCENT, activeforeground=INK,
-            relief="flat", bd=0, font=FONT,
-        )
-        for name, code in LANGUAGES:
-            menu.add_command(
-                label=f"  {name}", command=lambda n=name, c=code: self._pick_lang(n, c))
-        x = self._lang_ctrl.winfo_rootx()
-        y = self._lang_ctrl.winfo_rooty() + self._lang_ctrl.winfo_height() + 2
-        menu.tk_popup(x, y)
+    def _open_lang_menu(self, ctrl):
+        menu = self._menu([
+            (name, lambda n=name, c=code: self._pick_lang(n, c))
+            for name, code in LANGUAGES])
+        self._popup_under(menu, ctrl)
 
     def _pick_lang(self, name, code):
         self._lang_lbl.config(text=name)
         self._apply(language=code)
 
-    # Autostart ------------------------------------------------------------------
-
-    def _toggle_autostart(self, _e=None):
-        try:
-            self._autostart_on = not self._autostart_on
-            autostart.set_enabled(self._autostart_on)
-            self._autostart_lbl.config(
-                image=self._toggle_imgs[int(self._autostart_on)])
-            self._flash_saved()
-        except Exception:
-            self._autostart_on = not self._autostart_on
-
     # Provider keys & model overrides ---------------------------------------------
-
-    def _key_status_text(self, field):
-        key = self._config.get(field, "")
-        if not key:
-            return "No key set."
-        return f"Key saved · ends in ····{key[-4:]}"
 
     def _toggle_show(self, entry, btn):
         showing = entry["show"] == ""
         entry.config(show="•" if showing else "")
-        btn.config(text="Show" if showing else "Hide")
+        btn.set_text("Show" if showing else "Hide")
 
     def _save_key(self, field):
         self._apply(**{field: self._key_vars[field].get().strip()})
-        self._key_status_lbls[field].config(text=self._key_status_text(field))
+        self._refresh_key_status(field)
 
     def _save_model(self, kind, var):
         """Store the override under the currently selected provider."""
@@ -1091,10 +1330,12 @@ class SettingsWindow:
         var = self._key_vars.get(field)
         key = var.get().strip() if var is not None else ""
         if not key:
-            self._test_status.config(text="Enter a key first.", fg=RED)
+            name = PROVIDER_BY_ID.get(provider, provider)
+            self._test_status.config(
+                text=f"Enter your {name} API key below first.", fg=RED)
             return
         self._testing = True
-        btn.config(state="disabled")
+        btn.disable()
         self._test_status.config(text="Testing…", fg=MUTED)
         threading.Thread(target=worker, args=(key, provider),
                          daemon=True).start()
@@ -1145,36 +1386,12 @@ class SettingsWindow:
         btn = (self._test_stt_btn if which == "stt"
                else self._test_cleanup_btn)
         if btn is not None and btn.winfo_exists():
-            btn.config(state="normal", bg=btn._base_bg)
+            btn.enable()
         if self._test_status is not None and self._test_status.winfo_exists():
             self._test_status.config(text=("✓ " if ok else "") + message,
                                      fg=GREEN if ok else RED)
 
     # Hotkey capture ------------------------------------------------------------
-
-    def _shortcut_row(self, pane, label, config_key, hint):
-        """A readonly shortcut display + capture-by-pressing Change button."""
-        self._label(pane, label)
-        row = tk.Frame(pane, bg=BASE)
-        row.pack(fill="x")
-        var = tk.StringVar(value=self._config.get(config_key, ""))
-        display = tk.Entry(
-            row, textvariable=var, font=FONT, state="readonly",
-            readonlybackground=SURFACE0, fg=TEXT, relief="flat",
-            highlightthickness=1, highlightbackground=SURFACE1,
-            highlightcolor=ACCENT, insertbackground=TEXT, justify="center",
-        )
-        display.pack(side="left", fill="x", expand=True, ipady=6)
-        btn = self._make_button(
-            row, "Change", lambda k=config_key: self._start_capture(k))
-        btn.pack(side="left", padx=(8, 0))
-        self._hint(pane, hint)
-        error = tk.Label(pane, text="", bg=BASE, fg=RED, font=HINT_FONT,
-                         anchor="w")
-        error.pack(fill="x", pady=(2, 0))
-        self._shortcut_rows[config_key] = {
-            "var": var, "display": display, "btn": btn, "error": error,
-        }
 
     def _start_capture(self, config_key="hotkey"):
         if self._capturing:
@@ -1182,11 +1399,10 @@ class SettingsWindow:
         row = self._shortcut_rows[config_key]
         self._capturing = True
         self._capture_target = config_key
-        self._prev_hotkey = row["var"].get()
         row["error"].config(text="")
-        row["btn"].config(state="disabled", text="Press keys…", cursor="")
-        row["display"].config(fg=ACCENT)
-        row["var"].set("Listening…")
+        row["error"].pack_forget()
+        row["btn"].disable()
+        row["lbl"].config(text="Press keys…", fg=ACCENT)
         if self._on_capture_start is not None:
             try:
                 self._on_capture_start()
@@ -1208,7 +1424,7 @@ class SettingsWindow:
         self._capturing = False
         row = self._shortcut_rows.get(self._capture_target, {})
         # Switching sections mid-capture destroys the row's widgets.
-        alive = (row and row["display"].winfo_exists())
+        alive = (row and row["lbl"].winfo_exists())
 
         cancelled = combo is None or combo.strip().lower() in ("esc", "escape")
         if not cancelled:
@@ -1218,14 +1434,17 @@ class SettingsWindow:
             except ValueError as exc:
                 if alive:
                     row["error"].config(text=str(exc))
+                    row["error"].pack(fill="x", pady=(0, sc(6)))
                 cancelled = True
             except ImportError:
                 new_hotkey = combo.strip().lower()
 
         if alive:
-            row["var"].set(self._prev_hotkey if cancelled else new_hotkey)
-            row["display"].config(fg=TEXT)
-            row["btn"].config(state="normal", text="Change", cursor="hand2")
+            shown = row["combo"] if cancelled else new_hotkey
+            row["lbl"].config(text=pretty_combo(shown) or "None", fg=TEXT)
+            row["btn"].enable()
+            if not cancelled:
+                row["combo"] = new_hotkey
 
         if self._on_capture_end is not None:
             try:
@@ -1240,9 +1459,9 @@ class SettingsWindow:
 
     def _center(self):
         self._win.update_idletasks()
-        w, h = 640, 584
+        w, h = sc(WIN_W), sc(WIN_H)
         x = (self._win.winfo_screenwidth() - w) // 2
-        y = (self._win.winfo_screenheight() - h) // 2 - 30
+        y = (self._win.winfo_screenheight() - h) // 2 - sc(30)
         self._win.geometry(f"{w}x{h}+{x}+{y}")
 
     def _raise(self):

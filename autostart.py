@@ -14,7 +14,9 @@ LEGACY_VALUE_NAME = "PushToTalkSTT"
 
 
 def _command() -> str:
-    """Build the login launch command: pythonw.exe plus main.py, both quoted."""
+    """Build the login launch command: the frozen exe, or pythonw + main.py."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     pyw = Path(sys.executable).with_name("pythonw.exe")
     if not pyw.exists():
         pyw = Path(sys.executable)
