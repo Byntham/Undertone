@@ -5,6 +5,7 @@ limited to Canvas coordinate and configuration changes; it never calls Pillow.
 """
 
 import ctypes
+import math
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -28,6 +29,15 @@ HINT_FONT = ("Segoe UI", 9)
 BUTTON_FONT = ("Segoe UI Semibold", 10)
 SMALL_BUTTON_FONT = ("Segoe UI Semibold", 9)
 _UNSET = object()
+
+
+def _delete_canvas_items(widget, scene, canvas, items):
+    if hasattr(widget, "_delete_items"):
+        widget._delete_items(items)
+        return
+    scene.forget_items(items)
+    for item in items:
+        canvas.delete(item)
 
 
 def _rgb(color):
@@ -172,6 +182,7 @@ CAP_CACHE = _CapCache()
 # Scene._flush_layout's eval batching).
 _TCL_WORD = str.maketrans({
     "\\": r"\\", "\n": r"\n", "\t": r"\t", "\r": r"\r",
+    "\v": r"\v", "\f": r"\f",
     **{ch: "\\" + ch for ch in ' "$[]{};'},
 })
 
@@ -283,8 +294,7 @@ class _RoundSurface:
             self.scene._itemconfigure(item, state=state)
 
     def destroy(self):
-        for item in self.items:
-            self.canvas.delete(item)
+        _delete_canvas_items(self.widget, self.scene, self.canvas, self.items)
         self.items = []
 
 
@@ -355,8 +365,7 @@ class _PillSurface:
             self.scene._coords(item, *value)
 
     def destroy(self):
-        for item in self.items:
-            self.canvas.delete(item)
+        _delete_canvas_items(self.widget, self.scene, self.canvas, self.items)
         self.items = []
 
 
@@ -430,8 +439,7 @@ class _FixedRoundSurface:
             self.scene._coords(item, *values)
 
     def destroy(self):
-        for item in self.items:
-            self.canvas.delete(item)
+        _delete_canvas_items(self.widget, self.scene, self.canvas, self.items)
         self.items = []
 
 
@@ -455,6 +463,7 @@ class Widget:
         self._pressed = False
         self._focused = False
         self._bindings_ready = False
+        self._tag_bindings = []
 
     def _attach(self, scene, parent=None):
         if self.scene is scene:
@@ -494,16 +503,34 @@ class Widget:
         self._geometry = (x, y, w, self._measure(w)[1])
 
     def destroy(self):
-        if self.scene is not None and self.scene.focused is self:
-            if hasattr(self.scene, "_hide_focus_ring"):
-                self.scene._hide_focus_ring(self)
-            self.scene.focused = None
-        for item in self._items:
-            self.canvas.delete(item)
+        scene = self.scene
+        canvas = self.canvas
+        if scene is not None and scene.focused is self:
+            if hasattr(scene, "_hide_focus_ring"):
+                scene._hide_focus_ring(self)
+            scene.focused = None
+        if canvas is not None:
+            for tag, sequence, funcid in self._tag_bindings:
+                canvas.tag_unbind(tag, sequence, funcid)
+        self._tag_bindings = []
+        self._delete_items(self._items)
         self._items = []
         self.scene = None
         self.canvas = None
         self.parent = None
+
+    def _delete_items(self, items):
+        items = tuple(items)
+        if not items or self.canvas is None:
+            return
+        if self.scene is not None:
+            self.scene.forget_items(items)
+        for item in items:
+            self.canvas.delete(item)
+
+    def _tag_bind(self, tag, sequence, callback):
+        funcid = self.canvas.tag_bind(tag, sequence, callback)
+        self._tag_bindings.append((tag, sequence, funcid))
 
     def hover(self, state):
         self._hovered = bool(state)
@@ -527,10 +554,10 @@ class Widget:
         if self._bindings_ready:
             return
         self._bindings_ready = True
-        self.canvas.tag_bind(self.tag, "<Enter>", self._enter)
-        self.canvas.tag_bind(self.tag, "<Leave>", self._leave)
-        self.canvas.tag_bind(self.tag, "<Button-1>", self._down)
-        self.canvas.tag_bind(self.tag, "<ButtonRelease-1>", self._up)
+        self._tag_bind(self.tag, "<Enter>", self._enter)
+        self._tag_bind(self.tag, "<Leave>", self._leave)
+        self._tag_bind(self.tag, "<Button-1>", self._down)
+        self._tag_bind(self.tag, "<ButtonRelease-1>", self._up)
 
     def _enter(self, _event):
         self.canvas.configure(cursor="hand2")
@@ -755,8 +782,9 @@ class TextBlock(Widget):
                 lines += 1
                 layout.append((0,))
                 continue
-            current = words[0][1]
-            count = 1
+            first_width = words[0][1]
+            count = max(1, math.ceil(first_width / width))
+            current = first_width - (count - 1) * width
             line_words = 1
             paragraph_layout = []
             for _word, word_width in words[1:]:
@@ -766,8 +794,9 @@ class TextBlock(Widget):
                     line_words += 1
                 else:
                     paragraph_layout.append(line_words)
-                    count += 1
-                    current = word_width
+                    word_lines = max(1, math.ceil(word_width / width))
+                    count += word_lines
+                    current = word_width - (word_lines - 1) * width
                     line_words = 1
             paragraph_layout.append(line_words)
             layout.append(tuple(paragraph_layout))
@@ -1473,10 +1502,9 @@ class ListView(Widget):
         # Canvas tag_bind rejects <MouseWheel>; the Scene's canvas-level
         # wheel handler routes here when the pointer is over this list.
         scene._wheel_widgets.append(self)
-        self.canvas.tag_bind(self.tag + "_scrollbar", "<Button-1>",
-                             self._start_drag)
-        self.canvas.tag_bind(self.tag + "_scrollbar", "<B1-Motion>",
-                             self._drag)
+        self._tag_bind(self.tag + "_scrollbar", "<Button-1>",
+                       self._start_drag)
+        self._tag_bind(self.tag + "_scrollbar", "<B1-Motion>", self._drag)
 
     def _backdrop_for_child(self, _child):
         return theme.MANTLE
@@ -1554,11 +1582,8 @@ class ListView(Widget):
         self._scroll_y = max(0, min(self._scroll_y, maximum))
         visible = {
             index for index, (top, row_h) in enumerate(zip(offsets, heights))
-            if ((top >= self._scroll_y
-                 and top + row_h <= self._scroll_y + viewport_h)
-                or (row_h > viewport_h
-                    and top + row_h >= self._scroll_y
-                    and top <= self._scroll_y + viewport_h))
+            if (top < self._scroll_y + viewport_h
+                and top + row_h > self._scroll_y)
         }
         for index in self._attached - visible:
             self._row_widgets.pop(index).destroy()
@@ -1715,6 +1740,16 @@ class Scene:
         tag = f"w{self._next_tag}"
         self._next_tag += 1
         return tag
+
+    def forget_items(self, items):
+        items = set(items)
+        for item in items:
+            self._item_coords.pop(item, None)
+            self._item_options.pop(item, None)
+        if self._layout_commands is not None:
+            self._layout_commands = [
+                command for command in self._layout_commands
+                if command[1] not in items]
 
     def set_root(self, root):
         self.end_edit(commit=True)
@@ -2066,6 +2101,7 @@ class Scene:
             value = widget.get("1.0", "end-1c") if field.multiline else widget.get()
             field.setter(value)
         if self._editor_item is not None:
+            self.forget_items((self._editor_item,))
             self.canvas.delete(self._editor_item)
             self._editor_item = None
         field.refresh()

@@ -1,5 +1,6 @@
 """Canvas-rendered settings window for Undertone."""
 
+import ctypes
 import io
 import os
 import queue
@@ -10,6 +11,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import wave
 import webbrowser
+from ctypes import wintypes
 from typing import Callable, List, Optional
 
 import keyboard
@@ -705,6 +707,10 @@ class SettingsWindow:
         self._testing = False
         self._mic_testing = False
         self._mic_recorder = None
+        self._mic_after_id = None
+        self._mic_generation = 0
+        self._window_generation = 0
+        self._test_window_generation = None
         self._saved_after_id = None
         self._practice_after_id = None
         self._hist_poll_id = None
@@ -741,6 +747,7 @@ class SettingsWindow:
 
         win = tk.Toplevel(self._root)
         self._win = win
+        self._window_generation += 1
         win.withdraw()
         win.title("Undertone")
         win.configure(bg=theme.BASE)
@@ -1149,20 +1156,37 @@ class SettingsWindow:
             return
         self._mic_testing = True
         self._mic_recorder = recorder
+        self._mic_generation += 1
+        generation = self._mic_generation
         self._mic_button.set_text("Listening…")
         self._mic_button.disable()
-        self._mic_tick(60)
+        self._mic_tick(60, generation, recorder)
 
-    def _mic_tick(self, remaining):
-        alive = (self._active_section == "Get started"
+    def _mic_tick(self, remaining, generation, recorder):
+        self._mic_after_id = None
+        win = self._win
+        alive = (generation == self._mic_generation
+                 and recorder is self._mic_recorder
+                 and self._scene is not None
+                 and win is not None and win.winfo_exists()
+                 and self._active_section == "Get started"
                  and self._mic_meter.scene is self._scene)
         if not alive or remaining <= 0:
-            self._stop_mic_test()
+            if generation == self._mic_generation:
+                self._stop_mic_test()
             return
-        self._mic_meter.set_level(self._mic_recorder.level)
-        self._root.after(50, lambda: self._mic_tick(remaining - 1))
+        self._mic_meter.set_level(recorder.level)
+        self._mic_after_id = self._root.after(
+            50, lambda: self._mic_tick(remaining - 1, generation, recorder))
 
     def _stop_mic_test(self):
+        self._mic_generation += 1
+        after_id, self._mic_after_id = self._mic_after_id, None
+        if after_id is not None:
+            try:
+                self._root.after_cancel(after_id)
+            except tk.TclError:
+                pass
         recorder, self._mic_recorder = self._mic_recorder, None
         if recorder is not None:
             try:
@@ -1170,11 +1194,15 @@ class SettingsWindow:
             except Exception:
                 pass
         self._mic_testing = False
+        win = self._win
+        scene = self._scene
+        controls_alive = (scene is not None and win is not None
+                          and win.winfo_exists())
         meter = getattr(self, "_mic_meter", None)
-        if meter is not None and meter.scene is self._scene:
+        if controls_alive and meter is not None and meter.scene is scene:
             meter.set_level(0.0)
         button = getattr(self, "_mic_button", None)
-        if button is not None and button.scene is self._scene:
+        if controls_alive and button is not None and button.scene is scene:
             button.set_text("Test microphone")
             button.enable()
 
@@ -1200,6 +1228,7 @@ class SettingsWindow:
             return
         self._testing = True
         self._test_context = "get_started"
+        self._test_window_generation = self._window_generation
         self._test_button.disable()
         self._set_status(self._test_status, "Testing…", theme.MUTED)
         cfg = dict(self._config)
@@ -1228,6 +1257,10 @@ class SettingsWindow:
     def _on_tested(self, result):
         self._testing = False
         which, ok, message = result
+        win = self._win
+        if (self._scene is None or win is None or not win.winfo_exists()
+                or self._test_window_generation != self._window_generation):
+            return
         context = getattr(self, "_test_context", None)
         if context == "get_started":
             button = getattr(self, "_test_button", None)
@@ -1265,7 +1298,10 @@ class SettingsWindow:
                 self._on_capture_start()
             except Exception:
                 pass
-        threading.Thread(target=self._capture_worker, daemon=True).start()
+        try:
+            threading.Thread(target=self._capture_worker, daemon=True).start()
+        except Exception:
+            self._on_captured(None)
 
     def _capture_worker(self):
         try:
@@ -1280,7 +1316,10 @@ class SettingsWindow:
         self._capturing = False
         target = self._capture_target
         row = self._shortcut_rows.get(target, {})
-        alive = bool(row and row["button"].scene is self._scene)
+        win = self._win
+        alive = bool(self._scene is not None and win is not None
+                     and win.winfo_exists() and row
+                     and row["button"].scene is self._scene)
         cancelled = combo is None or combo.strip().lower() in ("esc", "escape")
         new_hotkey = None
         if not cancelled:
@@ -1744,6 +1783,7 @@ class SettingsWindow:
             return
         self._testing = True
         self._test_context = which
+        self._test_window_generation = self._window_generation
         button.disable()
         self._set_status(self._providers_status, "Testing…", theme.MUTED)
         cfg = dict(self._config)
@@ -1863,23 +1903,89 @@ class SettingsWindow:
             except tk.TclError:
                 pass
             self._practice_after_id = None
-        if self._mic_recorder is not None:
+        if self._mic_recorder is not None or self._mic_after_id is not None:
             self._stop_mic_test()
 
-    def _screen_bounds(self):
+    def _monitor_work_areas(self):
+        areas = []
         try:
-            import ctypes
             user32 = ctypes.WinDLL("user32")
-            x = user32.GetSystemMetrics(76)
-            y = user32.GetSystemMetrics(77)
-            width = user32.GetSystemMetrics(78)
-            height = user32.GetSystemMetrics(79)
-            if width > 0 and height > 0:
-                return x, y, x + width, y + height
+            monitor_proc = ctypes.WINFUNCTYPE(
+                wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = (
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD),
+                )
+
+            get_monitor_info = user32.GetMonitorInfoW
+            get_monitor_info.argtypes = (
+                wintypes.HMONITOR, ctypes.POINTER(MonitorInfo))
+            get_monitor_info.restype = wintypes.BOOL
+            enum_monitors = user32.EnumDisplayMonitors
+            enum_monitors.argtypes = (
+                wintypes.HDC, ctypes.POINTER(wintypes.RECT), monitor_proc,
+                wintypes.LPARAM)
+            enum_monitors.restype = wintypes.BOOL
+
+            def collect(monitor, _hdc, _rect, _data):
+                info = MonitorInfo(cbSize=ctypes.sizeof(MonitorInfo))
+                if get_monitor_info(monitor, ctypes.byref(info)):
+                    work = info.rcWork
+                    area = (work.left, work.top, work.right, work.bottom)
+                    if info.dwFlags & 1:
+                        areas.insert(0, area)
+                    else:
+                        areas.append(area)
+                return True
+
+            callback = monitor_proc(collect)
+            if not enum_monitors(None, None, callback, 0):
+                areas.clear()
         except Exception:
-            pass
-        return (0, 0, self._win.winfo_screenwidth(),
-                self._win.winfo_screenheight())
+            areas.clear()
+        return areas
+
+    @staticmethod
+    def _title_bar_visible(x, y, width, area):
+        left, top, right, bottom = area
+        title_h = theme.sc(40)
+        required_w = theme.sc(120)
+        overlap_w = max(0, min(x + width, right) - max(x, left))
+        overlap_h = max(0, min(y + title_h, bottom) - max(y, top))
+        return overlap_w >= required_w and overlap_h >= title_h
+
+    def _clamp_to_work_area(self, width, height, x, y, areas):
+        if not areas:
+            return None
+        for area in areas:
+            if self._title_bar_visible(x, y, width, area):
+                return x, y
+
+        center_x = x + width / 2
+        center_y = y + height / 2
+
+        def distance(area):
+            left, top, right, bottom = area
+            dx = max(left - center_x, 0, center_x - right)
+            dy = max(top - center_y, 0, center_y - bottom)
+            return dx * dx + dy * dy
+
+        area = min(areas, key=distance)
+        left, top, right, bottom = area
+        required_w = theme.sc(120)
+        if (width < required_w or right - left < required_w
+                or bottom - top < theme.sc(40)):
+            return None
+        x = max(left + required_w - width, min(x, right - required_w))
+        y = max(top, min(y, max(top, bottom - theme.sc(40))))
+        if not self._title_bar_visible(x, y, width, area):
+            return None
+        return x, y
 
     def _valid_geometry(self, value):
         if not isinstance(value, str):
@@ -1890,20 +1996,29 @@ class SettingsWindow:
         width, height, x, y = map(int, match.groups())
         if width < theme.sc(660) or height < theme.sc(560):
             return None
-        left, top, right, bottom = self._screen_bounds()
-        visible = theme.sc(40)
-        if (x + width < left + visible or x > right - visible
-                or y + height < top + visible or y > bottom - visible):
+        position = self._clamp_to_work_area(
+            width, height, x, y, self._monitor_work_areas())
+        if position is None:
             return None
+        x, y = position
         return f"{width}x{height}{x:+d}{y:+d}"
 
     def _restore_geometry(self):
         geometry = self._valid_geometry(self._config.get("window_geometry"))
         if geometry is None:
-            width, height = theme.sc(WIN_W), theme.sc(WIN_H)
-            x = (self._win.winfo_screenwidth() - width) // 2
-            y = (self._win.winfo_screenheight() - height) // 2 - theme.sc(30)
-            geometry = f"{width}x{height}+{x}+{y}"
+            areas = self._monitor_work_areas()
+            if areas:
+                left, top, right, bottom = areas[0]
+            else:
+                left = top = 0
+                right = self._win.winfo_screenwidth()
+                bottom = self._win.winfo_screenheight()
+            width = min(theme.sc(WIN_W), max(1, right - left))
+            height = min(theme.sc(WIN_H), max(1, bottom - top))
+            x = left + (right - left - width) // 2
+            y = top + (bottom - top - height) // 2 - theme.sc(30)
+            y = max(top, min(y, bottom - height))
+            geometry = f"{width}x{height}{x:+d}{y:+d}"
         self._win.geometry(geometry)
 
     def _raise(self):
@@ -1920,6 +2035,15 @@ class SettingsWindow:
             self._close()
 
     def _close(self):
+        if self._capturing:
+            row = self._shortcut_rows.get(self._capture_target, {})
+            if row and row["button"].scene is self._scene:
+                row["error"].set_text(
+                    "Finish the shortcut, or press Esc to cancel capture.")
+                row["error_reveal"].set_visible(True)
+                row["chip"].set_text("Press keys…")
+            self._raise()
+            return
         self._cancel_section_tasks()
         if self._saved_after_id is not None:
             try:
@@ -1927,13 +2051,6 @@ class SettingsWindow:
             except tk.TclError:
                 pass
             self._saved_after_id = None
-        if self._capturing:
-            self._capturing = False
-            if self._on_capture_end is not None:
-                try:
-                    self._on_capture_end()
-                except Exception:
-                    pass
         if self._win is not None and self._win.winfo_exists():
             self._scene.end_edit(commit=True)
             self._win.update_idletasks()
