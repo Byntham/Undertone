@@ -187,6 +187,83 @@ def _round_img(w, h, radius, fill, outline=None, bg=BASE, outline_w=None):
     return img.resize((w, h), Image.LANCZOS)
 
 
+_ROUND_MASTER_CACHE = {}
+_ROUND_MASTER_CACHE_LIMIT = 64
+
+
+def _round_master(radius, fill, outline, outline_w):
+    """Return one small antialiased master used for rounded 9-slices."""
+    key = (radius, fill, outline, outline_w)
+    master = _ROUND_MASTER_CACHE.pop(key, None)
+    if master is not None:
+        _ROUND_MASTER_CACHE[key] = master
+        return master
+
+    side = 2 * radius + 4
+    ss = 4
+    # Bleed the edge colour through transparent pixels so LANCZOS cannot
+    # introduce a dark fringe around the antialiased outer edge.
+    bleed = _rgb(outline or fill)
+    master = Image.new("RGBA", (side * ss, side * ss), bleed + (0,))
+    ImageDraw.Draw(master).rounded_rectangle(
+        (0, 0, side * ss - 1, side * ss - 1),
+        radius=radius * ss,
+        fill=_rgb(fill) + (255,),
+        outline=_rgb(outline) + (255,) if outline else None,
+        width=outline_w * ss,
+    )
+    master = master.resize((side, side), Image.LANCZOS)
+    _ROUND_MASTER_CACHE[key] = master
+    if len(_ROUND_MASTER_CACHE) > _ROUND_MASTER_CACHE_LIMIT:
+        del _ROUND_MASTER_CACHE[next(iter(_ROUND_MASTER_CACHE))]
+    return master
+
+
+def _round_underlay_img(w, h, radius, fill, outline=None, bg=BASE,
+                        outline_w=1):
+    """Build a rounded container image cheaply from a cached 9-slice."""
+    img = Image.new("RGB", (w, h), _rgb(bg))
+    master = _round_master(radius, fill, outline, outline_w)
+    side = master.width
+    corner = side // 2
+    draw = ImageDraw.Draw(img)
+
+    # Rounded containers are always larger than their corner master. Keep a
+    # cheap, non-antialiased fallback for a transient 1x1-ish geometry only.
+    if w < side or h < side:
+        draw.rounded_rectangle(
+            (0, 0, w - 1, h - 1), radius=min(radius, w // 2, h // 2),
+            fill=_rgb(fill), outline=_rgb(outline) if outline else None,
+            width=outline_w,
+        )
+        return img
+
+    fill_rgb = _rgb(fill)
+    draw.rectangle((corner, 0, w - corner - 1, h - 1), fill=fill_rgb)
+    draw.rectangle((0, corner, w - 1, h - corner - 1), fill=fill_rgb)
+    if outline:
+        outline_rgb = _rgb(outline)
+        draw.rectangle((corner, 0, w - corner - 1, outline_w - 1),
+                       fill=outline_rgb)
+        draw.rectangle((corner, h - outline_w, w - corner - 1, h - 1),
+                       fill=outline_rgb)
+        draw.rectangle((0, corner, outline_w - 1, h - corner - 1),
+                       fill=outline_rgb)
+        draw.rectangle((w - outline_w, corner, w - 1, h - corner - 1),
+                       fill=outline_rgb)
+
+    corners = (
+        ((0, 0, corner, corner), (0, 0)),
+        ((corner, 0, side, corner), (w - corner, 0)),
+        ((0, corner, corner, side), (0, h - corner)),
+        ((corner, corner, side, side), (w - corner, h - corner)),
+    )
+    for crop, dest in corners:
+        piece = master.crop(crop)
+        img.paste(piece, dest, piece)
+    return img
+
+
 def _nav_glyph(name: str, color: str, size: int) -> Image.Image:
     """A simple 4x-supersampled line glyph for the sidebar."""
     s = size * 4
@@ -445,6 +522,9 @@ class SettingsWindow:
         self._menu_closed_at = float("-inf")
         self._wrap_labels = []
         self._wrap_after_id = None
+        self._wrap_widths = {}
+        self._round_containers = []
+        self._redraw_depth = 0
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -482,6 +562,7 @@ class SettingsWindow:
 
         win = tk.Toplevel(self._root)
         self._win = win
+        win.withdraw()
         win.title("Undertone")
         try:
             win.iconbitmap(str(ICON_ICO))
@@ -520,7 +601,8 @@ class SettingsWindow:
                 continue
             self._nav_items[section] = self._make_nav_item(side, section)
 
-        self._select_section("Get started" if show_get_started else "General")
+        initial_section = "Get started" if show_get_started else "General"
+        self._paint_atomically(lambda: self._select_section(initial_section))
 
         self._restore_geometry()
         apply_dark_titlebar(self._win)
@@ -584,7 +666,56 @@ class SettingsWindow:
             w.bind("<Button-1>", lambda _e, s=section: self._select_section(s))
         return {"row": row, "bar": bar, "label": lbl, "icon": icon}
 
+    def _set_window_redraw(self, enabled):
+        """Toggle native painting, tolerating unavailable Windows APIs."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            get_ancestor = user32.GetAncestor
+            get_ancestor.argtypes = (wintypes.HWND, wintypes.UINT)
+            get_ancestor.restype = wintypes.HWND
+            send_message = user32.SendMessageW
+            send_message.argtypes = (wintypes.HWND, wintypes.UINT,
+                                     wintypes.WPARAM, wintypes.LPARAM)
+            send_message.restype = wintypes.LPARAM
+            redraw_window = user32.RedrawWindow
+            redraw_window.argtypes = (wintypes.HWND, ctypes.c_void_p,
+                                      ctypes.c_void_p, wintypes.UINT)
+            redraw_window.restype = wintypes.BOOL
+            hwnd = get_ancestor(
+                wintypes.HWND(self._win.winfo_id()), 2)  # GA_ROOT
+            if not hwnd:
+                return
+            send_message(hwnd, 0x000B, int(enabled), 0)  # WM_SETREDRAW
+            if enabled:
+                flags = 0x0001 | 0x0004 | 0x0400 | 0x0080
+                redraw_window(hwnd, None, None, flags)
+        except Exception:
+            pass
+
+    def _paint_atomically(self, rebuild):
+        """Run a rebuild with painting frozen, then flush its final layout."""
+        outermost = self._redraw_depth == 0
+        if outermost:
+            self._set_window_redraw(False)
+        self._redraw_depth += 1
+        try:
+            result = rebuild()
+            if outermost and self._win is not None and self._win.winfo_exists():
+                self._win.update_idletasks()
+                self._render_pending_now()
+            return result
+        finally:
+            self._redraw_depth -= 1
+            if outermost:
+                self._set_window_redraw(True)
+
     def _select_section(self, section):
+        return self._paint_atomically(
+            lambda: self._rebuild_section(section))
+
+    def _rebuild_section(self, section):
         self._cancel_history_poll()
         self._active_section = section
         for name, item in self._nav_items.items():
@@ -607,6 +738,8 @@ class SettingsWindow:
                 pass
         self._wrap_labels = []
         self._wrap_after_id = None
+        self._wrap_widths = {}
+        self._round_containers = []
         pane.bind("<Configure>", self._schedule_wraps)
         if section == "Get started":
             self._build_get_started(pane)
@@ -650,33 +783,65 @@ class SettingsWindow:
         self._schedule_wraps()
 
     def _schedule_wraps(self, _event=None):
+        if _event is not None:
+            previous = self._wrap_widths.get(_event.widget)
+            if previous is not None and abs(_event.width - previous) < 3:
+                return
+            self._wrap_widths[_event.widget] = _event.width
         if self._wrap_after_id is not None:
             try:
                 self._root.after_cancel(self._wrap_after_id)
             except tk.TclError:
                 pass
-        self._wrap_after_id = self._root.after_idle(self._refresh_wraps)
+        self._wrap_after_id = self._root.after(100, self._refresh_wraps)
 
-    def _refresh_wraps(self):
+    def _refresh_wraps(self, settle_underlays=True):
         self._wrap_after_id = None
         alive = []
+        changed = False
         for label, host, subtract in self._wrap_labels:
             if label.winfo_exists() and host.winfo_exists():
                 width = max(sc(120), host.winfo_width() - subtract)
-                label.configure(wraplength=width)
+                if abs(int(label.cget("wraplength")) - width) >= 3:
+                    label.configure(wraplength=width)
+                    changed = True
                 alive.append((label, host, subtract))
         self._wrap_labels = alive
+        if (changed and settle_underlays and self._win is not None
+                and self._win.winfo_exists()):
+            self._win.update_idletasks()
+            for container in self._round_containers:
+                if container.winfo_exists():
+                    container._round_render_now()
+
+    def _render_pending_now(self):
+        """Synchronously settle wraps and rounded underlays for atomic paint."""
+        if self._wrap_after_id is not None:
+            try:
+                self._root.after_cancel(self._wrap_after_id)
+            except tk.TclError:
+                pass
+            self._wrap_after_id = None
+        self._refresh_wraps(settle_underlays=False)
+        self._win.update_idletasks()
+        alive = []
+        for container in self._round_containers:
+            if container.winfo_exists():
+                container._round_render_now()
+                alive.append(container)
+        self._round_containers = alive
+        self._win.update_idletasks()
 
     def _rounded_container(self, container, radius, fill, outline,
                            bg=None, outline_w=HAIR):
-        """Put a debounced Pillow rounded rectangle behind container content."""
+        """Put a trailing-settled 9-slice rounded image behind content."""
         corner_bg = bg or container.master.cget("bg")
         container.configure(bg=corner_bg, highlightthickness=0, bd=0)
         backdrop = tk.Label(container, bg=corner_bg, bd=0,
-                            highlightthickness=0)
-        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+                            highlightthickness=0, anchor="nw")
+        backdrop.place(x=0, y=0)
         state = {"fill": fill, "outline": outline, "after": None,
-                 "last": None, "cache": {}}
+                 "last": None, "pending_size": None}
 
         def render():
             state["after"] = None
@@ -688,21 +853,33 @@ class SettingsWindow:
             key = (w, h, state["fill"], state["outline"])
             if key == state["last"]:
                 return
-            photo = state["cache"].get(key)
-            if photo is None:
-                width = HAIR + 1 if state["outline"] == ACCENT else outline_w
-                photo = ImageTk.PhotoImage(_round_img(
-                    w, h, radius, state["fill"], state["outline"],
-                    bg=corner_bg, outline_w=width))
-                state["cache"][key] = photo
+            width = HAIR + 1 if state["outline"] == ACCENT else outline_w
+            photo = ImageTk.PhotoImage(_round_underlay_img(
+                w, h, radius, state["fill"], state["outline"],
+                bg=corner_bg, outline_w=width))
             backdrop.configure(image=photo)
             backdrop.image = photo
             state["last"] = key
+            state["pending_size"] = None
 
-        def schedule(_event=None):
+        def schedule(_event=None, delay=100):
+            if _event is not None:
+                state["pending_size"] = (_event.width, _event.height)
             if state["after"] is not None:
-                container.after_cancel(state["after"])
-            state["after"] = container.after(40, render)
+                try:
+                    container.after_cancel(state["after"])
+                except tk.TclError:
+                    pass
+            state["after"] = container.after(delay, render)
+
+        def render_now():
+            if state["after"] is not None:
+                try:
+                    container.after_cancel(state["after"])
+                except tk.TclError:
+                    pass
+                state["after"] = None
+            render()
 
         def set_colors(fill=None, outline=None):
             if fill is not None:
@@ -710,11 +887,13 @@ class SettingsWindow:
             if outline is not None:
                 state["outline"] = outline
             state["last"] = None
-            schedule()
+            schedule(delay=0)
 
         container.bind("<Configure>", schedule, add="+")
         container._round_set = set_colors
         container._round_backdrop = backdrop
+        container._round_render_now = render_now
+        self._round_containers.append(container)
         schedule()
         return backdrop
 
