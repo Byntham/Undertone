@@ -525,6 +525,15 @@ class SettingsWindow:
         self._wrap_widths = {}
         self._round_containers = []
         self._redraw_depth = 0
+        self._resize_after_id = None
+        self._size_move_active = False
+        self._freeze_enter_after_id = None
+        self._freeze_exit_after_id = None
+        self._freeze_start_size = None
+        self._resize_snapshot_label = None
+        self._resize_snapshot_photo = None
+        self._client_hwnd = None
+        self._last_client_size = None
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -574,8 +583,13 @@ class SettingsWindow:
         win.protocol("WM_DELETE_WINDOW", self._close)
         win.bind("<Escape>", self._on_escape)
 
+        # Keep the packed widget tree under one fixed-size child.  During a
+        # native resize only the toplevel changes; this host stays frozen so
+        # Tk does not synchronously re-lay out every descendant on WM_SIZE.
+        self._host = tk.Frame(win, bg=BASE)
+
         # Sidebar ------------------------------------------------------------
-        side = tk.Frame(win, bg=MANTLE, width=sc(SIDEBAR_W))
+        side = tk.Frame(self._host, bg=MANTLE, width=sc(SIDEBAR_W))
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
 
@@ -592,7 +606,7 @@ class SettingsWindow:
 
         self._nav_items = {}
         self._nav_glyphs = {}    # (section, state) -> PhotoImage
-        self._content = tk.Frame(win, bg=BASE)
+        self._content = tk.Frame(self._host, bg=BASE)
         self._content.pack(side="left", fill="both", expand=True)
 
         show_get_started = self._setup_incomplete()
@@ -601,12 +615,25 @@ class SettingsWindow:
                 continue
             self._nav_items[section] = self._make_nav_item(side, section)
 
+        geometry = self._restore_geometry()
+        match = re.match(r"(\d+)x(\d+)", geometry)
+        initial_w, initial_h = map(int, match.groups())
+        self._host.place(x=0, y=0, width=initial_w, height=initial_h)
+
         initial_section = "Get started" if show_get_started else "General"
         self._paint_atomically(lambda: self._select_section(initial_section))
 
-        self._restore_geometry()
         apply_dark_titlebar(self._win)
         self._set_window_icons()
+        # Snapshot-freeze needs the Tk client HWND for PrintWindow.
+        try:
+            self._client_hwnd = int(win.winfo_id())
+        except Exception:
+            self._client_hwnd = None
+        # Seed with the initial size so the first map's Configure events
+        # don't read as a resize and trigger a freeze of a half-built window.
+        self._last_client_size = (initial_w, initial_h)
+        win.bind("<Configure>", self._schedule_resize_settle)
         self._raise()
 
     def _set_window_icons(self):
@@ -694,18 +721,23 @@ class SettingsWindow:
         except Exception:
             pass
 
-    def _paint_atomically(self, rebuild):
+    def _paint_atomically(self, rebuild, finalize=None, flush=True):
         """Run a rebuild with painting frozen, then flush its final layout."""
         outermost = self._redraw_depth == 0
         if outermost:
             self._set_window_redraw(False)
         self._redraw_depth += 1
         try:
-            result = rebuild()
-            if outermost and self._win is not None and self._win.winfo_exists():
-                self._win.update_idletasks()
-                self._render_pending_now()
-            return result
+            try:
+                result = rebuild()
+                if (flush and outermost and self._win is not None
+                        and self._win.winfo_exists()):
+                    self._win.update_idletasks()
+                    self._render_pending_now()
+                return result
+            finally:
+                if finalize is not None:
+                    finalize()
         finally:
             self._redraw_depth -= 1
             if outermost:
@@ -714,6 +746,196 @@ class SettingsWindow:
     def _select_section(self, section):
         return self._paint_atomically(
             lambda: self._rebuild_section(section))
+
+    def _schedule_resize_settle(self, event=None):
+        """Edge-triggered snapshot freeze around resize storms.
+
+        The first size change of a storm swaps the HWND-heavy widget tree
+        for one stale bitmap (the native frame then tracks the cursor
+        smoothly, Steam-style); 150ms without another Configure ends the
+        storm and settles the real content once, atomically. Bound on the
+        toplevel, so it also fires for descendants via bindtags — those
+        are filtered out, as are pure moves.
+        """
+        win = self._win
+        if win is None or event is None or str(event.widget) != str(win):
+            return
+        size = (win.winfo_width(), win.winfo_height())
+        if size == self._last_client_size and not self._size_move_active:
+            return  # pure move or spurious Configure
+        self._last_client_size = size
+        if not self._size_move_active:
+            self._queue_freeze_enter()
+        if self._resize_after_id is not None:
+            try:
+                win.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+        self._resize_after_id = win.after(150, self._end_resize_storm)
+
+    def _end_resize_storm(self):
+        """Trailing edge of a resize storm: unfreeze and settle."""
+        self._resize_after_id = None
+        if self._size_move_active:
+            self._queue_freeze_exit()
+
+    def _settle_resize(self, finalize=None):
+        """Snap the packed content tree to the final client size atomically."""
+        self._resize_after_id = None
+        if self._win is None or not self._win.winfo_exists():
+            return
+        width = self._win.winfo_width()
+        height = self._win.winfo_height()
+        self._paint_atomically(
+            lambda: self._host.place_configure(width=width, height=height),
+            finalize=finalize)
+
+    def _queue_freeze_enter(self):
+        """Mark the native drag immediately; defer all widget work."""
+        if self._size_move_active or self._win is None:
+            return
+        self._size_move_active = True
+        self._freeze_enter_after_id = self._win.after_idle(self._freeze_enter)
+
+    def _queue_freeze_exit(self):
+        """Defer restoration until Tk finishes dispatching the native event."""
+        if not self._size_move_active or self._win is None:
+            return
+        if self._freeze_exit_after_id is None:
+            self._freeze_exit_after_id = self._win.after_idle(self._freeze_exit)
+
+    def _capture_resize_snapshot(self):
+        """Return a Pillow image of the Tk client HWND via PrintWindow."""
+        if not self._client_hwnd:
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", wintypes.DWORD),
+                    ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD),
+                    ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD),
+                ]
+
+            class BITMAPINFO(ctypes.Structure):
+                _fields_ = [("bmiHeader", BITMAPINFOHEADER),
+                            ("bmiColors", wintypes.DWORD * 3)]
+
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            hwnd = wintypes.HWND(self._client_hwnd)
+            user32.GetClientRect.argtypes = (wintypes.HWND,
+                                             ctypes.POINTER(wintypes.RECT))
+            user32.GetClientRect.restype = wintypes.BOOL
+            user32.PrintWindow.argtypes = (wintypes.HWND, wintypes.HDC,
+                                           wintypes.UINT)
+            user32.PrintWindow.restype = wintypes.BOOL
+            gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+            gdi32.CreateCompatibleDC.restype = wintypes.HDC
+            gdi32.CreateDIBSection.argtypes = (
+                wintypes.HDC, ctypes.POINTER(BITMAPINFO), wintypes.UINT,
+                ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE,
+                wintypes.DWORD)
+            gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+            gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
+            gdi32.SelectObject.restype = wintypes.HGDIOBJ
+            gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+            gdi32.DeleteObject.restype = wintypes.BOOL
+            gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+            gdi32.DeleteDC.restype = wintypes.BOOL
+            rect = wintypes.RECT()
+            if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                return None
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return None
+
+            info = BITMAPINFO()
+            info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height  # top-down DIB
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            bits = ctypes.c_void_p()
+            dc = gdi32.CreateCompatibleDC(None)
+            if not dc:
+                return None
+            bitmap = None
+            old_bitmap = None
+            try:
+                bitmap = gdi32.CreateDIBSection(
+                    dc, ctypes.byref(info), 0, ctypes.byref(bits), None, 0)
+                if not bitmap or not bits:
+                    return None
+                old_bitmap = gdi32.SelectObject(dc, bitmap)
+                if not user32.PrintWindow(hwnd, dc, 2):  # PW_RENDERFULLCONTENT
+                    return None
+                pixels = ctypes.string_at(bits, width * height * 4)
+                return Image.frombytes(
+                    "RGB", (width, height), pixels, "raw", "BGRX")
+            finally:
+                if old_bitmap:
+                    gdi32.SelectObject(dc, old_bitmap)
+                if bitmap:
+                    gdi32.DeleteObject(bitmap)
+                gdi32.DeleteDC(dc)
+        except Exception:
+            return None
+
+    def _freeze_enter(self):
+        """Replace the HWND-heavy widget tree with one stale bitmap."""
+        self._freeze_enter_after_id = None
+        if (not self._size_move_active or self._win is None
+                or not self._win.winfo_exists()):
+            return
+        # NOTE: the trailing _resize_after_id timer stays alive — it is the
+        # only thing that ends the storm now that freezing is edge-triggered.
+        self._render_pending_now()
+        self._freeze_start_size = (self._win.winfo_width(),
+                                   self._win.winfo_height())
+        snapshot = self._capture_resize_snapshot()
+        if snapshot is not None:
+            self._resize_snapshot_photo = ImageTk.PhotoImage(snapshot)
+            self._resize_snapshot_label = tk.Label(
+                self._win, image=self._resize_snapshot_photo, bg=BASE,
+                bd=0, highlightthickness=0)
+            self._resize_snapshot_label.place(x=0, y=0, anchor="nw")
+        self._host.place_forget()
+
+    def _finish_freeze(self):
+        label = self._resize_snapshot_label
+        if label is not None and label.winfo_exists():
+            label.destroy()
+        self._resize_snapshot_label = None
+        self._resize_snapshot_photo = None
+        self._freeze_start_size = None
+        self._size_move_active = False
+
+    def _freeze_exit(self):
+        """Restore and settle the host once at the native drag's final size."""
+        self._freeze_exit_after_id = None
+        if (not self._size_move_active or self._win is None
+                or not self._win.winfo_exists()):
+            return
+        final_size = (self._win.winfo_width(), self._win.winfo_height())
+        if final_size != self._freeze_start_size:
+            self._settle_resize(finalize=self._finish_freeze)
+        else:
+            width, height = final_size
+            self._paint_atomically(
+                lambda: self._host.place_configure(
+                    width=width, height=height),
+                finalize=self._finish_freeze, flush=False)
 
     def _rebuild_section(self, section):
         self._cancel_history_poll()
@@ -2419,16 +2641,19 @@ class SettingsWindow:
     def _restore_geometry(self):
         geometry = self._valid_geometry(self._config.get("window_geometry"))
         if geometry is None:
-            self._center()
+            geometry = self._center()
         else:
             self._win.geometry(geometry)
+        return geometry
 
     def _center(self):
         self._win.update_idletasks()
         w, h = sc(WIN_W), sc(WIN_H)
         x = (self._win.winfo_screenwidth() - w) // 2
         y = (self._win.winfo_screenheight() - h) // 2 - sc(30)
-        self._win.geometry(f"{w}x{h}+{x}+{y}")
+        geometry = f"{w}x{h}+{x}+{y}"
+        self._win.geometry(geometry)
+        return geometry
 
     def _raise(self):
         win = self._win
@@ -2445,6 +2670,20 @@ class SettingsWindow:
 
     def _close(self):
         self._cancel_history_poll()
+        for attr in ("_freeze_enter_after_id", "_freeze_exit_after_id"):
+            after_id = getattr(self, attr)
+            if after_id is not None:
+                try:
+                    self._win.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
+        if self._resize_after_id is not None:
+            try:
+                self._win.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+            self._resize_after_id = None
         if self._capturing:
             self._capturing = False
             if self._on_capture_end is not None:
@@ -2458,4 +2697,10 @@ class SettingsWindow:
             self._config = {**self._config, "window_geometry": geometry}
             self._on_save(self._config)
             self._win.destroy()
+        self._size_move_active = False
+        self._freeze_start_size = None
+        self._resize_snapshot_label = None
+        self._resize_snapshot_photo = None
+        self._client_hwnd = None
+        self._last_client_size = None
         self._win = None
