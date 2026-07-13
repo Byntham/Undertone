@@ -51,6 +51,9 @@ WIN_W, WIN_H = 780, 724
 SIDEBAR_W = 200
 HAIR = max(1, sc(1))     # hairline border width in real pixels
 
+CARD_HOVER = "#2b2c40"   # toggle cards lift to this on hover
+ROW_HOVER = "#232338"    # MANTLE list rows lift to this on hover
+
 LANGUAGES = [
     ("English", "en"), ("Arabic", "ar"), ("Chinese", "zh"), ("Danish", "da"),
     ("Dutch", "nl"), ("Finnish", "fi"), ("French", "fr"), ("German", "de"),
@@ -81,6 +84,10 @@ SECTIONS = ["Get started", "General", "Dictionary", "History", "Providers",
 def _rgb(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _lerp_rgb(a, b, t):
+    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
 def pretty_combo(combo: str) -> str:
@@ -137,26 +144,38 @@ def load_app_image(size: int = 64) -> Image.Image:
         return make_tray_image(size)
 
 
+def make_recording_tray_image(size: int = 64) -> Image.Image:
+    """The app icon tinted toward red — shown in the tray while recording."""
+    base = load_app_image(size)
+    tint = Image.new("RGBA", base.size, _rgb(RED) + (0,))
+    # ~35% red, masked by the icon's own alpha so the corners stay clear.
+    tint.putalpha(base.getchannel("A").point(lambda a: a * 90 // 255))
+    return Image.alpha_composite(base, tint)
+
+
 def _toggle_images(bg=BASE):
-    """(off, on) PhotoImages for a switch, rendered on the given background."""
+    """Five switch PhotoImages from off ([0]) to on ([-1]).
+
+    The intermediate frames drive the toggle tween; initial renders index
+    the end frames directly ([0] / [-1])."""
     size = (sc(40), sc(22))
     out = []
     w, h = size[0] * 4, size[1] * 4
-    for on in (False, True):
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0):
         img = Image.new("RGB", (w, h), _rgb(bg))
         d = ImageDraw.Draw(img)
-        track = _rgb(ACCENT) if on else _rgb(SURFACE1)
+        track = _lerp_rgb(_rgb(SURFACE1), _rgb(ACCENT), t)
         d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=track)
         knob_r = h // 2 - 8
-        cx = (w - h // 2) if on else (h // 2)
-        knob = _rgb(INK) if on else _rgb(TEXT)
+        cx = round((h // 2) + ((w - h // 2) - (h // 2)) * t)
+        knob = _lerp_rgb(_rgb(TEXT), _rgb(INK), t)
         d.ellipse((cx - knob_r, h // 2 - knob_r, cx + knob_r, h // 2 + knob_r),
                   fill=knob)
         out.append(ImageTk.PhotoImage(img.resize(size, Image.LANCZOS)))
     return out
 
 
-def _round_img(w, h, radius, fill, outline=None, bg=BASE):
+def _round_img(w, h, radius, fill, outline=None, bg=BASE, outline_w=None):
     """A rounded rectangle rendered on a solid background, 4x supersampled."""
     ss = 4
     img = Image.new("RGB", (w * ss, h * ss), _rgb(bg))
@@ -164,7 +183,8 @@ def _round_img(w, h, radius, fill, outline=None, bg=BASE):
     d.rounded_rectangle((0, 0, w * ss - 1, h * ss - 1), radius=radius * ss,
                         fill=_rgb(fill),
                         outline=_rgb(outline) if outline else None,
-                        width=ss * max(1, round(scale())))
+                        width=ss * (outline_w if outline_w is not None
+                                    else max(1, round(scale()))))
     return img.resize((w, h), Image.LANCZOS)
 
 
@@ -235,13 +255,22 @@ def apply_dark_titlebar(win):
 
 # --- Tray ---------------------------------------------------------------------
 
-def create_tray(on_settings: Callable[[], None], on_quit: Callable[[], None]) -> pystray.Icon:
+def create_tray(
+    on_settings: Callable[[], None],
+    on_quit: Callable[[], None],
+    on_toggle_pause: Optional[Callable[[], None]] = None,
+    is_paused: Optional[Callable[[], bool]] = None,
+) -> pystray.Icon:
     """Build (but do not run) the system tray icon."""
-    menu = pystray.Menu(
-        pystray.MenuItem("Settings…", lambda icon, item: on_settings(), default=True),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit", lambda icon, item: on_quit()),
-    )
+    items = [pystray.MenuItem("Settings…", lambda icon, item: on_settings(),
+                              default=True)]
+    if on_toggle_pause is not None and is_paused is not None:
+        items.append(pystray.MenuItem(
+            "Pause dictation", lambda icon, item: on_toggle_pause(),
+            checked=lambda item: is_paused()))
+    items += [pystray.Menu.SEPARATOR,
+              pystray.MenuItem("Quit", lambda icon, item: on_quit())]
+    menu = pystray.Menu(*items)
     return pystray.Icon(
         "Undertone",
         icon=load_app_image(),
@@ -271,14 +300,20 @@ class RoundButton(tk.Label):
         self._fixed_w = width
         self._enabled = True
         self._state = "normal"
+        self._focused = False
         super().__init__(parent, text=text, compound="center",
-                         font=self._font, bd=0, bg=bg, cursor="hand2")
+                         font=self._font, bd=0, bg=bg, cursor="hand2",
+                         takefocus=1)
         self._render(text)
         self._apply_state("normal")
         self.bind("<Enter>", lambda _e: self._hover(True))
         self.bind("<Leave>", lambda _e: self._hover(False))
         self.bind("<Button-1>", self._press)
         self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<FocusIn>", lambda _e: self._set_focus(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focus(False))
+        self.bind("<Return>", self._key_activate)
+        self.bind("<space>", self._key_activate)
 
     def _render(self, text):
         f = tkfont.Font(font=self._font)
@@ -297,22 +332,43 @@ class RoundButton(tk.Label):
         # freeing them first deletes the image the label still displays,
         # and any config() call then fails with "pyimageN doesn't exist".
         old_imgs = getattr(self, "_imgs", None)
-        self._imgs, self._fgs = {}, {}
+        old_focus_imgs = getattr(self, "_focus_imgs", None)
+        self._imgs, self._focus_imgs, self._fgs = {}, {}, {}
+        # Keyboard-focus ring; on accent fills the accent ring would vanish,
+        # so those get an INK ring instead.
+        ring = INK if self._kind == "accent" else ACCENT
         for state, (fill, outline, fg) in spec.items():
             self._imgs[state] = ImageTk.PhotoImage(
                 _round_img(w, self._h, self._h // 2, fill, outline, bg=self._bg))
+            self._focus_imgs[state] = ImageTk.PhotoImage(
+                _round_img(w, self._h, self._h // 2, fill, ring, bg=self._bg,
+                           outline_w=HAIR + 1))
             self._fgs[state] = fg
-        self.config(text=text, image=self._imgs[self._state])
-        del old_imgs
+        imgs = self._focus_imgs if self._focused else self._imgs
+        self.config(text=text, image=imgs[self._state])
+        del old_imgs, old_focus_imgs
 
     def _apply_state(self, state):
         self._state = state
-        self.config(image=self._imgs[state], fg=self._fgs[state],
+        imgs = self._focus_imgs if self._focused else self._imgs
+        self.config(image=imgs[state], fg=self._fgs[state],
                     cursor="hand2" if self._enabled else "")
+
+    def _set_focus(self, focused):
+        self._focused = focused
+        self._apply_state(self._state)
 
     def _hover(self, inside):
         if self._enabled:
             self._apply_state("hover" if inside else "normal")
+
+    def _key_activate(self, _e):
+        if not self._enabled or self._command is None:
+            return
+        self._apply_state("down")
+        self.after(100, lambda: self.winfo_exists()
+                   and self._apply_state("normal"))
+        self._command()
 
     def _press(self, _e):
         if self._enabled:
@@ -328,6 +384,15 @@ class RoundButton(tk.Label):
 
     def set_text(self, text):
         self._render(text)
+        self._apply_state(self._state if self._enabled else "disabled")
+
+    def set_bg(self, bg):
+        """Re-render on a new background (the parent row hovered)."""
+        if bg == self._bg:
+            return
+        self._bg = bg
+        self.config(bg=bg)
+        self._render(self.cget("text"))
         self._apply_state(self._state if self._enabled else "disabled")
 
     def enable(self):
@@ -414,6 +479,7 @@ class SettingsWindow:
         win.configure(bg=BASE)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", self._close)
+        win.bind("<Escape>", self._on_escape)
         win.geometry(f"{sc(WIN_W)}x{sc(WIN_H)}")
 
         # Sidebar ------------------------------------------------------------
@@ -588,26 +654,89 @@ class SettingsWindow:
         return right, widgets
 
     def _toggle_card(self, parent, title, hint, initial, on_change):
-        """A setting card with a switch; the whole card toggles."""
+        """A setting card with a switch; the whole card toggles.
+
+        The knob tweens through the intermediate _toggle_images frames
+        (~130 ms, ease-out); state["set"] jumps without animating (used by
+        the autostart snap-back). The whole card lifts to CARD_HOVER on
+        hover, and the switch is keyboard-reachable (Tab, then Space)."""
         right, widgets = self._row_card(parent, title, hint)
-        state = {"on": bool(initial)}
-        sw = tk.Label(right, image=self._toggle_imgs[int(state["on"])],
-                      bg=CARD, cursor="hand2")
+        state = {"on": bool(initial), "frame": 4 if initial else 0,
+                 "hover": False, "anim": None}
+        # tk draws this frame's highlight ring while it holds focus.
+        ring = tk.Frame(right, bg=CARD, takefocus=1,
+                        highlightthickness=HAIR + 1, highlightcolor=ACCENT,
+                        highlightbackground=CARD)
+        ring.pack()
+
+        def imgs():
+            return (self._toggle_imgs_hover if state["hover"]
+                    else self._toggle_imgs)
+
+        sw = tk.Label(ring, image=imgs()[state["frame"]], bg=CARD,
+                      cursor="hand2")
         sw.pack()
 
+        def show(frame):
+            state["frame"] = frame
+            sw.config(image=imgs()[frame])
+
+        def stop_anim():
+            if state["anim"] is not None:
+                self._root.after_cancel(state["anim"])
+                state["anim"] = None
+
+        def step(frames, delays):
+            state["anim"] = None
+            show(frames[0])
+            if len(frames) > 1:
+                state["anim"] = self._root.after(
+                    delays[0], lambda: step(frames[1:], delays[1:]))
+
+        def set_on(on):
+            """Jump the switch display (no animation, no on_change)."""
+            stop_anim()
+            state["on"] = bool(on)
+            show(4 if on else 0)
+        state["set"] = set_on
+
         def toggle(_e=None):
+            stop_anim()   # rapid clicks: drop the pending chain and restart
             state["on"] = not state["on"]
-            sw.config(image=self._toggle_imgs[int(state["on"])])
+            step([1, 2, 3, 4] if state["on"] else [3, 2, 1, 0],
+                 [30, 30, 35, 40])
             on_change(state["on"])
-        for w in widgets + [sw, right]:
+
+        outer = widgets[0].master   # the bordered card frame
+        hover_set = [outer] + widgets + [right, ring, sw]
+
+        def hover(inside):
+            def fn(_e):
+                state["hover"] = inside
+                bg = CARD_HOVER if inside else CARD
+                for w in hover_set:
+                    w.configure(bg=bg)
+                for w in widgets[1].winfo_children():   # e.g. cleanup warn
+                    w.configure(bg=bg)
+                ring.configure(highlightbackground=bg)
+                sw.config(image=imgs()[state["frame"]])
+            return fn
+
+        for w in widgets + [sw, right, ring]:
             w.bind("<Button-1>", toggle)
             w.configure(cursor="hand2")
+        for w in hover_set:
+            w.bind("<Enter>", hover(True))
+            w.bind("<Leave>", hover(False))
+        for seq in ("<space>", "<Return>"):
+            ring.bind(seq, toggle)
         return state, sw, widgets[1]   # widgets[1] = left text column
 
     def _dropdown(self, parent, text, on_open, width=170):
         """A fixed-width dark dropdown control; returns its value label."""
-        ctrl = tk.Frame(parent, bg=SURFACE0, cursor="hand2",
+        ctrl = tk.Frame(parent, bg=SURFACE0, cursor="hand2", takefocus=1,
                         highlightthickness=HAIR, highlightbackground=SURFACE1,
+                        highlightcolor=ACCENT,
                         width=sc(width), height=sc(30))
         ctrl.pack_propagate(False)
         ctrl.pack()
@@ -627,6 +756,8 @@ class SettingsWindow:
             w.bind("<Button-1>", lambda _e: on_open(ctrl))
             w.bind("<Enter>", hover(SURFACE1))
             w.bind("<Leave>", hover(SURFACE0))
+        for seq in ("<Return>", "<space>", "<Down>"):
+            ctrl.bind(seq, lambda _e: on_open(ctrl))
         return lbl
 
     def _menu(self, entries):
@@ -658,6 +789,7 @@ class SettingsWindow:
         pane = self._scroll_pane(pane)
         self._header(pane, "Get started")
         self._toggle_imgs = _toggle_images(bg=CARD)
+        self._toggle_imgs_hover = _toggle_images(bg=CARD_HOVER)
 
         # Step 1 — provider + API key + test.
         card = self._card(pane)
@@ -837,6 +969,7 @@ class SettingsWindow:
 
         self._group(pane, "Dictation")
         self._toggle_imgs = _toggle_images(bg=CARD)
+        self._toggle_imgs_hover = _toggle_images(bg=CARD_HOVER)
 
         right, _ = self._row_card(pane, "Spoken language",
                                   "The language you dictate in.")
@@ -856,7 +989,7 @@ class SettingsWindow:
             "Match spacing and capitalization to where you're typing.")
         left = self._config_toggle_card(
             pane, "AI cleanup", "ai_cleanup",
-            "Remove fillers and false starts with a fast grok model. Sends "
+            "Clean up fillers and false starts with a fast grok model. Sends "
             "the text near your cursor to your cleanup provider.")
         self._cleanup_warn = tk.Label(left, text="", bg=CARD, fg=AMBER,
                                       font=HINT_FONT, anchor="w",
@@ -864,7 +997,7 @@ class SettingsWindow:
         self._refresh_cleanup_hint()
         self._config_toggle_card(
             pane, "Sound cues", "sound_cues",
-            "Soft tick when recording starts and stops.")
+            "Play a soft tick when recording starts and stops.")
 
         self._group(pane, "System")
         self._autostart_card(pane)
@@ -886,8 +1019,7 @@ class SettingsWindow:
                 self._flash_saved()
             except Exception:
                 # Registry write failed — snap the switch back to reality.
-                auto["state"]["on"] = not on
-                auto["sw"].config(image=self._toggle_imgs[int(not on)])
+                auto["state"]["set"](not on)
         state, sw, _left = self._toggle_card(
             pane, "Start with Windows",
             "Launch quietly in the tray when you sign in.",
@@ -1123,20 +1255,24 @@ class SettingsWindow:
             row = tk.Frame(inner, bg=MANTLE)
             row.pack(fill="x", pady=1)
             when = time.strftime("%H:%M", time.localtime(ts))
-            tk.Label(row, text=when, bg=MANTLE, fg=MUTED, font=HINT_FONT,
-                     width=6, anchor="w", padx=sc(10)).pack(side="left")
-            RoundButton(row, "Paste", lambda t=text: self._repaste(t),
-                        small=True, bg=MANTLE).pack(side="right",
-                                                    padx=(0, sc(8)), pady=sc(3))
-            RoundButton(row, "Copy", lambda t=text: self._copy(t),
-                        small=True, bg=MANTLE).pack(side="right",
-                                                    padx=(0, sc(6)), pady=sc(3))
+            when_lbl = tk.Label(row, text=when, bg=MANTLE, fg=MUTED,
+                                font=HINT_FONT, width=6, anchor="w",
+                                padx=sc(10))
+            when_lbl.pack(side="left")
+            paste_btn = RoundButton(row, "Paste", lambda t=text: self._repaste(t),
+                                    small=True, bg=MANTLE)
+            paste_btn.pack(side="right", padx=(0, sc(8)), pady=sc(3))
+            copy_btn = RoundButton(row, "Copy", lambda t=text: self._copy(t),
+                                   small=True, bg=MANTLE)
+            copy_btn.pack(side="right", padx=(0, sc(6)), pady=sc(3))
             preview = text.replace("\n", " ").strip()
             if len(preview) > 46:
                 preview = preview[:45] + "…"
-            tk.Label(row, text=preview, bg=MANTLE, fg=TEXT, font=FONT,
-                     anchor="w").pack(side="left", fill="x", expand=True,
-                                      padx=(sc(4), sc(8)))
+            prev_lbl = tk.Label(row, text=preview, bg=MANTLE, fg=TEXT,
+                                font=FONT, anchor="w")
+            prev_lbl.pack(side="left", fill="x", expand=True,
+                          padx=(sc(4), sc(8)))
+            self._hover_row(row, [when_lbl, prev_lbl], (copy_btn, paste_btn))
 
     def _copy(self, text):
         try:
@@ -1493,10 +1629,26 @@ class SettingsWindow:
         x.bind("<Enter>", lambda _e: x.config(fg=RED))
         x.bind("<Leave>", lambda _e: x.config(fg=MUTED))
         x.bind("<Button-1>", lambda _e: on_remove())
+        self._hover_row(row, [lbl, x])
         wheel = getattr(parent, "_wheel", None)
         if wheel is not None:
             for w in (row, lbl, x):
                 w.bind("<MouseWheel>", wheel)
+
+    def _hover_row(self, row, labels, buttons=()):
+        """Lift a MANTLE list row to ROW_HOVER while the pointer is over it."""
+        def paint(inside):
+            def fn(_e):
+                bg = ROW_HOVER if inside else MANTLE
+                for w in (row, *labels):
+                    w.configure(bg=bg)
+                for b in buttons:
+                    b.set_bg(bg)
+            return fn
+        # add="+": buttons and the ✕ keep their own Enter/Leave behaviors.
+        for w in (row, *labels, *buttons):
+            w.bind("<Enter>", paint(True), add="+")
+            w.bind("<Leave>", paint(False), add="+")
 
     # --- Behaviors ---------------------------------------------------------------
 
@@ -1674,7 +1826,9 @@ class SettingsWindow:
     def _capture_worker(self):
         combo = None
         try:
-            combo = keyboard.read_hotkey(suppress=False)
+            # suppress: captured keystrokes must not leak into whatever
+            # app happens to hold keyboard focus.
+            combo = keyboard.read_hotkey(suppress=True)
         except Exception:
             combo = None
         self._queue.put(("captured", combo))
@@ -1699,6 +1853,19 @@ class SettingsWindow:
                 cancelled = True
             except ImportError:
                 new_hotkey = combo.strip().lower()
+
+        if not cancelled:
+            # A combo can serve only one shortcut at a time.
+            for key, label in (("hotkey", "Push-to-talk"),
+                               ("repaste_hotkey", "Re-paste"),
+                               ("toggle_hotkey", "the toggle key")):
+                if (key != self._capture_target
+                        and self._config.get(key, "") == new_hotkey):
+                    if alive:
+                        row["error"].config(text=f"Already used by {label}.")
+                        row["error"].pack(fill="x", pady=(sc(3), 0))
+                    cancelled = True
+                    break
 
         if alive:
             shown = row["combo"] if cancelled else new_hotkey
@@ -1733,6 +1900,10 @@ class SettingsWindow:
         win.focus_force()
         win.after(200, lambda: win.winfo_exists()
                   and win.attributes("-topmost", False))
+
+    def _on_escape(self, _e=None):
+        if not self._capturing:   # during capture, Esc cancels the capture
+            self._close()
 
     def _close(self):
         if self._capturing:

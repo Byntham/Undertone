@@ -30,7 +30,8 @@ from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
 from transcriber import TranscriptionError, transcribe
-from ui import SettingsWindow, create_tray, pretty_combo
+from ui import (SettingsWindow, create_tray, load_app_image,
+                make_recording_tray_image, pretty_combo)
 
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono
 # int16) are treated as an accidental tap and skipped.
@@ -98,7 +99,9 @@ class App:
         self._extra_hotkey_scancodes: set = set()
         self._extra_hotkey_handles: list = []
 
-        self.recorder = Recorder(sample_rate=self.cfg.get("sample_rate", 16000))
+        self.recorder = Recorder(
+            sample_rate=self.cfg.get("sample_rate", 16000),
+            device=self.cfg.get("input_device") or None)
         self.overlay = Overlay(self.root,
                                level_getter=lambda: self.recorder.level)
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
@@ -114,9 +117,16 @@ class App:
             on_repaste=self._paste_from_history,
             config_getter=lambda: self.cfg,
         )
+        # Tray pause state and icons (normal / red-tinted while recording).
+        # Built once; the recording swap happens on the hook thread.
+        self._paused = False
+        self._tray_img = load_app_image()
+        self._tray_img_recording = make_recording_tray_image()
         self.tray = create_tray(
             on_settings=lambda: self._post(self.settings.open),
             on_quit=lambda: self._post(self._quit),
+            on_toggle_pause=lambda: self._post(self._toggle_pause),
+            is_paused=lambda: self._paused,
         )
 
         # Dictation history (session-only, in memory) and insertion memory
@@ -184,6 +194,7 @@ class App:
         if self.cfg.get("sound_cues", True):
             sounds.play_start()
         self.overlay.show_recording()
+        self._set_tray_icon(self._tray_img_recording)
         return True
 
     def _on_lock(self):
@@ -195,6 +206,7 @@ class App:
     def _finish_recording(self):
         if self.cfg.get("sound_cues", True):
             sounds.play_stop()
+        self._set_tray_icon(self._tray_img)
         wav = self.recorder.stop()
         if len(wav) < MIN_AUDIO_BYTES:
             self.overlay.show_message(
@@ -210,6 +222,15 @@ class App:
     def _discard_recording(self):
         self.recorder.stop()
         self.overlay.hide()
+        self._set_tray_icon(self._tray_img)
+
+    def _set_tray_icon(self, img):
+        """Swap the tray icon; called from the hook thread too, and pystray
+        quirks must never crash the app."""
+        try:
+            self.tray.icon = img
+        except Exception:
+            pass
 
     def _on_other_key(self, scan_code: int):
         """Non-hotkey keydown (from the PushToTalk hook): the caret has
@@ -407,11 +428,48 @@ class App:
         self._unregister_extra_hotkeys()
 
     def _resume_hotkey(self):
+        if self._paused:
+            return  # the tray pause owns the hotkeys until resumed
         try:
             self.ptt.start()
         except ValueError as e:
             self.overlay.show_message(str(e), duration_ms=5000, error=True)
         self._register_extra_hotkeys()
+
+    def _toggle_pause(self):
+        """Tray menu: suspend/resume dictation (all hotkeys)."""
+        self._paused = not self._paused
+        if self._paused:
+            self.gestures.cancel()   # a live recording can't outlive its hooks
+            try:
+                self.ptt.stop()
+            except Exception:
+                pass
+            self._unregister_extra_hotkeys()
+            self.overlay.show_message("Dictation paused", 1500, warn=True)
+        else:
+            try:
+                self.ptt.start()
+            except ValueError as e:
+                self.overlay.show_message(str(e), duration_ms=5000, error=True)
+            else:
+                self.overlay.show_message("Dictation resumed", 1200)
+            self._register_extra_hotkeys()
+        self._update_tray_title()
+        try:
+            self.tray.update_menu()
+        except Exception:
+            pass
+
+    def _update_tray_title(self):
+        """State-bearing tooltip; pystray quirks must never crash the app."""
+        try:
+            self.tray.title = (
+                "Undertone — paused" if self._paused else
+                f"Undertone — hold {pretty_combo(self.cfg.get('hotkey', ''))} "
+                "to dictate")
+        except Exception:
+            pass
 
     def _on_save_settings(self, new_cfg: dict):
         old_cfg = self.cfg
@@ -425,10 +483,15 @@ class App:
         if new_cfg.get("hotkey") != old_cfg.get("hotkey"):
             try:
                 self.ptt.rebind(new_cfg["hotkey"])
+                if self._paused:
+                    self.ptt.stop()   # rebind must not resurrect a paused hook
                 self.overlay.show_message(
                     f"Hotkey set to {pretty_combo(new_cfg['hotkey'])}")
             except ValueError as e:
                 self.overlay.show_message(str(e), duration_ms=5000, error=True)
+            self._update_tray_title()
+        if new_cfg.get("input_device") != old_cfg.get("input_device"):
+            self.recorder.set_device(new_cfg.get("input_device") or None)
         if any(new_cfg.get(k) != old_cfg.get(k)
                for k in ("repaste_hotkey", "toggle_hotkey")):
             self._unregister_extra_hotkeys()
@@ -451,8 +514,8 @@ class App:
 
     def _register_extra_hotkeys(self):
         """Re-paste and optional dedicated toggle hotkeys."""
-        if self._extra_hotkey_handles:
-            return  # already registered
+        if self._paused or self._extra_hotkey_handles:
+            return  # paused, or already registered
         for combo, callback in (
             (self.cfg.get("repaste_hotkey", ""), self._repaste_last),
             (self.cfg.get("toggle_hotkey", ""), self._on_toggle_key),
@@ -492,6 +555,7 @@ class App:
         self.ptt.start()
         self._register_extra_hotkeys()
         self.tray.run_detached()
+        self._update_tray_title()
         if not config_mod.provider_key(self.cfg, self.cfg.get("provider", "xai")):
             self.settings.open()
             self.overlay.show_message(
