@@ -3,12 +3,12 @@
 __pycache__/
 *.pyc
 
-# Personal API key — never commit
-(PERSONAL API KEY)personal xai speechtotext api key.txt
+# PyInstaller output (the .spec IS committed)
+build/
+dist/
 
-# Any variant of the personal key file
-*API KEY*
-*api key*
+# Claude Code session data
+.claude/
 
-# Local agent instructions — not for the repo
-CLAUDE.md
+
+

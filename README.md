@@ -4,26 +4,35 @@ Push-to-talk dictation for Windows. Hold a key, speak, release — your words
 are transcribed by your choice of provider (xAI, OpenAI, or OpenRouter) and
 pasted into whatever text box has focus.
 
-## Setup
+## Install
+
+Grab `Undertone.exe` (or build it yourself, below) and run it — there is
+nothing to install, and settings live in `%APPDATA%\Undertone` either way.
+Windows SmartScreen may warn about an unsigned exe the first time; choose
+*More info → Run anyway*.
+
+The Undertone icon appears in the system tray, and a setup banner walks you
+through the one required step: open **Settings → Providers**, paste an API
+key for your provider ([console.x.ai](https://console.x.ai),
+[platform.openai.com](https://platform.openai.com), or
+[openrouter.ai](https://openrouter.ai)), and use the Test buttons to verify.
+Turn on *Start with Windows* in **Settings → General** to keep it around.
+
+### Building the exe
 
 ```
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements.txt pyinstaller
+build.bat
 ```
 
-## Run
+The self-contained app lands in `dist\Undertone.exe`.
 
-Double-click `run.bat`, or:
+### Running from source
 
 ```
-.venv\Scripts\python main.py
+.venv\Scripts\python main.py     (or double-click run.bat)
 ```
-
-The Undertone icon appears in the system tray. Open **Settings →
-Providers**, pick your transcription and AI-cleanup providers, paste the
-matching API key ([console.x.ai](https://console.x.ai),
-[platform.openai.com](https://platform.openai.com), or
-[openrouter.ai](https://openrouter.ai)), and use the Test buttons to verify.
 
 ## Use
 
