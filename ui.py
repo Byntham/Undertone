@@ -31,7 +31,7 @@ from config import APP_VERSION
 
 from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, BANNER_BG,
                    BANNER_BORDER, BASE, CARD, CARD_BORDER, GREEN, INK, MANTLE,
-                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT, sc)
+                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT, sc, scale)
 
 FONT = ("Segoe UI", 10)
 HEADER_FONT = ("Segoe UI Semibold", 15)
@@ -48,6 +48,7 @@ KEY_FONT = ("Segoe UI Semibold", 10)
 
 WIN_W, WIN_H = 780, 724
 SIDEBAR_W = 200
+HAIR = max(1, sc(1))     # hairline border width in real pixels
 
 LANGUAGES = [
     ("English", "en"), ("Arabic", "ar"), ("Chinese", "zh"), ("Danish", "da"),
@@ -155,7 +156,8 @@ def _round_img(w, h, radius, fill, outline=None, bg=BASE):
     d = ImageDraw.Draw(img)
     d.rounded_rectangle((0, 0, w * ss - 1, h * ss - 1), radius=radius * ss,
                         fill=_rgb(fill),
-                        outline=_rgb(outline) if outline else None, width=ss)
+                        outline=_rgb(outline) if outline else None,
+                        width=ss * max(1, round(scale())))
     return img.resize((w, h), Image.LANCZOS)
 
 
@@ -532,7 +534,7 @@ class SettingsWindow:
 
     def _card(self, parent, pady=(0, 8)):
         """A bordered, elevated card; returns the padded inner frame."""
-        outer = tk.Frame(parent, bg=CARD, highlightthickness=1,
+        outer = tk.Frame(parent, bg=CARD, highlightthickness=HAIR,
                          highlightbackground=CARD_BORDER)
         outer.pack(fill="x", pady=(sc(pady[0]), sc(pady[1])))
         inner = tk.Frame(outer, bg=CARD)
@@ -581,7 +583,7 @@ class SettingsWindow:
     def _dropdown(self, parent, text, on_open, width=170):
         """A fixed-width dark dropdown control; returns its value label."""
         ctrl = tk.Frame(parent, bg=SURFACE0, cursor="hand2",
-                        highlightthickness=1, highlightbackground=SURFACE1,
+                        highlightthickness=HAIR, highlightbackground=SURFACE1,
                         width=sc(width), height=sc(30))
         ctrl.pack_propagate(False)
         ctrl.pack()
@@ -616,14 +618,14 @@ class SettingsWindow:
 
     def _popup_under(self, menu, ctrl):
         x = ctrl.winfo_rootx()
-        y = ctrl.winfo_rooty() + ctrl.winfo_height() + 2
+        y = ctrl.winfo_rooty() + ctrl.winfo_height() + sc(2)
         menu.tk_popup(x, y)
 
     def _entry(self, parent, var, show=None, bg=SURFACE0):
         return tk.Entry(
             parent, textvariable=var, font=FONT, show=show or "", bg=bg,
             fg=TEXT, insertbackground=TEXT, relief="flat",
-            highlightthickness=1, highlightbackground=SURFACE1,
+            highlightthickness=HAIR, highlightbackground=SURFACE1,
             highlightcolor=ACCENT)
 
     # --- General -----------------------------------------------------------------
@@ -674,14 +676,26 @@ class SettingsWindow:
             auto_on = autostart.is_enabled()
         except Exception:
             pass
-        self._toggle_card(pane, "Start with Windows",
-                          "Launch quietly in the tray when you sign in.",
-                          auto_on, self._set_autostart)
+        auto = {}
+
+        def set_autostart(on):
+            try:
+                autostart.set_enabled(on)
+                self._flash_saved()
+            except Exception:
+                # Registry write failed — snap the switch back to reality.
+                auto["state"]["on"] = not on
+                auto["sw"].config(image=self._toggle_imgs[int(not on)])
+        state, sw = self._toggle_card(
+            pane, "Start with Windows",
+            "Launch quietly in the tray when you sign in.",
+            auto_on, set_autostart)
+        auto.update(state=state, sw=sw)
 
         self._bind_wheel(pane)
 
     def _setup_banner(self, pane):
-        outer = tk.Frame(pane, bg=BANNER_BG, highlightthickness=1,
+        outer = tk.Frame(pane, bg=BANNER_BG, highlightthickness=HAIR,
                          highlightbackground=BANNER_BORDER)
         outer.pack(fill="x", pady=(0, sc(12)))
         inner = tk.Frame(outer, bg=BANNER_BG)
@@ -705,17 +719,11 @@ class SettingsWindow:
                           self._config.get(key, True),
                           lambda on, k=key: self._apply(**{k: on}))
 
-    def _set_autostart(self, on):
-        try:
-            autostart.set_enabled(on)
-            self._flash_saved()
-        except Exception:
-            pass
-
     def _shortcut_card(self, pane, title, config_key, hint):
-        right, _ = self._row_card(pane, title, hint, wrap=270)
+        right, widgets = self._row_card(pane, title, hint, wrap=270)
+        left = widgets[1]
         combo = self._config.get(config_key, "")
-        box = tk.Frame(right, bg=SURFACE0, highlightthickness=1,
+        box = tk.Frame(right, bg=SURFACE0, highlightthickness=HAIR,
                        highlightbackground=SURFACE1)
         box.pack(side="left")
         lbl = tk.Label(box, text=pretty_combo(combo) or "None", bg=SURFACE0,
@@ -725,8 +733,10 @@ class SettingsWindow:
                           lambda k=config_key: self._start_capture(k),
                           small=True, bg=CARD)
         btn.pack(side="left", padx=(sc(8), 0))
-        error = tk.Label(pane, text="", bg=BASE, fg=RED, font=HINT_FONT,
-                         anchor="w")
+        # Lives inside the card's text column so it shows up next to the
+        # shortcut it belongs to; packed only when a capture fails.
+        error = tk.Label(left, text="", bg=CARD, fg=RED, font=HINT_FONT,
+                         anchor="w", justify="left", wraplength=sc(270))
         self._shortcut_rows[config_key] = {
             "lbl": lbl, "btn": btn, "error": error, "combo": combo,
         }
@@ -1118,7 +1128,13 @@ class SettingsWindow:
     # --- Scroll panes -------------------------------------------------------------
 
     def _bind_wheel(self, widget):
-        """Recursively route mouse-wheel events to the section scroll pane."""
+        """Recursively route mouse-wheel events to the section scroll pane.
+
+        Subtrees that own their wheel (inner _scroll_list regions) are
+        skipped so their bindings aren't clobbered.
+        """
+        if getattr(widget, "_own_wheel", False):
+            return
         widget.bind("<MouseWheel>", self._scroll_wheel)
         for child in widget.winfo_children():
             self._bind_wheel(child)
@@ -1145,7 +1161,7 @@ class SettingsWindow:
             if last - first >= 0.999:
                 bar.coords(thumb, 0, 0, 0, 0)
             else:
-                bar.coords(thumb, 2, first * bh + 1, sc(7), last * bh - 1)
+                bar.coords(thumb, sc(2), first * bh + 1, sc(7), last * bh - 1)
 
         def wheel(e):
             canvas.yview_scroll(-int(e.delta / 120), "units")
@@ -1172,8 +1188,9 @@ class SettingsWindow:
         The scrollbar is a hand-drawn thumb (native tk.Scrollbar ignores
         colours on Windows) that auto-hides when the content fits.
         """
-        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=1,
+        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=HAIR,
                         highlightbackground=CARD_BORDER)
+        wrap._own_wheel = True   # keep _bind_wheel out of this subtree
         wrap.pack(fill="x")
         canvas = tk.Canvas(wrap, bg=MANTLE, height=height,
                            highlightthickness=0, bd=0)
@@ -1192,7 +1209,7 @@ class SettingsWindow:
             if last - first >= 0.999:
                 bar.coords(thumb, 0, 0, 0, 0)          # fits — hide thumb
             else:
-                bar.coords(thumb, 2, first * bh + 1, sc(7), last * bh - 1)
+                bar.coords(thumb, sc(2), first * bh + 1, sc(7), last * bh - 1)
 
         def wheel(e):
             canvas.yview_scroll(-int(e.delta / 120), "units")
@@ -1434,7 +1451,7 @@ class SettingsWindow:
             except ValueError as exc:
                 if alive:
                     row["error"].config(text=str(exc))
-                    row["error"].pack(fill="x", pady=(0, sc(6)))
+                    row["error"].pack(fill="x", pady=(sc(3), 0))
                 cancelled = True
             except ImportError:
                 new_hotkey = combo.strip().lower()
