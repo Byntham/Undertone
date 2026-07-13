@@ -15,6 +15,7 @@ marshalled onto the Tk main loop via a queue drained by root.after().
 
 import pathlib
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -236,8 +237,13 @@ def apply_dark_titlebar(win):
     try:
         import ctypes
         from ctypes import wintypes
+        win.deiconify()
         win.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        win.update()
+        get_ancestor = ctypes.windll.user32.GetAncestor
+        get_ancestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        get_ancestor.restype = wintypes.HWND
+        hwnd = get_ancestor(wintypes.HWND(win.winfo_id()), 2)  # GA_ROOT
         value = ctypes.c_int(1)
         for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(
@@ -246,6 +252,7 @@ def apply_dark_titlebar(win):
             ) == 0:
                 break
         win.withdraw()   # DWM repaints the frame on remap
+        win.update_idletasks()
         win.deiconify()
     except Exception:
         pass
@@ -436,6 +443,8 @@ class SettingsWindow:
         self._saved_after_id = None
         self._hist_poll_id = None
         self._menu_closed_at = float("-inf")
+        self._wrap_labels = []
+        self._wrap_after_id = None
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -479,10 +488,10 @@ class SettingsWindow:
         except tk.TclError:
             pass
         win.configure(bg=BASE)
-        win.resizable(False, False)
+        win.resizable(True, True)
+        win.minsize(sc(660), sc(560))
         win.protocol("WM_DELETE_WINDOW", self._close)
         win.bind("<Escape>", self._on_escape)
-        win.geometry(f"{sc(WIN_W)}x{sc(WIN_H)}")
 
         # Sidebar ------------------------------------------------------------
         side = tk.Frame(win, bg=MANTLE, width=sc(SIDEBAR_W))
@@ -513,9 +522,9 @@ class SettingsWindow:
 
         self._select_section("Get started" if show_get_started else "General")
 
+        self._restore_geometry()
         apply_dark_titlebar(self._win)
         self._set_window_icons()
-        self._center()
         self._raise()
 
     def _set_window_icons(self):
@@ -591,6 +600,14 @@ class SettingsWindow:
             child.destroy()
         pane = tk.Frame(self._content, bg=BASE)
         pane.pack(fill="both", expand=True, padx=sc(28), pady=(sc(20), sc(14)))
+        if self._wrap_after_id is not None:
+            try:
+                self._root.after_cancel(self._wrap_after_id)
+            except tk.TclError:
+                pass
+        self._wrap_labels = []
+        self._wrap_after_id = None
+        pane.bind("<Configure>", self._schedule_wraps)
         if section == "Get started":
             self._build_get_started(pane)
         elif section == "General":
@@ -623,13 +640,89 @@ class SettingsWindow:
         lbl = tk.Label(parent, text=text, bg=bg, fg=MUTED, font=HINT_FONT,
                        anchor="w", justify="left", wraplength=sc(wrap))
         lbl.pack(fill="x", pady=pady)
+        self._register_wrap(lbl, parent)
         return lbl
+
+    def _register_wrap(self, label, host, subtract=0):
+        """Keep a wrapped label matched to the width of its text column."""
+        self._wrap_labels.append((label, host, sc(subtract)))
+        host.bind("<Configure>", self._schedule_wraps, add="+")
+        self._schedule_wraps()
+
+    def _schedule_wraps(self, _event=None):
+        if self._wrap_after_id is not None:
+            try:
+                self._root.after_cancel(self._wrap_after_id)
+            except tk.TclError:
+                pass
+        self._wrap_after_id = self._root.after_idle(self._refresh_wraps)
+
+    def _refresh_wraps(self):
+        self._wrap_after_id = None
+        alive = []
+        for label, host, subtract in self._wrap_labels:
+            if label.winfo_exists() and host.winfo_exists():
+                width = max(sc(120), host.winfo_width() - subtract)
+                label.configure(wraplength=width)
+                alive.append((label, host, subtract))
+        self._wrap_labels = alive
+
+    def _rounded_container(self, container, radius, fill, outline,
+                           bg=None, outline_w=HAIR):
+        """Put a debounced Pillow rounded rectangle behind container content."""
+        corner_bg = bg or container.master.cget("bg")
+        container.configure(bg=corner_bg, highlightthickness=0, bd=0)
+        backdrop = tk.Label(container, bg=corner_bg, bd=0,
+                            highlightthickness=0)
+        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        state = {"fill": fill, "outline": outline, "after": None,
+                 "last": None, "cache": {}}
+
+        def render():
+            state["after"] = None
+            if not container.winfo_exists():
+                return
+            w, h = container.winfo_width(), container.winfo_height()
+            if w <= 1 or h <= 1:
+                return
+            key = (w, h, state["fill"], state["outline"])
+            if key == state["last"]:
+                return
+            photo = state["cache"].get(key)
+            if photo is None:
+                width = HAIR + 1 if state["outline"] == ACCENT else outline_w
+                photo = ImageTk.PhotoImage(_round_img(
+                    w, h, radius, state["fill"], state["outline"],
+                    bg=corner_bg, outline_w=width))
+                state["cache"][key] = photo
+            backdrop.configure(image=photo)
+            backdrop.image = photo
+            state["last"] = key
+
+        def schedule(_event=None):
+            if state["after"] is not None:
+                container.after_cancel(state["after"])
+            state["after"] = container.after(40, render)
+
+        def set_colors(fill=None, outline=None):
+            if fill is not None:
+                state["fill"] = fill
+            if outline is not None:
+                state["outline"] = outline
+            state["last"] = None
+            schedule()
+
+        container.bind("<Configure>", schedule, add="+")
+        container._round_set = set_colors
+        container._round_backdrop = backdrop
+        schedule()
+        return backdrop
 
     def _card(self, parent, pady=(0, 8)):
         """A bordered, elevated card; returns the padded inner frame."""
-        outer = tk.Frame(parent, bg=CARD, highlightthickness=HAIR,
-                         highlightbackground=CARD_BORDER)
+        outer = tk.Frame(parent, bg=parent.cget("bg"), highlightthickness=0)
         outer.pack(fill="x", pady=(sc(pady[0]), sc(pady[1])))
+        self._rounded_container(outer, sc(8), CARD, CARD_BORDER)
         inner = tk.Frame(outer, bg=CARD)
         inner.pack(fill="both", expand=True, padx=sc(14), pady=sc(9))
         return inner
@@ -653,6 +746,7 @@ class SettingsWindow:
             h = tk.Label(left, text=hint, bg=CARD, fg=MUTED, font=HINT_FONT,
                          anchor="w", justify="left", wraplength=sc(wrap))
             h.pack(fill="x", pady=(sc(2), 0))
+            self._register_wrap(h, left)
             widgets.append(h)
         return right, widgets
 
@@ -720,7 +814,9 @@ class SettingsWindow:
                 state["hover"] = inside
                 bg = CARD_HOVER if inside else CARD
                 for w in hover_set:
-                    w.configure(bg=bg)
+                    if w is not outer:
+                        w.configure(bg=bg)
+                outer._round_set(fill=bg)
                 for w in widgets[1].winfo_children():   # e.g. cleanup warn
                     w.configure(bg=bg)
                 ring.configure(highlightbackground=bg)
@@ -739,30 +835,56 @@ class SettingsWindow:
 
     def _dropdown(self, parent, text, on_open, width=170):
         """A fixed-width dark dropdown control; returns its value label."""
-        ctrl = tk.Frame(parent, bg=SURFACE0, cursor="hand2", takefocus=1,
-                        highlightthickness=HAIR, highlightbackground=SURFACE1,
-                        highlightcolor=ACCENT,
+        ctrl = tk.Frame(parent, bg=parent.cget("bg"), cursor="hand2",
+                        takefocus=1, highlightthickness=0,
                         width=sc(width), height=sc(30))
         ctrl.pack_propagate(False)
         ctrl.pack()
-        lbl = tk.Label(ctrl, text=text, bg=SURFACE0, fg=TEXT, font=FONT,
-                       anchor="w", padx=sc(11))
+        self._rounded_container(ctrl, sc(6), SURFACE0, SURFACE1,
+                                bg=parent.cget("bg"))
+        body = tk.Frame(ctrl, bg=SURFACE0, cursor="hand2")
+        body.place(x=sc(5), y=sc(2), relwidth=1, relheight=1,
+                   width=-sc(10), height=-sc(4))
+        lbl = tk.Label(body, text=text, bg=SURFACE0, fg=TEXT, font=FONT,
+                       anchor="w", padx=sc(6), cursor="hand2")
         lbl.pack(side="left", fill="both", expand=True)
-        caret = tk.Label(ctrl, text="⌄", bg=SURFACE0, fg=SUBTEXT, font=FONT,
-                         padx=sc(9))
+        caret = tk.Label(body, text="⌄", bg=SURFACE0, fg=SUBTEXT, font=FONT,
+                         padx=sc(5), cursor="hand2")
         caret.pack(side="right", fill="y")
 
-        def hover(bg):
+        state = {"hover": False, "focus": False}
+
+        def paint():
+            bg = SURFACE1 if state["hover"] else SURFACE0
+            outline = ACCENT if state["focus"] else SURFACE1
+            ctrl._round_set(fill=bg, outline=outline)
+            for w in (body, lbl, caret):
+                w.configure(bg=bg)
+
+        def hover(inside):
             def fn(_e):
-                for w in (ctrl, lbl, caret):
-                    w.configure(bg=bg)
+                state["hover"] = inside
+                paint()
             return fn
-        for w in (ctrl, lbl, caret):
-            w.bind("<Button-1>", lambda _e: on_open(ctrl))
-            w.bind("<Enter>", hover(SURFACE1))
-            w.bind("<Leave>", hover(SURFACE0))
+
+        def activate(_event=None):
+            ctrl.focus_set()
+            on_open(ctrl)
+
+        def focus(focused):
+            def fn(_e):
+                state["focus"] = focused
+                paint()
+            return fn
+
+        for w in (ctrl, body, lbl, caret):
+            w.bind("<Button-1>", activate)
+            w.bind("<Enter>", hover(True))
+            w.bind("<Leave>", hover(False))
+        ctrl.bind("<FocusIn>", focus(True))
+        ctrl.bind("<FocusOut>", focus(False))
         for seq in ("<Return>", "<space>", "<Down>"):
-            ctrl.bind(seq, lambda _e: on_open(ctrl))
+            ctrl.bind(seq, activate)
         return lbl
 
     def _menu(self, entries):
@@ -788,11 +910,18 @@ class SettingsWindow:
         menu.tk_popup(x, y)
 
     def _entry(self, parent, var, show=None, bg=SURFACE0):
-        return tk.Entry(
-            parent, textvariable=var, font=FONT, show=show or "", bg=bg,
+        """Return (rounded wrapper, borderless Entry)."""
+        wrap = tk.Frame(parent, bg=parent.cget("bg"), highlightthickness=0)
+        self._rounded_container(wrap, sc(6), bg, SURFACE1,
+                                bg=parent.cget("bg"))
+        entry = tk.Entry(
+            wrap, textvariable=var, font=FONT, show=show or "", bg=bg,
             fg=TEXT, insertbackground=TEXT, relief="flat",
-            highlightthickness=HAIR, highlightbackground=SURFACE1,
-            highlightcolor=ACCENT)
+            highlightthickness=0, bd=0)
+        entry.pack(fill="both", expand=True, padx=sc(8), pady=sc(5))
+        entry.bind("<FocusIn>", lambda _e: wrap._round_set(outline=ACCENT))
+        entry.bind("<FocusOut>", lambda _e: wrap._round_set(outline=SURFACE1))
+        return wrap, entry
 
     # --- Get started (guided first-run setup) --------------------------------------
 
@@ -826,8 +955,8 @@ class SettingsWindow:
         self._gs_key_lbl.pack(fill="x", pady=(sc(8), sc(2)))
         krow = tk.Frame(card, bg=CARD)
         krow.pack(fill="x")
-        entry = self._entry(krow, self._gs_key_var, show="•")
-        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry_wrap, entry = self._entry(krow, self._gs_key_var, show="•")
+        entry_wrap.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _e: self._gs_save_key())
         RoundButton(krow, "Save", self._gs_save_key, kind="accent",
                     small=True, bg=CARD).pack(side="left", padx=(sc(6), 0))
@@ -839,6 +968,7 @@ class SettingsWindow:
                                      font=HINT_FONT, anchor="w",
                                      justify="left", wraplength=sc(430))
         self._test_status.pack(fill="x", pady=(sc(4), 0))
+        self._register_wrap(self._test_status, card)
 
         # Step 2 — microphone check with a live level meter.
         card2 = self._card(pane)
@@ -850,14 +980,14 @@ class SettingsWindow:
                                     self._gs_test_mic, small=True, bg=CARD)
         self._mic_btn.pack(side="left")
         self._mic_meter = tk.Canvas(mrow, width=sc(200), height=sc(10),
-                                    bg=SURFACE0, highlightthickness=0, bd=0)
+                                    bg=CARD, highlightthickness=0, bd=0)
         self._mic_meter.pack(side="left", padx=(sc(12), 0))
-        self._mic_bar = self._mic_meter.create_rectangle(
-            0, 0, 0, sc(10), fill=ACCENT, outline="")
+        self._draw_mic_meter(0.0)
         self._mic_err = tk.Label(card2, text="", bg=CARD, fg=RED,
                                  font=HINT_FONT, anchor="w", justify="left",
                                  wraplength=sc(430))
         self._mic_err.pack(fill="x")
+        self._register_wrap(self._mic_err, card2)
 
         # Step 3 — dictate into a real text box.
         card3 = self._card(pane)
@@ -869,7 +999,8 @@ class SettingsWindow:
                           "works.”", pady=(sc(2), sc(8)), bg=CARD,
                    wrap=440)
         self._gs_dict_var = tk.StringVar()
-        self._entry(card3, self._gs_dict_var).pack(fill="x", ipady=sc(5))
+        practice_wrap, _practice = self._entry(card3, self._gs_dict_var)
+        practice_wrap.pack(fill="x")
         self._gs_done_row = tk.Frame(card3, bg=CARD)
         self._gs_done_lbl = tk.Label(self._gs_done_row,
                                      text="✓ That's it — you're set up.",
@@ -930,13 +1061,34 @@ class SettingsWindow:
                 pass
             self._mic_testing = False
             if alive:
-                self._mic_meter.coords(self._mic_bar, 0, 0, 0, sc(10))
+                self._draw_mic_meter(0.0)
                 self._mic_btn.set_text("Test microphone")
                 self._mic_btn.enable()
             return
-        width = int(rec.level * self._mic_meter.winfo_width())
-        self._mic_meter.coords(self._mic_bar, 0, 0, width, sc(10))
+        self._draw_mic_meter(rec.level)
         self._root.after(50, lambda: self._gs_mic_tick(rec, remaining - 1))
+
+    def _draw_mic_meter(self, level):
+        """Draw the microphone track and fill with rounded canvas shapes."""
+        c = self._mic_meter
+        c.delete("meter")
+        w = max(sc(200), c.winfo_width())
+        h = sc(10)
+        r = h // 2
+        c.create_oval(0, 0, h, h, fill=SURFACE0, outline="", tags="meter")
+        c.create_oval(w - h, 0, w, h, fill=SURFACE0, outline="", tags="meter")
+        c.create_rectangle(r, 0, w - r, h, fill=SURFACE0, outline="",
+                           tags="meter")
+        filled = max(0, min(w, int(level * w)))
+        if filled:
+            cap = min(filled, h)
+            c.create_oval(0, 0, cap, h, fill=ACCENT, outline="", tags="meter")
+            if filled > r:
+                c.create_rectangle(r, 0, filled, h, fill=ACCENT, outline="",
+                                   tags="meter")
+            if filled >= w - r:
+                c.create_oval(w - h, 0, w, h, fill=ACCENT, outline="",
+                              tags="meter")
 
     def _gs_poll_entry(self):
         lbl = getattr(self, "_gs_done_lbl", None)
@@ -1005,6 +1157,7 @@ class SettingsWindow:
         self._cleanup_warn = tk.Label(left, text="", bg=CARD, fg=AMBER,
                                       font=HINT_FONT, anchor="w",
                                       justify="left", wraplength=sc(310))
+        self._register_wrap(self._cleanup_warn, left)
         self._refresh_cleanup_hint()
         self._config_toggle_card(
             pane, "Sound cues", "sound_cues",
@@ -1077,9 +1230,9 @@ class SettingsWindow:
         self._apply(input_device=name)
 
     def _setup_banner(self, pane):
-        outer = tk.Frame(pane, bg=BANNER_BG, highlightthickness=HAIR,
-                         highlightbackground=BANNER_BORDER)
+        outer = tk.Frame(pane, bg=pane.cget("bg"), highlightthickness=0)
         outer.pack(fill="x", pady=(0, sc(12)))
+        self._rounded_container(outer, sc(8), BANNER_BG, BANNER_BORDER)
         inner = tk.Frame(outer, bg=BANNER_BG)
         inner.pack(fill="x", padx=sc(14), pady=sc(12))
         target = ("Get started" if "Get started" in self._nav_items
@@ -1092,11 +1245,13 @@ class SettingsWindow:
         left.pack(side="left", fill="x", expand=True)
         tk.Label(left, text="Finish setting up Undertone", bg=BANNER_BG,
                  fg=TEXT, font=CARD_TITLE_FONT, anchor="w").pack(fill="x")
-        tk.Label(left, text="Add an API key for your transcription provider "
-                            "to start dictating.",
-                 bg=BANNER_BG, fg=SUBTEXT, font=HINT_FONT, anchor="w",
-                 justify="left", wraplength=sc(330)).pack(
-            fill="x", pady=(sc(2), 0))
+        hint = tk.Label(left,
+                        text="Add an API key for your transcription provider "
+                             "to start dictating.",
+                        bg=BANNER_BG, fg=SUBTEXT, font=HINT_FONT, anchor="w",
+                        justify="left", wraplength=sc(330))
+        hint.pack(fill="x", pady=(sc(2), 0))
+        self._register_wrap(hint, left)
 
     def _config_toggle_card(self, pane, title, key, hint):
         def change(on):
@@ -1110,12 +1265,12 @@ class SettingsWindow:
         right, widgets = self._row_card(pane, title, hint, wrap=270)
         left = widgets[1]
         combo = self._config.get(config_key, "")
-        box = tk.Frame(right, bg=SURFACE0, highlightthickness=HAIR,
-                       highlightbackground=SURFACE1)
+        box = tk.Frame(right, bg=CARD, highlightthickness=0)
         box.pack(side="left")
+        self._rounded_container(box, sc(6), SURFACE0, SURFACE1, bg=CARD)
         lbl = tk.Label(box, text=pretty_combo(combo) or "None", bg=SURFACE0,
-                       fg=TEXT, font=KEY_FONT, padx=sc(14), pady=sc(5))
-        lbl.pack()
+                       fg=TEXT, font=KEY_FONT, padx=sc(12), pady=sc(3))
+        lbl.pack(padx=sc(2), pady=sc(2))
         btn = RoundButton(right, "Change",
                           lambda k=config_key: self._start_capture(k),
                           small=True, bg=CARD)
@@ -1124,6 +1279,7 @@ class SettingsWindow:
         # shortcut it belongs to; packed only when a capture fails.
         error = tk.Label(left, text="", bg=CARD, fg=RED, font=HINT_FONT,
                          anchor="w", justify="left", wraplength=sc(270))
+        self._register_wrap(error, left)
         self._shortcut_rows[config_key] = {
             "lbl": lbl, "btn": btn, "error": error, "combo": combo,
         }
@@ -1142,8 +1298,8 @@ class SettingsWindow:
         row = tk.Frame(card, bg=CARD)
         row.pack(fill="x")
         self._vocab_var = tk.StringVar()
-        entry = self._entry(row, self._vocab_var)
-        entry.pack(side="left", fill="x", expand=True, ipady=sc(5))
+        entry_wrap, entry = self._entry(row, self._vocab_var)
+        entry_wrap.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _e: self._add_vocab())
         RoundButton(row, "Add", self._add_vocab, kind="accent", small=True,
                     bg=CARD).pack(side="left", padx=(sc(8), 0))
@@ -1159,12 +1315,12 @@ class SettingsWindow:
         row2.pack(fill="x")
         self._corr_heard = tk.StringVar()
         self._corr_right = tk.StringVar()
-        e1 = self._entry(row2, self._corr_heard)
-        e1.pack(side="left", fill="x", expand=True, ipady=sc(5))
+        e1_wrap, e1 = self._entry(row2, self._corr_heard)
+        e1_wrap.pack(side="left", fill="x", expand=True)
         tk.Label(row2, text="→", bg=CARD, fg=SUBTEXT, font=FONT,
                  padx=sc(8)).pack(side="left")
-        e2 = self._entry(row2, self._corr_right)
-        e2.pack(side="left", fill="x", expand=True, ipady=sc(5))
+        e2_wrap, e2 = self._entry(row2, self._corr_right)
+        e2_wrap.pack(side="left", fill="x", expand=True)
         e1.bind("<Return>", lambda _e: self._add_correction())
         e2.bind("<Return>", lambda _e: self._add_correction())
         self._corr_heard_entry = e1   # History's "Add correction…" focuses it
@@ -1251,7 +1407,7 @@ class SettingsWindow:
 
         self._hist_expanded_ts = None
         self._hist_fp = None
-        self._hist_list = self._scroll_list(pane, height=sc(500))
+        self._hist_list = self._scroll_list(pane, height=None, expand=True)
         self._render_history()
         self._hist_poll_id = self._root.after(2000, self._hist_poll)
 
@@ -1352,6 +1508,7 @@ class SettingsWindow:
                         font=FONT, anchor="w", justify="left",
                         wraplength=sc(420))
         full.pack(fill="x", padx=(pad, sc(10)))
+        self._register_wrap(full, panel, subtract=76)
         widgets.append(full)
         raw = entry.get("raw")
         if raw and raw != entry["text"]:
@@ -1359,6 +1516,7 @@ class SettingsWindow:
                              font=HINT_FONT, anchor="w", justify="left",
                              wraplength=sc(420))
             heard.pack(fill="x", padx=(pad, sc(10)), pady=(sc(4), 0))
+            self._register_wrap(heard, panel, subtract=76)
             widgets.append(heard)
         btns = tk.Frame(panel, bg=MANTLE)
         btns.pack(fill="x", padx=(pad, sc(10)), pady=(sc(7), sc(4)))
@@ -1476,6 +1634,7 @@ class SettingsWindow:
                                      font=HINT_FONT, anchor="w",
                                      justify="left", wraplength=sc(470))
         self._test_status.pack(fill="x")
+        self._register_wrap(self._test_status, body)
 
         self._group(body, "API keys")
         self._key_card(body, "xAI", "api_key")
@@ -1536,8 +1695,8 @@ class SettingsWindow:
         row = tk.Frame(inner, bg=CARD)
         row.pack(fill="x", pady=(sc(7), 0))
         var = tk.StringVar(value=self._config.get(field, ""))
-        entry = self._entry(row, var, show="•")
-        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry_wrap, entry = self._entry(row, var, show="•")
+        entry_wrap.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _e, f=field: self._save_key(f))
         save_btn = RoundButton(row, "Save",
                                lambda f=field: self._save_key(f),
@@ -1582,8 +1741,8 @@ class SettingsWindow:
         row = tk.Frame(parent, bg=CARD)
         row.pack(fill="x")
         var = tk.StringVar(value=self._model_override(kind))
-        entry = self._entry(row, var)
-        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry_wrap, entry = self._entry(row, var)
+        entry_wrap.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _e: self._save_model(kind, var))
         RoundButton(row, "Save", lambda: self._save_model(kind, var),
                     kind="accent", small=True,
@@ -1591,6 +1750,7 @@ class SettingsWindow:
         hint = tk.Label(parent, text="", bg=CARD, fg=MUTED, font=HINT_FONT,
                         anchor="w", justify="left", wraplength=sc(440))
         hint.pack(fill="x", pady=(sc(3), 0))
+        self._register_wrap(hint, parent)
         self._model_vars[kind] = var
         return hint
 
@@ -1606,7 +1766,7 @@ class SettingsWindow:
 
     def _build_about(self, pane):
         box = tk.Frame(pane, bg=BASE)
-        box.pack(expand=True)
+        box.pack(fill="x", expand=True)
         self._about_icon = ImageTk.PhotoImage(load_app_image(sc(64)))
         tk.Label(box, image=self._about_icon, bg=BASE).pack(pady=(sc(30), sc(12)))
         tk.Label(box, text="Undertone", bg=BASE, fg=TEXT,
@@ -1615,14 +1775,17 @@ class SettingsWindow:
                  font=HINT_FONT).pack(pady=(sc(2), sc(14)))
         tk.Label(box, text="Push-to-talk dictation for Windows.", bg=BASE,
                  fg=SUBTEXT, font=FONT).pack()
-        tk.Label(box,
-                 text="Hold your shortcut, speak, release — the transcript "
-                      "is typed into whatever text box has focus. Audio is "
-                      "sent only to your chosen provider, only while you "
-                      "dictate. Your API keys and settings stay on this "
-                      "computer.",
-                 bg=BASE, fg=MUTED, font=HINT_FONT, wraplength=sc(400),
-                 justify="center").pack(pady=(sc(10), sc(20)))
+        about_hint = tk.Label(
+            box,
+            text="Hold your shortcut, speak, release — the transcript "
+                 "is typed into whatever text box has focus. Audio is "
+                 "sent only to your chosen provider, only while you "
+                 "dictate. Your API keys and settings stay on this "
+                 "computer.",
+            bg=BASE, fg=MUTED, font=HINT_FONT, wraplength=sc(400),
+            justify="center")
+        about_hint.pack(padx=sc(45), pady=(sc(10), sc(20)))
+        self._register_wrap(about_hint, box, subtract=90)
 
         links = tk.Frame(box, bg=BASE)
         links.pack()
@@ -1709,21 +1872,29 @@ class SettingsWindow:
         bar.bind("<B1-Motion>", drag)
         return inner
 
-    def _scroll_list(self, parent, height):
+    def _scroll_list(self, parent, height, expand=False):
         """A dark, scrollable list region; returns its inner Frame.
 
         The scrollbar is a hand-drawn thumb (native tk.Scrollbar ignores
         colours on Windows) that auto-hides when the content fits.
         """
-        wrap = tk.Frame(parent, bg=MANTLE, highlightthickness=HAIR,
-                        highlightbackground=CARD_BORDER)
+        wrap = tk.Frame(parent, bg=parent.cget("bg"), highlightthickness=0)
         wrap._own_wheel = True   # keep _bind_wheel out of this subtree
-        wrap.pack(fill="x")
-        canvas = tk.Canvas(wrap, bg=MANTLE, height=height,
-                           highlightthickness=0, bd=0)
+        wrap.pack(fill="both" if expand else "x", expand=expand)
+        self._rounded_container(wrap, sc(8), MANTLE, CARD_BORDER,
+                                bg=parent.cget("bg"))
+        body = tk.Frame(wrap, bg=MANTLE)
+        body.pack(fill="both", expand=True, padx=sc(6), pady=HAIR)
+        canvas_opts = {"bg": MANTLE, "highlightthickness": 0, "bd": 0}
+        if height is not None:
+            canvas_opts["height"] = height
+        canvas = tk.Canvas(body, **canvas_opts)
         canvas.pack(side="left", fill="both", expand=True)
-        bar = tk.Canvas(wrap, bg=MANTLE, width=sc(8), height=height,
-                        highlightthickness=0, bd=0)
+        bar_opts = {"bg": MANTLE, "width": sc(8),
+                    "highlightthickness": 0, "bd": 0}
+        if height is not None:
+            bar_opts["height"] = height
+        bar = tk.Canvas(body, **bar_opts)
         bar.pack(side="right", fill="y")
         thumb = bar.create_rectangle(0, 0, 0, 0, fill=SURFACE1, outline="")
         inner = tk.Frame(canvas, bg=MANTLE)
@@ -1759,9 +1930,11 @@ class SettingsWindow:
         return inner
 
     def _empty_row(self, parent, text):
-        tk.Label(parent, text=text, bg=MANTLE, fg=MUTED, font=HINT_FONT,
-                 anchor="w", justify="left", padx=sc(10), pady=sc(8),
-                 wraplength=sc(420)).pack(fill="x")
+        label = tk.Label(parent, text=text, bg=MANTLE, fg=MUTED,
+                         font=HINT_FONT, anchor="w", justify="left",
+                         padx=sc(10), pady=sc(8), wraplength=sc(420))
+        label.pack(fill="x")
+        self._register_wrap(label, parent, subtract=20)
 
     def _list_row(self, parent, text, on_remove):
         """One term/pair row: text on the left, a ✕ remove label on the right."""
@@ -2032,6 +2205,45 @@ class SettingsWindow:
 
     # --- Window plumbing --------------------------------------------------------
 
+    def _screen_bounds(self):
+        """Return the Windows virtual-desktop bounds (left, top, right, bottom)."""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            x = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+            y = user32.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+            w = user32.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+            h = user32.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+            if w > 0 and h > 0:
+                return x, y, x + w, y + h
+        except Exception:
+            pass
+        return (0, 0, self._win.winfo_screenwidth(),
+                self._win.winfo_screenheight())
+
+    def _valid_geometry(self, value):
+        if not isinstance(value, str):
+            return None
+        match = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", value)
+        if match is None:
+            return None
+        w, h, x, y = map(int, match.groups())
+        if w < sc(660) or h < sc(560):
+            return None
+        left, top, right, bottom = self._screen_bounds()
+        visible = sc(40)
+        if (x + w < left + visible or x > right - visible
+                or y + h < top + visible or y > bottom - visible):
+            return None
+        return f"{w}x{h}{x:+d}{y:+d}"
+
+    def _restore_geometry(self):
+        geometry = self._valid_geometry(self._config.get("window_geometry"))
+        if geometry is None:
+            self._center()
+        else:
+            self._win.geometry(geometry)
+
     def _center(self):
         self._win.update_idletasks()
         w, h = sc(WIN_W), sc(WIN_H)
@@ -2062,5 +2274,9 @@ class SettingsWindow:
                 except Exception:
                     pass
         if self._win is not None and self._win.winfo_exists():
+            self._win.update_idletasks()
+            geometry = self._win.winfo_geometry()
+            self._config = {**self._config, "window_geometry": geometry}
+            self._on_save(self._config)
             self._win.destroy()
         self._win = None
