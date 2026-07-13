@@ -1,8 +1,9 @@
 """Tray icon and settings window for Undertone.
 
 The settings window is a dark two-pane panel: an icon sidebar with General /
-Dictionary / History / Providers / About sections and a content pane of
-setting cards. All changes apply immediately (no Save/Cancel); a transient
+Dictionary / History / Providers / About sections (plus a guided "Get
+started" section until setup is complete) and a content pane of setting
+cards. All changes apply immediately (no Save/Cancel); a transient
 "Saved" hint confirms each change. Styled by hand with plain tk widgets plus
 Pillow-rendered imagery (tray icon, toggles, pill buttons, nav glyphs)
 supersampled 4x for crisp edges. All pixel measures go through theme.sc()
@@ -29,7 +30,7 @@ from PIL import Image, ImageDraw, ImageTk
 import autostart
 from config import APP_VERSION
 
-from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, BANNER_BG,
+from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, AMBER, BANNER_BG,
                    BANNER_BORDER, BASE, CARD, CARD_BORDER, GREEN, INK, MANTLE,
                    MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT, sc, scale)
 
@@ -72,7 +73,9 @@ PROVIDER_LINKS = [
     ("openrouter.ai", "https://openrouter.ai"),
 ]
 
-SECTIONS = ["General", "Dictionary", "History", "Providers", "About"]
+# "Get started" is only offered while setup is incomplete (see _open).
+SECTIONS = ["Get started", "General", "Dictionary", "History", "Providers",
+            "About"]
 
 
 def _rgb(h):
@@ -84,6 +87,10 @@ def pretty_combo(combo: str) -> str:
     """'ctrl+alt+v' -> 'Ctrl + Alt + V', 'right ctrl' -> 'Right Ctrl'."""
     parts = [p.strip() for p in combo.split("+") if p.strip()]
     return " + ".join(p.title() for p in parts)
+
+
+def _ellipsize(text: str, limit: int = 24) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 # --- Pillow-rendered imagery -------------------------------------------------
@@ -172,7 +179,13 @@ def _nav_glyph(name: str, color: str, size: int) -> Image.Image:
     def x(f):
         return f * s
 
-    if name == "General":        # slider rails with knobs
+    if name == "Get started":    # spark: filled dot with three rays
+        r = 0.16 * s
+        d.ellipse((x(0.5) - r, x(0.62) - r, x(0.5) + r, x(0.62) + r), fill=c)
+        d.line((x(0.5), x(0.36), x(0.5), x(0.14)), fill=c, width=lw)
+        d.line((x(0.30), x(0.46), x(0.14), x(0.30)), fill=c, width=lw)
+        d.line((x(0.70), x(0.46), x(0.86), x(0.30)), fill=c, width=lw)
+    elif name == "General":      # slider rails with knobs
         for fy, fx in ((0.22, 0.64), (0.50, 0.34), (0.78, 0.70)):
             d.line((x(0.10), x(fy), x(0.90), x(fy)), fill=c, width=lw)
             r = 0.105 * s
@@ -280,12 +293,17 @@ class RoundButton(tk.Label):
                     "hover": (SURFACE1, SURFACE1, TEXT),
                     "down": (SURFACE1, SURFACE1, TEXT),
                     "disabled": (SURFACE0, SURFACE0, MUTED)}
+        # Keep the old PhotoImages alive until the new one is swapped in:
+        # freeing them first deletes the image the label still displays,
+        # and any config() call then fails with "pyimageN doesn't exist".
+        old_imgs = getattr(self, "_imgs", None)
         self._imgs, self._fgs = {}, {}
         for state, (fill, outline, fg) in spec.items():
             self._imgs[state] = ImageTk.PhotoImage(
                 _round_img(w, self._h, self._h // 2, fill, outline, bg=self._bg))
             self._fgs[state] = fg
-        self.config(text=text)
+        self.config(text=text, image=self._imgs[self._state])
+        del old_imgs
 
     def _apply_state(self, state):
         self._state = state
@@ -349,6 +367,7 @@ class SettingsWindow:
         self._queue: "queue.Queue" = queue.Queue()
         self._capturing = False
         self._testing = False
+        self._mic_testing = False
         self._saved_after_id = None
         self._root.after(50, self._drain)
 
@@ -418,10 +437,13 @@ class SettingsWindow:
         self._content = tk.Frame(win, bg=BASE)
         self._content.pack(side="left", fill="both", expand=True)
 
+        show_get_started = self._setup_incomplete()
         for section in SECTIONS:
+            if section == "Get started" and not show_get_started:
+                continue
             self._nav_items[section] = self._make_nav_item(side, section)
 
-        self._select_section("General")
+        self._select_section("Get started" if show_get_started else "General")
 
         apply_dark_titlebar(self._win)
         self._set_window_icons()
@@ -500,7 +522,9 @@ class SettingsWindow:
             child.destroy()
         pane = tk.Frame(self._content, bg=BASE)
         pane.pack(fill="both", expand=True, padx=sc(28), pady=(sc(20), sc(14)))
-        if section == "General":
+        if section == "Get started":
+            self._build_get_started(pane)
+        elif section == "General":
             self._build_general(pane)
         elif section == "Dictionary":
             self._build_dictionary(pane)
@@ -578,7 +602,7 @@ class SettingsWindow:
         for w in widgets + [sw, right]:
             w.bind("<Button-1>", toggle)
             w.configure(cursor="hand2")
-        return state, sw
+        return state, sw, widgets[1]   # widgets[1] = left text column
 
     def _dropdown(self, parent, text, on_open, width=170):
         """A fixed-width dark dropdown control; returns its value label."""
@@ -628,15 +652,176 @@ class SettingsWindow:
             highlightthickness=HAIR, highlightbackground=SURFACE1,
             highlightcolor=ACCENT)
 
+    # --- Get started (guided first-run setup) --------------------------------------
+
+    def _build_get_started(self, pane):
+        pane = self._scroll_pane(pane)
+        self._header(pane, "Get started")
+        self._toggle_imgs = _toggle_images(bg=CARD)
+
+        # Step 1 — provider + API key + test.
+        card = self._card(pane)
+        tk.Label(card, text="1.  Choose your transcription provider",
+                 bg=CARD, fg=TEXT, font=CARD_TITLE_FONT,
+                 anchor="w").pack(fill="x")
+        row = tk.Frame(card, bg=CARD)
+        row.pack(fill="x", pady=(sc(8), 0))
+        dd_wrap = tk.Frame(row, bg=CARD)
+        dd_wrap.pack(side="left")
+        cur = self._config.get("provider", "xai")
+        name = PROVIDER_BY_ID.get(cur, cur)
+        self._gs_dd = self._dropdown(dd_wrap, name,
+                                     self._gs_open_provider_menu, width=150)
+
+        self._gs_key_field = KEY_FIELD_BY_PROVIDER.get(cur, "api_key")
+        self._gs_key_var = tk.StringVar(
+            value=self._config.get(self._gs_key_field, ""))
+        # _start_test reads the key from _key_vars; point it at this entry.
+        self._key_vars = {self._gs_key_field: self._gs_key_var}
+        self._gs_key_lbl = tk.Label(card, text=f"{name} API key", bg=CARD,
+                                    fg=SUBTEXT, font=HINT_FONT, anchor="w")
+        self._gs_key_lbl.pack(fill="x", pady=(sc(8), sc(2)))
+        krow = tk.Frame(card, bg=CARD)
+        krow.pack(fill="x")
+        entry = self._entry(krow, self._gs_key_var, show="•")
+        entry.pack(side="left", fill="x", expand=True, ipady=sc(4))
+        entry.bind("<Return>", lambda _e: self._gs_save_key())
+        RoundButton(krow, "Save", self._gs_save_key, kind="accent",
+                    small=True, bg=CARD).pack(side="left", padx=(sc(6), 0))
+        self._test_stt_btn = RoundButton(krow, "Test",
+                                         self._test_transcription,
+                                         small=True, bg=CARD)
+        self._test_stt_btn.pack(side="left", padx=(sc(6), 0))
+        self._test_status = tk.Label(card, text="", bg=CARD, fg=MUTED,
+                                     font=HINT_FONT, anchor="w",
+                                     justify="left", wraplength=sc(430))
+        self._test_status.pack(fill="x", pady=(sc(4), 0))
+
+        # Step 2 — microphone check with a live level meter.
+        card2 = self._card(pane)
+        tk.Label(card2, text="2.  Try your microphone", bg=CARD, fg=TEXT,
+                 font=CARD_TITLE_FONT, anchor="w").pack(fill="x")
+        mrow = tk.Frame(card2, bg=CARD)
+        mrow.pack(fill="x", pady=(sc(8), 0))
+        self._mic_btn = RoundButton(mrow, "Test microphone",
+                                    self._gs_test_mic, small=True, bg=CARD)
+        self._mic_btn.pack(side="left")
+        self._mic_meter = tk.Canvas(mrow, width=sc(200), height=sc(10),
+                                    bg=SURFACE0, highlightthickness=0, bd=0)
+        self._mic_meter.pack(side="left", padx=(sc(12), 0))
+        self._mic_bar = self._mic_meter.create_rectangle(
+            0, 0, 0, sc(10), fill=ACCENT, outline="")
+        self._mic_err = tk.Label(card2, text="", bg=CARD, fg=RED,
+                                 font=HINT_FONT, anchor="w", justify="left",
+                                 wraplength=sc(430))
+        self._mic_err.pack(fill="x")
+
+        # Step 3 — dictate into a real text box.
+        card3 = self._card(pane)
+        tk.Label(card3, text="3.  Say something", bg=CARD, fg=TEXT,
+                 font=CARD_TITLE_FONT, anchor="w").pack(fill="x")
+        combo = pretty_combo(self._config.get("hotkey", "")) or "your shortcut"
+        self._hint(card3, f"Click into the box below, hold {combo} and "
+                          "read: “Testing, one two three — it "
+                          "works.”", pady=(sc(2), sc(8)), bg=CARD,
+                   wrap=440)
+        self._gs_dict_var = tk.StringVar()
+        self._entry(card3, self._gs_dict_var).pack(fill="x", ipady=sc(5))
+        self._gs_done_row = tk.Frame(card3, bg=CARD)
+        self._gs_done_lbl = tk.Label(self._gs_done_row,
+                                     text="✓ That's it — you're set up.",
+                                     bg=CARD, fg=GREEN, font=HINT_FONT,
+                                     anchor="w")
+        self._gs_finish_btn = RoundButton(self._gs_done_row, "Finish",
+                                          self._gs_finish, kind="accent",
+                                          small=True, bg=CARD)
+        self._gs_done = False
+        self._root.after(500, self._gs_poll_entry)
+
+        self._autostart_card(pane)
+        self._bind_wheel(pane)
+
+    def _gs_open_provider_menu(self, ctrl):
+        menu = self._menu([
+            (name, lambda n=name, p=pid: self._gs_pick_provider(n, p))
+            for name, pid in PROVIDERS_UI])
+        self._popup_under(menu, ctrl)
+
+    def _gs_pick_provider(self, name, pid):
+        self._gs_dd.config(text=name)
+        self._apply(provider=pid)
+        # Retarget the key entry at the new provider's key field.
+        self._gs_key_field = KEY_FIELD_BY_PROVIDER.get(pid, "api_key")
+        self._gs_key_var.set(self._config.get(self._gs_key_field, ""))
+        self._key_vars = {self._gs_key_field: self._gs_key_var}
+        self._gs_key_lbl.config(text=f"{name} API key")
+        self._test_status.config(text="")
+
+    def _gs_save_key(self):
+        self._apply(**{self._gs_key_field: self._gs_key_var.get().strip()})
+
+    def _gs_test_mic(self):
+        if self._mic_testing:
+            return
+        from recorder import Recorder, RecorderError
+        self._mic_err.config(text="")
+        rec = Recorder(sample_rate=self._config.get("sample_rate", 16000),
+                       device=self._config.get("input_device") or None)
+        try:
+            rec.start()
+        except RecorderError as exc:
+            self._mic_err.config(text=str(exc))
+            return
+        self._mic_testing = True
+        self._mic_btn.set_text("Listening…")
+        self._mic_btn.disable()
+        self._gs_mic_tick(rec, 60)   # 60 ticks x 50 ms = 3 s
+
+    def _gs_mic_tick(self, rec, remaining):
+        alive = (self._win is not None and self._win.winfo_exists()
+                 and self._mic_meter.winfo_exists())
+        if not alive or remaining <= 0:
+            try:
+                rec.stop()
+            except Exception:
+                pass
+            self._mic_testing = False
+            if alive:
+                self._mic_meter.coords(self._mic_bar, 0, 0, 0, sc(10))
+                self._mic_btn.set_text("Test microphone")
+                self._mic_btn.enable()
+            return
+        width = int(rec.level * self._mic_meter.winfo_width())
+        self._mic_meter.coords(self._mic_bar, 0, 0, width, sc(10))
+        self._root.after(50, lambda: self._gs_mic_tick(rec, remaining - 1))
+
+    def _gs_poll_entry(self):
+        lbl = getattr(self, "_gs_done_lbl", None)
+        if (self._win is None or not self._win.winfo_exists()
+                or lbl is None or not lbl.winfo_exists()):
+            return   # window closed or section switched — stop polling
+        if len(self._gs_dict_var.get().strip()) > 10:
+            self._gs_done = True
+            self._gs_done_row.pack(fill="x", pady=(sc(8), 0))
+            self._gs_done_lbl.pack(side="left")
+            self._gs_finish_btn.pack(side="right")
+            return
+        self._root.after(500, self._gs_poll_entry)
+
+    def _gs_finish(self):
+        self._apply(onboarded=True)
+        item = self._nav_items.pop("Get started", None)
+        if item is not None:
+            item["row"].destroy()
+        self._select_section("General")
+
     # --- General -----------------------------------------------------------------
 
     def _build_general(self, pane):
         pane = self._scroll_pane(pane)
         self._header(pane, "General")
 
-        provider = self._config.get("provider", "xai")
-        key_field = KEY_FIELD_BY_PROVIDER.get(provider, "api_key")
-        if not self._config.get(key_field, ""):
+        if not self._provider_key("provider"):
             self._setup_banner(pane)
 
         self._shortcut_rows = {}
@@ -659,18 +844,35 @@ class SettingsWindow:
         self._lang_lbl = self._dropdown(
             right, LANG_BY_CODE.get(code, code), self._open_lang_menu)
 
+        right, _ = self._row_card(pane, "Microphone",
+                                  "Where Undertone listens.")
+        cur_dev = self._config.get("input_device", "")
+        self._mic_dd = self._dropdown(
+            right, _ellipsize(cur_dev) if cur_dev else "System default",
+            self._open_mic_menu, width=190)
+
         self._config_toggle_card(
             pane, "Smart formatting", "smart_formatting",
             "Match spacing and capitalization to where you're typing.")
-        self._config_toggle_card(
+        left = self._config_toggle_card(
             pane, "AI cleanup", "ai_cleanup",
             "Remove fillers and false starts with a fast grok model. Sends "
             "the text near your cursor to your cleanup provider.")
+        self._cleanup_warn = tk.Label(left, text="", bg=CARD, fg=AMBER,
+                                      font=HINT_FONT, anchor="w",
+                                      justify="left", wraplength=sc(310))
+        self._refresh_cleanup_hint()
         self._config_toggle_card(
             pane, "Sound cues", "sound_cues",
             "Soft tick when recording starts and stops.")
 
         self._group(pane, "System")
+        self._autostart_card(pane)
+
+        self._bind_wheel(pane)
+
+    def _autostart_card(self, pane):
+        """The Start-with-Windows toggle (shared by General and Get started)."""
         auto_on = False
         try:
             auto_on = autostart.is_enabled()
@@ -686,13 +888,50 @@ class SettingsWindow:
                 # Registry write failed — snap the switch back to reality.
                 auto["state"]["on"] = not on
                 auto["sw"].config(image=self._toggle_imgs[int(not on)])
-        state, sw = self._toggle_card(
+        state, sw, _left = self._toggle_card(
             pane, "Start with Windows",
             "Launch quietly in the tray when you sign in.",
             auto_on, set_autostart)
         auto.update(state=state, sw=sw)
 
-        self._bind_wheel(pane)
+    def _provider_key(self, provider_cfg_key):
+        """The stored API key for the provider named by a config key."""
+        provider = self._config.get(provider_cfg_key, "xai")
+        field = KEY_FIELD_BY_PROVIDER.get(provider, "api_key")
+        return self._config.get(field, "")
+
+    def _setup_incomplete(self):
+        """True until onboarding finished and the STT provider has a key."""
+        return (not self._config.get("onboarded", False)
+                or not self._provider_key("provider"))
+
+    def _refresh_cleanup_hint(self):
+        """Amber truth line inside the AI-cleanup card: the toggle is on but
+        the cleanup provider has no key, so cleanup silently can't run."""
+        lbl = getattr(self, "_cleanup_warn", None)
+        if lbl is None or not lbl.winfo_exists():
+            return
+        if (self._config.get("ai_cleanup", True)
+                and not self._provider_key("cleanup_provider")):
+            cp = self._config.get("cleanup_provider", "xai")
+            name = PROVIDER_BY_ID.get(cp, cp)
+            article = "an" if name[:1].lower() in "aeioux" else "a"
+            lbl.config(text=f"Needs {article} {name} API key — add one in "
+                            "Providers.")
+            lbl.pack(fill="x", pady=(sc(3), 0))
+        else:
+            lbl.pack_forget()
+
+    def _open_mic_menu(self, ctrl):
+        from recorder import list_input_devices
+        entries = [("System default", lambda: self._pick_mic(""))]
+        for _idx, name in list_input_devices():
+            entries.append((name, lambda n=name: self._pick_mic(n)))
+        self._popup_under(self._menu(entries), ctrl)
+
+    def _pick_mic(self, name):
+        self._mic_dd.config(text=_ellipsize(name) if name else "System default")
+        self._apply(input_device=name)
 
     def _setup_banner(self, pane):
         outer = tk.Frame(pane, bg=BANNER_BG, highlightthickness=HAIR,
@@ -700,8 +939,10 @@ class SettingsWindow:
         outer.pack(fill="x", pady=(0, sc(12)))
         inner = tk.Frame(outer, bg=BANNER_BG)
         inner.pack(fill="x", padx=sc(14), pady=sc(12))
-        RoundButton(inner, "Open Providers",
-                    lambda: self._select_section("Providers"),
+        target = ("Get started" if "Get started" in self._nav_items
+                  else "Providers")
+        RoundButton(inner, f"Open {target}",
+                    lambda: self._select_section(target),
                     kind="accent", small=True,
                     bg=BANNER_BG).pack(side="right", padx=(sc(14), 0))
         left = tk.Frame(inner, bg=BANNER_BG)
@@ -715,9 +956,12 @@ class SettingsWindow:
             fill="x", pady=(sc(2), 0))
 
     def _config_toggle_card(self, pane, title, key, hint):
-        self._toggle_card(pane, title, hint,
-                          self._config.get(key, True),
-                          lambda on, k=key: self._apply(**{k: on}))
+        def change(on):
+            self._apply(**{key: on})
+            self._refresh_cleanup_hint()   # no-op unless the card shows it
+        _state, _sw, left = self._toggle_card(
+            pane, title, hint, self._config.get(key, True), change)
+        return left
 
     def _shortcut_card(self, pane, title, config_key, hint):
         right, widgets = self._row_card(pane, title, hint, wrap=270)

@@ -20,9 +20,29 @@ class RecorderError(Exception):
     """Raised when the audio device cannot be opened or fails."""
 
 
+def list_input_devices() -> list:
+    """(index, name) for each input device on the default host API.
+
+    Windows exposes every mic once per host API (MME, DirectSound, WASAPI…);
+    restricting to the default API avoids listing each device three times.
+    Returns [] if the audio subsystem can't be queried.
+    """
+    try:
+        api = sd.query_hostapis(sd.default.hostapi)
+        out = []
+        for idx in api["devices"]:
+            dev = sd.query_devices(idx)
+            if dev.get("max_input_channels", 0) > 0:
+                out.append((idx, dev["name"]))
+        return out
+    except Exception:
+        return []
+
+
 class Recorder:
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 16000, device=None):
         self.sample_rate = sample_rate
+        self.device = device            # index or name; None = system default
         self._stream = None
         self._frames = []
         self._recording = False
@@ -55,6 +75,7 @@ class Recorder:
                     samplerate=self.sample_rate,
                     channels=1,
                     dtype="int16",
+                    device=self.device or None,
                     callback=self._callback,
                 )
                 self._stream.start()
@@ -65,6 +86,10 @@ class Recorder:
                     "connected and not in use by another app."
                 ) from exc
             self._recording = True
+
+    def set_device(self, device) -> None:
+        """Change the input device; takes effect on the next start()."""
+        self.device = device
 
     def stop(self) -> bytes:
         """Stop the stream and return a complete WAV file as bytes.

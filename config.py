@@ -22,6 +22,9 @@ DEFAULT_CONFIG = {
     "language": "en",
     "restore_clipboard": True,
     "sample_rate": 16000,
+    "input_device": "",         # microphone NAME ("" = system default);
+                                # stored by name — indices shift across replugs
+    "onboarded": False,         # guided first-run setup completed
     "provider": "xai",          # STT provider: xai | openai | openrouter
     "stt_models": {},           # per-provider overrides; missing = default
     "smart_formatting": True,
