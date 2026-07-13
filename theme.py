@@ -1,6 +1,6 @@
-"""Undertone's palette (Catppuccin Mocha) and display scaling — the single
-source of truth, shared by ui.py and overlay.py so the rendering stacks can
-never drift apart.
+"""Undertone's One-Dark-derived slate palette and display scaling — the
+single source of truth, shared by ui.py and overlay.py so the rendering
+stacks can never drift apart.
 
 DPI: main.py calls init_dpi() before the Tk root exists; after that sc()
 converts 96-dpi design pixels to real screen pixels (point-sized Tk fonts
@@ -9,24 +9,27 @@ scale on their own once the process is DPI-aware).
 
 import ctypes
 
-BASE = "#1e1e2e"
-MANTLE = "#181825"
-SURFACE0 = "#313244"
-SURFACE1 = "#45475a"
-CARD = "#272839"         # elevated setting-card surface (between BASE and SURFACE0)
-CARD_BORDER = "#333449"
-BANNER_BG = "#2f364f"    # accent-tinted callout panel
-BANNER_BORDER = "#495a80"
-TEXT = "#cdd6f4"
-SUBTEXT = "#a6adc8"
-MUTED = "#7f849c"
-ACCENT = "#89b4fa"
-ACCENT_HOVER = "#9dc0fc"
-ACCENT_DOWN = "#74a0e8"
-RED = "#f38ba8"
-AMBER = "#f9e2af"
-GREEN = "#a6e3a1"
-INK = "#11111b"          # dark ink used on accent-filled surfaces
+BASE = "#282c34"
+MANTLE = "#21252c"
+CARD = "#333842"         # +5 lightness points from BASE
+CARD_HOVER = "#373d48"
+SURFACE0 = "#3b414d"     # +8 lightness points from BASE
+SURFACE1 = "#49515f"     # +14 lightness points from BASE
+CARD_BORDER = "#3f4652"
+ROW_HOVER = "#252a32"    # one elevation step above MANTLE
+NAV_HOVER = "#252931"    # between MANTLE and BASE
+BANNER_BG = "#263b4d"    # accent-tinted callout panel
+BANNER_BORDER = "#3c6688"
+TEXT = "#d7dae0"
+SUBTEXT = "#9da5b4"
+MUTED = "#798294"
+ACCENT = "#61afef"
+ACCENT_HOVER = "#74b9f1"
+ACCENT_DOWN = "#4b9ddd"
+RED = "#e06c75"
+AMBER = "#e5c07b"
+GREEN = "#98c379"
+INK = "#17212b"          # dark slate ink used on accent-filled surfaces
 
 _scale = None
 

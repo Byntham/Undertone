@@ -31,8 +31,9 @@ import autostart
 from config import APP_VERSION
 
 from theme import (ACCENT, ACCENT_DOWN, ACCENT_HOVER, AMBER, BANNER_BG,
-                   BANNER_BORDER, BASE, CARD, CARD_BORDER, GREEN, INK, MANTLE,
-                   MUTED, RED, SUBTEXT, SURFACE0, SURFACE1, TEXT, sc, scale)
+                   BANNER_BORDER, BASE, CARD, CARD_BORDER, CARD_HOVER, GREEN,
+                   INK, MANTLE, MUTED, NAV_HOVER, RED, ROW_HOVER, SUBTEXT,
+                   SURFACE0, SURFACE1, TEXT, sc, scale)
 
 FONT = ("Segoe UI", 10)
 HEADER_FONT = ("Segoe UI Semibold", 15)
@@ -50,9 +51,6 @@ KEY_FONT = ("Segoe UI Semibold", 10)
 WIN_W, WIN_H = 780, 724
 SIDEBAR_W = 200
 HAIR = max(1, sc(1))     # hairline border width in real pixels
-
-CARD_HOVER = "#2b2c40"   # toggle cards lift to this on hover
-ROW_HOVER = "#232338"    # MANTLE list rows lift to this on hover
 
 LANGUAGES = [
     ("English", "en"), ("Arabic", "ar"), ("Chinese", "zh"), ("Danish", "da"),
@@ -437,6 +435,7 @@ class SettingsWindow:
         self._mic_testing = False
         self._saved_after_id = None
         self._hist_poll_id = None
+        self._menu_closed_at = float("-inf")
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -564,7 +563,7 @@ class SettingsWindow:
         def enter(_):
             if getattr(self, "_active_section", None) != section:
                 for w in (row, lbl, icon):
-                    w.configure(bg="#1f1f30")
+                    w.configure(bg=NAV_HOVER)
 
         def leave(_):
             if getattr(self, "_active_section", None) != section:
@@ -778,6 +777,12 @@ class SettingsWindow:
         return menu
 
     def _popup_under(self, menu, ctrl):
+        if time.monotonic() - self._menu_closed_at < 0.35:
+            return
+        menu.bind(
+            "<Unmap>",
+            lambda _event: setattr(self, "_menu_closed_at", time.monotonic()),
+        )
         x = ctrl.winfo_rootx()
         y = ctrl.winfo_rooty() + ctrl.winfo_height() + sc(2)
         menu.tk_popup(x, y)
