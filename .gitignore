@@ -7,9 +7,9 @@ __pycache__/
 build/
 dist/
 
-# Claude Code session data (agent definitions in .claude/agents ARE committed)
-.claude/*
-!.claude/agents/
+# Transient agent worktrees (a second checkout appears here during agent
+# runs — without this, git add -A would sweep in thousands of files)
+.claude/worktrees/
 
 
 
