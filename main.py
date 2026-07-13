@@ -121,6 +121,7 @@ class App:
         # Tray pause state and icons (normal / red-tinted while recording).
         # Built once; the recording swap happens on the hook thread.
         self._paused = False
+        self._capture_active = False   # settings shortcut capture in progress
         self._tray_img = load_app_image()
         self._tray_img_recording = make_recording_tray_image()
         self.tray = create_tray(
@@ -423,8 +424,10 @@ class App:
                     del entry["wav"]
 
     def _history_snapshot(self):
+        # Copy each entry: the pipeline may drop an older failure's "wav"
+        # while the settings window is still rendering this snapshot.
         with self._history_lock:
-            return list(reversed(self._history))
+            return [dict(e) for e in reversed(self._history)]
 
     # ---- history / re-paste ---------------------------------------------------
 
@@ -465,6 +468,7 @@ class App:
     def _pause_hotkey(self):
         """Suspend all hotkeys while the settings window captures a shortcut
         (pressing the re-paste combo during capture must not paste)."""
+        self._capture_active = True
         try:
             self.ptt.stop()
         except Exception:
@@ -472,6 +476,7 @@ class App:
         self._unregister_extra_hotkeys()
 
     def _resume_hotkey(self):
+        self._capture_active = False
         if self._paused:
             return  # the tray pause owns the hotkeys until resumed
         try:
@@ -491,6 +496,10 @@ class App:
                 pass
             self._unregister_extra_hotkeys()
             self.overlay.show_message("Dictation paused", 1500, warn=True)
+        elif self._capture_active:
+            # Shortcut capture owns the hooks right now; _resume_hotkey
+            # re-arms them when it ends (we're no longer paused).
+            self.overlay.show_message("Dictation resumed", 1200)
         else:
             try:
                 self.ptt.start()

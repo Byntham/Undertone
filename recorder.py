@@ -39,6 +39,22 @@ def list_input_devices() -> list:
         return []
 
 
+def _resolve_device(device):
+    """Map a stored device NAME to its default-host-API index.
+
+    Names are stored (indices shift across replugs), but sounddevice
+    matches a bare name across every host API — ambiguous on Windows where
+    each mic appears once per API. Resolve against the default API only;
+    an unplugged/renamed device falls back to the system default (None).
+    """
+    if not isinstance(device, str) or not device:
+        return device
+    for idx, name in list_input_devices():
+        if name == device:
+            return idx
+    return None
+
+
 class Recorder:
     def __init__(self, sample_rate: int = 16000, device=None):
         self.sample_rate = sample_rate
@@ -75,7 +91,7 @@ class Recorder:
                     samplerate=self.sample_rate,
                     channels=1,
                     dtype="int16",
-                    device=self.device or None,
+                    device=_resolve_device(self.device or None),
                     callback=self._callback,
                 )
                 self._stream.start()

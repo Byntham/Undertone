@@ -692,6 +692,8 @@ class SettingsWindow:
 
         def step(frames, delays):
             state["anim"] = None
+            if not sw.winfo_exists():
+                return   # card destroyed mid-tween (section switch/close)
             show(frames[0])
             if len(frames) > 1:
                 state["anim"] = self._root.after(
