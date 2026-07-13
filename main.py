@@ -14,6 +14,7 @@ import tkinter as tk
 from collections import deque
 
 import keyboard
+import pyperclip
 
 import theme
 theme.init_dpi()  # before overlay/ui compute pixel metrics or Tk starts
@@ -138,7 +139,14 @@ class App:
             on_start=self._start_recording,
             on_finish=self._finish_recording,
             on_discard=self._discard_recording,
+            on_lock=self._on_lock,
         )
+
+        # Esc cancels an in-progress recording; resolve its scan codes once.
+        try:
+            self._esc_scancodes = frozenset(keyboard.key_to_scan_codes("esc"))
+        except Exception:
+            self._esc_scancodes = frozenset()
 
         caretctx.warm()
 
@@ -178,12 +186,19 @@ class App:
         self.overlay.show_recording()
         return True
 
+    def _on_lock(self):
+        """Hands-free lock engaged (double-tap or dedicated toggle key)."""
+        if self.cfg.get("sound_cues", True):
+            sounds.play_lock()
+        self.overlay.show_recording(locked=True)
+
     def _finish_recording(self):
         if self.cfg.get("sound_cues", True):
             sounds.play_stop()
         wav = self.recorder.stop()
         if len(wav) < MIN_AUDIO_BYTES:
-            self.overlay.hide()
+            self.overlay.show_message(
+                "Too short — hold the key while you speak", 2200, warn=True)
             return
         self.overlay.show_transcribing()
         # The paste belongs to the window being dictated into, captured now —
@@ -199,6 +214,12 @@ class App:
     def _on_other_key(self, scan_code: int):
         """Non-hotkey keydown (from the PushToTalk hook): the caret has
         likely moved or text was edited, so insertion memory is stale."""
+        if (scan_code in self._esc_scancodes
+                and self.gestures.state != TapStateMachine.IDLE
+                and self.gestures.cancel()):
+            if self.cfg.get("sound_cues", True):
+                sounds.play_cancel()
+            return  # a cancel is not typing; keep insertion memory
         if scan_code not in self._extra_hotkey_scancodes:
             self._typed_since_paste = True
 
@@ -248,20 +269,47 @@ class App:
             self.overlay.show_message("No speech detected", error=True)
             return
 
-        self._return_to_target(target)
+        refocused = self._return_to_target(target)
         final = self._prepare_text(text)
-        paste_text(final, self.cfg.get("restore_clipboard", True))
-        self._register_paste(final)
-        self.overlay.hide()
-
-    def _return_to_target(self, target):
-        """If focus left the dictation's window, put it back before the
-        caret is read and the paste fires — and log who had taken it."""
-        if not target:
+        if not refocused:
+            # The target window is gone/unreachable: pasting would land the
+            # text in the wrong app. Park it on the clipboard instead.
+            self._clipboard_fallback(final)
             return
+        try:
+            paste_text(final, self.cfg.get("restore_clipboard", True))
+        except Exception:
+            logging.exception("Paste failed")
+            self._clipboard_fallback(final)
+            return
+        self._register_paste(final)
+        self._confirm_paste(final, 1600)
+
+    def _confirm_paste(self, final: str, duration_ms: int):
+        preview = " ".join(final.split())
+        if len(preview) > 48:
+            preview = preview[:47].rstrip() + "…"
+        self.overlay.show_message(f"Pasted · {preview}", duration_ms)
+
+    def _clipboard_fallback(self, final: str):
+        """Never lose dictated text: clipboard + history instead of a paste."""
+        pyperclip.copy(final)
+        self._register_paste(final)
+        combo = self.cfg.get("repaste_hotkey", "")
+        msg = (f"Couldn't paste — press {pretty_combo(combo)} where you want it"
+               if combo else "Couldn't paste — the text is on your clipboard")
+        self.overlay.show_message(msg, 5000, warn=True)
+
+    def _return_to_target(self, target) -> bool:
+        """If focus left the dictation's window, put it back before the
+        caret is read and the paste fires — and log who had taken it.
+        Returns True if no refocus was needed or it succeeded, False if the
+        refocus failed."""
+        if not target:
+            return True
         hwnd, exe = target
         if not hwnd or _foreground_hwnd() == hwnd:
-            return
+            return True
         thief = caretctx.get_foreground_exe()
         title = caretctx.get_window_title()
         restored = caretctx.focus_window(hwnd)
@@ -270,6 +318,7 @@ class App:
             "refocus %s", thief, title, exe,
             "succeeded" if restored else "FAILED",
         )
+        return bool(restored)
 
     def _prepare_text(self, text: str) -> str:
         """Apply corrections, the optional AI cleanup pass, and
@@ -336,6 +385,7 @@ class App:
     def _paste_now(self, text: str):
         paste_text(text, self.cfg.get("restore_clipboard", True))
         self._register_paste(text)
+        self._confirm_paste(text, 1200)
 
     def _repaste_last(self):
         """Global re-paste hotkey handler."""

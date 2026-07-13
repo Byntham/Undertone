@@ -30,3 +30,13 @@ def play_start() -> None:
 def play_stop() -> None:
     """Soft falling tick when recording ends."""
     _play("sound_stop.wav")
+
+
+def play_lock() -> None:
+    """Quick rising two-note tick when hands-free lock engages."""
+    _play("sound_lock.wav")
+
+
+def play_cancel() -> None:
+    """Single short falling blip when a recording is canceled."""
+    _play("sound_cancel.wav")

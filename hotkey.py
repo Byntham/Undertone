@@ -131,8 +131,9 @@ class TapStateMachine:
     made slow-ish taps silently discard recordings.
 
     Callbacks: on_start() -> bool (False = recording could not start; stay
-    IDLE), on_finish() (stop + transcribe), on_discard() (stop + drop). They
-    are invoked under the machine's lock and must not call back in.
+    IDLE), on_finish() (stop + transcribe), on_discard() (stop + drop),
+    on_lock() (optional; entered hands-free LOCKED). They are invoked under
+    the machine's lock and must not call back in.
     """
 
     IDLE, HELD, TAP_WAIT, LOCKED = "idle", "held", "tap_wait", "locked"
@@ -140,10 +141,12 @@ class TapStateMachine:
     def __init__(self, on_start: Callable[[], bool],
                  on_finish: Callable[[], None],
                  on_discard: Callable[[], None],
+                 on_lock: Callable[[], None] = None,
                  short_tap_s: float = 0.30, double_tap_s: float = 0.40):
         self._on_start = on_start
         self._on_finish = on_finish
         self._on_discard = on_discard
+        self._on_lock = on_lock
         self._short_tap_s = short_tap_s
         self._double_tap_s = double_tap_s
         self._lock = threading.RLock()
@@ -166,6 +169,8 @@ class TapStateMachine:
                 # us to IDLE otherwise): lock hands-free.
                 self._cancel_timer()
                 self._state = self.LOCKED
+                if self._on_lock is not None:
+                    self._on_lock()
             elif self._state == self.LOCKED:
                 self._state = self.IDLE
                 self._on_finish()
@@ -193,10 +198,27 @@ class TapStateMachine:
             if self._state == self.IDLE:
                 self._press_time = time.monotonic()
                 self._state = self.LOCKED if self._on_start() else self.IDLE
+                if self._state == self.LOCKED and self._on_lock is not None:
+                    self._on_lock()
             else:
                 self._cancel_timer()
                 self._state = self.IDLE
                 self._on_finish()
+
+    def cancel(self) -> bool:
+        """Abort any in-progress gesture, discarding the recording.
+
+        Returns True if something was canceled, False in IDLE. After a
+        cancel from HELD the later physical release is a no-op (release()
+        ignores non-HELD states).
+        """
+        with self._lock:
+            if self._state == self.IDLE:
+                return False
+            self._cancel_timer()
+            self._state = self.IDLE
+            self._on_discard()
+            return True
 
     def _tap_expired(self):
         with self._lock:

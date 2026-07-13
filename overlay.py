@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
-from theme import ACCENT, BASE, GREEN, RED, SURFACE1, TEXT, sc
+from theme import ACCENT, AMBER, BASE, GREEN, RED, SURFACE1, TEXT, sc
 
 # Design measures in 96-dpi pixels, scaled once at import (main.py calls
 # theme.init_dpi() before importing this module).
@@ -138,24 +138,34 @@ class Overlay:
         # Current layout, re-composed each animation tick.
         self._text = ""
         self._text_color = TEXT
-        self._mode = "none"      # "bars" | "spinner" | "check" | "alert"
+        self._mode = "none"      # "bars" | "spinner" | "check" | "alert" | "warn"
+        self._locked = False     # hands-free: accent bars + label
         self._pill_width = 0
 
         self._root.after(POLL_MS, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
 
-    def show_recording(self):
-        """Show the pill with live microphone level bars."""
-        self._queue.put(("recording", None))
+    def show_recording(self, locked: bool = False):
+        """Show the pill with live microphone level bars.
+
+        locked=True marks hands-free mode: accent bars plus a
+        "tap to finish" label, so the double-tap visibly registered.
+        """
+        self._queue.put(("recording", locked))
 
     def show_transcribing(self):
-        """Show the pill with a spinner."""
+        """Show the pill with a spinner (escalates to text if it drags on)."""
         self._queue.put(("transcribing", None))
 
-    def show_message(self, text: str, duration_ms: int = 2500, error: bool = False):
-        """Show a transient message that auto-hides after duration_ms."""
-        self._queue.put(("message", (text, duration_ms, error)))
+    def show_message(self, text: str, duration_ms: int = 2500,
+                     error: bool = False, warn: bool = False):
+        """Show a transient message that auto-hides after duration_ms.
+
+        error draws a red alert and red text; warn an amber one — for
+        notices that aren't failures (too short, canceled, can't paste).
+        """
+        self._queue.put(("message", (text, duration_ms, error, warn)))
 
     def hide(self):
         """Withdraw the pill."""
@@ -185,18 +195,21 @@ class Overlay:
         cy = PILL_H * S // 2
 
         if self._mode == "bars":
+            bar_rgb = _hex_to_rgb(ACCENT if self._locked else RED)
             for i, bh in enumerate(self._bar_heights):
                 x = (PAD_X + i * (BAR_W + BAR_GAP)) * S
                 hh = bh * S / 2
                 d.rounded_rectangle(
                     (x, cy - hh, x + BAR_W * S, cy + hh),
-                    radius=BAR_W * S // 2, fill=_hex_to_rgb(RED) + (255,))
+                    radius=BAR_W * S // 2, fill=bar_rgb + (255,))
         elif self._mode == "spinner":
             self._draw_spinner(d, self._spin_index / SPIN_FRAMES)
         elif self._mode == "check":
             self._draw_check(d)
         elif self._mode == "alert":
             self._draw_alert(d)
+        elif self._mode == "warn":
+            self._draw_alert(d, color=AMBER)
 
         frame = img.resize((width, PILL_H), Image.LANCZOS)
         if self._text:
@@ -230,11 +243,11 @@ class Overlay:
         d.line(pts, fill=_hex_to_rgb(GREEN) + (255,), width=int(0.13 * px),
                joint="curve")
 
-    def _draw_alert(self, d):
+    def _draw_alert(self, d, color=RED):
         x0, y0, px = self._icon_box()
         base = _hex_to_rgb(BASE) + (255,)
         d.ellipse((x0, y0, x0 + px - 1, y0 + px - 1),
-                  fill=_hex_to_rgb(RED) + (255,))
+                  fill=_hex_to_rgb(color) + (255,))
         bar_w = int(0.10 * px)
         cx = x0 + px // 2
         d.rounded_rectangle(
@@ -316,7 +329,9 @@ class Overlay:
 
         if cmd == "recording":
             self._state = "recording"
-            self._layout(None, TEXT, mode="bars")
+            self._locked = bool(payload)
+            self._layout("Hands-free · tap to finish" if payload else None,
+                         TEXT, mode="bars")
             self._show()
             self._tick_bars()
         elif cmd == "transcribing":
@@ -324,11 +339,15 @@ class Overlay:
             self._layout(None, TEXT, mode="spinner")
             self._show()
             self._tick_spinner()
+            # If it drags on, say so — an unchanging spinner reads as hung.
+            gen = self._generation
+            self._root.after(4000, lambda: self._escalate(gen))
         elif cmd == "message":
-            text, duration_ms, error = payload
+            text, duration_ms, error, warn = payload
             self._state = "message"
-            self._layout(text, (RED if error else TEXT),
-                         mode=("alert" if error else "check"))
+            color = RED if error else (AMBER if warn else TEXT)
+            mode = "alert" if error else ("warn" if warn else "check")
+            self._layout(text, color, mode=mode)
             self._show()
             gen = self._generation
             self._hide_after_id = self._root.after(
@@ -429,6 +448,13 @@ class Overlay:
                 FADE_MS, lambda: self._fade(step + 1))
         else:
             self._fade_after_id = None
+
+    def _escalate(self, gen):
+        """Add 'Still transcribing…' to a spinner that has run 4+ seconds."""
+        if gen != self._generation or self._state != "transcribing":
+            return
+        self._layout("Still transcribing…", TEXT, mode="spinner")
+        self._show()
 
     def _auto_hide(self, gen):
         if gen == self._generation:
