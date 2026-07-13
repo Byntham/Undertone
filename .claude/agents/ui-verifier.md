@@ -9,7 +9,8 @@ You visually verify Undertone's UI (repo: C:\Users\graham\projects\undertone). Y
 
 Harness rules (see AGENTS.md "UI verification" for background):
 - NEVER launch the real app — a live instance holds the `Undertone_SingleInstance` mutex and a second launch pops a blocking dialog.
-- Instantiate `SettingsWindow` and/or `Overlay` on a withdrawn `tk.Tk()` with a fake config (set `api_key`, `onboarded: True` unless testing first-run) using the project venv: `.venv\Scripts\python.exe`.
+- Instantiate `SettingsWindow` (from `settingsui.py` — the canvas-rendered window; ui.py keeps only the tray) and/or `Overlay` on a withdrawn `tk.Tk()` with a fake config (set `api_key`, `onboarded: True` unless testing first-run) using the project venv: `.venv\Scripts\python.exe`.
+- Prefer PrintWindow-based capture (`ImageGrab.grab(window=hwnd)` composite) over bbox screen grabs — other apps' windows occlude bbox grabs. Dropdown popups are separate Toplevel HWNDs: grab them separately and composite at their offset.
 - `open()` and overlay methods are queue-driven (drained via `root.after`): pump `root.update()` in a loop for ~0.5–1s after open/state changes before capturing. The resize settle is ~150ms trailing; pump past it after geometry changes.
 - Capture with `PIL.ImageGrab.grab(bbox=...)` from the window's `winfo_rootx/rooty/width/height`. For the overlay pill, grab the bottom-center screen strip.
 - History entries are dicts: `{"ts", "ok", "text", "raw"}` (failures: `"error"`, optional `"wav"`).
