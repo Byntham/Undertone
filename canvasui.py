@@ -5,6 +5,7 @@ limited to Canvas coordinate and configuration changes; it never calls Pillow.
 """
 
 import ctypes
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from ctypes import wintypes
@@ -25,6 +26,7 @@ FONT = ("Segoe UI", 10)
 TITLE_FONT = ("Segoe UI Semibold", 10)
 HINT_FONT = ("Segoe UI", 9)
 BUTTON_FONT = ("Segoe UI Semibold", 10)
+SMALL_BUTTON_FONT = ("Segoe UI Semibold", 9)
 _UNSET = object()
 
 
@@ -871,14 +873,15 @@ class _Control(Widget):
 
 
 class PillButton(_Control):
-    def __init__(self, text, kind="accent", on_click=None):
+    def __init__(self, text, kind="accent", on_click=None, small=False):
         super().__init__()
         self.text = text
         self.kind = kind
         self.on_click = on_click
-        self.font = BUTTON_FONT
-        self.height = theme.sc(32)
-        self.pad = theme.sc(17)
+        self.enabled = True
+        self.font = SMALL_BUTTON_FONT if small else BUTTON_FONT
+        self.height = theme.sc(26 if small else 32)
+        self.pad = theme.sc(13 if small else 17)
         self._font = None
         self._surface = None
         self._text_item = None
@@ -890,17 +893,20 @@ class PillButton(_Control):
                 "normal": (theme.ACCENT, None, theme.INK),
                 "hover": (theme.ACCENT_HOVER, None, theme.INK),
                 "down": (theme.ACCENT_DOWN, None, theme.INK),
+                "disabled": (theme.SURFACE0, None, theme.MUTED),
             }
         if self.kind == "danger":
             return {
                 "normal": (theme.RED, None, theme.INK),
                 "hover": (_blend(theme.RED, theme.TEXT, 0.15), None, theme.INK),
                 "down": (_blend(theme.RED, theme.BASE, 0.18), None, theme.INK),
+                "disabled": (theme.SURFACE0, None, theme.MUTED),
             }
         return {
             "normal": (theme.SURFACE0, theme.SURFACE1, theme.TEXT),
             "hover": (theme.SURFACE1, theme.SURFACE1, theme.TEXT),
             "down": (theme.SURFACE1, theme.ACCENT, theme.TEXT),
+            "disabled": (theme.SURFACE0, theme.SURFACE0, theme.MUTED),
         }
 
     def _ensure(self):
@@ -917,6 +923,8 @@ class PillButton(_Control):
         self._items.append(self._text_item)
         self._make_focus_surface(self.height // 2 + theme.sc(2))
         self._bind_clickable()
+        if not self.enabled:
+            self._apply()
 
     def measure(self, avail_w):
         if self._measured_width is None:
@@ -937,7 +945,9 @@ class PillButton(_Control):
         self._layout_focus(*geometry)
 
     def _apply(self):
-        state = "down" if self._pressed else "hover" if self._hovered else "normal"
+        state = ("disabled" if not self.enabled else
+                 "down" if self._pressed else
+                 "hover" if self._hovered else "normal")
         fill, border, fg = self._states()[state]
         self._surface.set_style(fill, border)
         self.canvas.itemconfigure(self._text_item, fill=fg)
@@ -951,8 +961,23 @@ class PillButton(_Control):
         self._apply()
 
     def activate(self):
-        if self.on_click:
+        if self.enabled and self.on_click:
             self.on_click()
+
+    def set_enabled(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.enabled:
+            return
+        self.enabled = enabled
+        self._pressed = False
+        if self._surface:
+            self._apply()
+
+    def enable(self):
+        self.set_enabled(True)
+
+    def disable(self):
+        self.set_enabled(False)
 
     def set_text(self, text):
         if text == self.text:
@@ -1071,10 +1096,12 @@ class Toggle(_Control):
 
 
 class EntryField(_Control):
-    def __init__(self, get, set, placeholder="", secret=False, multiline=False, width=210):
+    def __init__(self, get, set, placeholder="", secret=False, multiline=False,
+                 width=210, on_enter=None):
         super().__init__()
         self.getter = get
         self.setter = set
+        self.on_enter = on_enter
         self.placeholder = placeholder
         self.secret = secret
         self.multiline = multiline
@@ -1163,6 +1190,7 @@ class DropdownButton(_Control):
         self._text_item = None
         self._arrow = None
         self._popup = None
+        self._menu_closed_at = float("-inf")
 
     def _pairs(self):
         return [item if isinstance(item, (tuple, list)) else (item, item) for item in self.options]
@@ -1230,7 +1258,8 @@ class DropdownButton(_Control):
             self.open_popup()
 
     def open_popup(self):
-        if self._popup is not None or not self._geometry:
+        if (self._popup is not None or not self._geometry
+                or time.monotonic() - self._menu_closed_at < 0.35):
             return
         self.scene.end_edit(commit=True)
         popup = tk.Toplevel(self.canvas)
@@ -1274,6 +1303,7 @@ class DropdownButton(_Control):
         if self.scene and self.scene.popup is self:
             self.scene.popup = None
         if popup is not None:
+            self._menu_closed_at = time.monotonic()
             popup.destroy()
         self.canvas.focus_set()
 
@@ -1721,7 +1751,10 @@ class Scene:
             widget.bind("<Return>", lambda _e: self._finish_editor(True))
 
     def _finish_editor(self, commit):
+        field = self.editing
         self.end_edit(commit=commit)
+        if commit and field is not None and field.on_enter is not None:
+            field.on_enter()
         return "break"
 
     def _finish_editor_tab(self, reverse):
