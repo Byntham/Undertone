@@ -1317,15 +1317,21 @@ class SettingsWindow:
         y = ctrl.winfo_rooty() + ctrl.winfo_height() + sc(2)
         menu.tk_popup(x, y)
 
-    def _entry(self, parent, var, show=None, bg=SURFACE0):
-        """Return (rounded wrapper, borderless Entry)."""
+    def _entry(self, parent, var, show=None, bg=SURFACE0, width=None):
+        """Return (rounded wrapper, borderless Entry).
+
+        `width` sets the Entry's requested character width — a small value
+        lets side-by-side entries shrink and share the row when the window
+        is squeezed to its minimum, instead of forcing the row overwide.
+        """
         wrap = tk.Frame(parent, bg=parent.cget("bg"), highlightthickness=0)
         self._rounded_container(wrap, sc(6), bg, SURFACE1,
                                 bg=parent.cget("bg"))
         entry = tk.Entry(
             wrap, textvariable=var, font=FONT, show=show or "", bg=bg,
             fg=TEXT, insertbackground=TEXT, relief="flat",
-            highlightthickness=0, bd=0)
+            highlightthickness=0, bd=0,
+            **({"width": width} if width is not None else {}))
         entry.pack(fill="both", expand=True, padx=sc(8), pady=sc(5))
         entry.bind("<FocusIn>", lambda _e: wrap._round_set(outline=ACCENT))
         entry.bind("<FocusOut>", lambda _e: wrap._round_set(outline=SURFACE1))
@@ -1723,17 +1729,20 @@ class SettingsWindow:
         row2.pack(fill="x")
         self._corr_heard = tk.StringVar()
         self._corr_right = tk.StringVar()
-        e1_wrap, e1 = self._entry(row2, self._corr_heard)
+        # Pin Add to the right first so it keeps its space; the two entries
+        # (small width floor + expand) then absorb the squeeze at min width
+        # instead of pushing the button off the card.
+        RoundButton(row2, "Add", self._add_correction, kind="accent",
+                    small=True, bg=CARD).pack(side="right", padx=(sc(8), 0))
+        e1_wrap, e1 = self._entry(row2, self._corr_heard, width=1)
         e1_wrap.pack(side="left", fill="x", expand=True)
         tk.Label(row2, text="→", bg=CARD, fg=SUBTEXT, font=FONT,
                  padx=sc(8)).pack(side="left")
-        e2_wrap, e2 = self._entry(row2, self._corr_right)
+        e2_wrap, e2 = self._entry(row2, self._corr_right, width=1)
         e2_wrap.pack(side="left", fill="x", expand=True)
         e1.bind("<Return>", lambda _e: self._add_correction())
         e2.bind("<Return>", lambda _e: self._add_correction())
         self._corr_heard_entry = e1   # History's "Add correction…" focuses it
-        RoundButton(row2, "Add", self._add_correction, kind="accent",
-                    small=True, bg=CARD).pack(side="left", padx=(sc(8), 0))
         tk.Frame(card2, bg=CARD, height=sc(8)).pack()
         self._corr_inner = self._scroll_list(card2, height=sc(108))
         self._render_corrections()
