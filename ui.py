@@ -20,7 +20,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import keyboard
 import pyperclip
@@ -416,8 +416,9 @@ class SettingsWindow:
         on_save: Callable[[dict], None],
         on_capture_start: Optional[Callable[[], None]] = None,
         on_capture_end: Optional[Callable[[], None]] = None,
-        history_getter: Optional[Callable[[], List[Tuple[float, str]]]] = None,
+        history_getter: Optional[Callable[[], List[dict]]] = None,
         on_repaste: Optional[Callable[[str], None]] = None,
+        on_retry: Optional[Callable[[bytes], None]] = None,
         config_getter: Optional[Callable[[], dict]] = None,
     ):
         self._root = root
@@ -428,12 +429,14 @@ class SettingsWindow:
         self._on_capture_end = on_capture_end
         self._history_getter = history_getter
         self._on_repaste = on_repaste
+        self._on_retry = on_retry
         self._win = None
         self._queue: "queue.Queue" = queue.Queue()
         self._capturing = False
         self._testing = False
         self._mic_testing = False
         self._saved_after_id = None
+        self._hist_poll_id = None
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -574,6 +577,7 @@ class SettingsWindow:
         return {"row": row, "bar": bar, "label": lbl, "icon": icon}
 
     def _select_section(self, section):
+        self._cancel_history_poll()
         self._active_section = section
         for name, item in self._nav_items.items():
             active = name == section
@@ -1156,6 +1160,7 @@ class SettingsWindow:
         e2.pack(side="left", fill="x", expand=True, ipady=sc(5))
         e1.bind("<Return>", lambda _e: self._add_correction())
         e2.bind("<Return>", lambda _e: self._add_correction())
+        self._corr_heard_entry = e1   # History's "Add correction…" focuses it
         RoundButton(row2, "Add", self._add_correction, kind="accent",
                     small=True, bg=CARD).pack(side="left", padx=(sc(8), 0))
         tk.Frame(card2, bg=CARD, height=sc(8)).pack()
@@ -1237,42 +1242,177 @@ class SettingsWindow:
                              "Set a re-paste shortcut in General to paste "
                              "the newest one anywhere.", pady=(0, sc(12)))
 
-        items = []
-        if self._history_getter is not None:
-            try:
-                items = self._history_getter() or []
-            except Exception:
-                items = []
+        self._hist_expanded_ts = None
+        self._hist_fp = None
+        self._hist_list = self._scroll_list(pane, height=sc(500))
+        self._render_history()
+        self._hist_poll_id = self._root.after(2000, self._hist_poll)
 
-        inner = self._scroll_list(pane, height=sc(500))
+    def _hist_snapshot(self):
+        if self._history_getter is None:
+            return []
+        try:
+            return self._history_getter() or []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _hist_fingerprint(items):
+        return tuple((e.get("ts"), e.get("ok", True)) for e in items)
+
+    def _hist_poll(self):
+        """While History is showing, re-render every 2 s — but only when the
+        entries actually changed, so an expanded row isn't fought with."""
+        self._hist_poll_id = None
+        if (self._win is None or not self._win.winfo_exists()
+                or not self._hist_list.winfo_exists()):
+            return
+        items = self._hist_snapshot()
+        if self._hist_fingerprint(items) != self._hist_fp:
+            self._render_history(items)
+        self._hist_poll_id = self._root.after(2000, self._hist_poll)
+
+    def _cancel_history_poll(self):
+        if self._hist_poll_id is not None:
+            self._root.after_cancel(self._hist_poll_id)
+            self._hist_poll_id = None
+
+    def _render_history(self, items=None):
+        if items is None:
+            items = self._hist_snapshot()
+        self._hist_fp = self._hist_fingerprint(items)
+        inner = self._hist_list
+        for w in inner.winfo_children():
+            w.destroy()
         if not items:
             self._empty_row(inner, "Nothing dictated yet this session. Hold "
                                    "your shortcut and speak — dictations "
                                    "appear here.")
             return
+        if not any(e.get("ts") == self._hist_expanded_ts for e in items):
+            self._hist_expanded_ts = None   # the expanded entry is gone
+        for entry in items:
+            if entry.get("ok", True):
+                self._hist_ok_row(inner, entry)
+            else:
+                self._hist_fail_row(inner, entry)
 
-        for ts, text in items:
-            row = tk.Frame(inner, bg=MANTLE)
-            row.pack(fill="x", pady=1)
-            when = time.strftime("%H:%M", time.localtime(ts))
-            when_lbl = tk.Label(row, text=when, bg=MANTLE, fg=MUTED,
-                                font=HINT_FONT, width=6, anchor="w",
-                                padx=sc(10))
-            when_lbl.pack(side="left")
-            paste_btn = RoundButton(row, "Paste", lambda t=text: self._repaste(t),
-                                    small=True, bg=MANTLE)
-            paste_btn.pack(side="right", padx=(0, sc(8)), pady=sc(3))
-            copy_btn = RoundButton(row, "Copy", lambda t=text: self._copy(t),
-                                   small=True, bg=MANTLE)
-            copy_btn.pack(side="right", padx=(0, sc(6)), pady=sc(3))
-            preview = text.replace("\n", " ").strip()
-            if len(preview) > 46:
-                preview = preview[:45] + "…"
-            prev_lbl = tk.Label(row, text=preview, bg=MANTLE, fg=TEXT,
-                                font=FONT, anchor="w")
-            prev_lbl.pack(side="left", fill="x", expand=True,
-                          padx=(sc(4), sc(8)))
-            self._hover_row(row, [when_lbl, prev_lbl], (copy_btn, paste_btn))
+    def _hist_wheel(self, *widgets):
+        """Route wheel events over history widgets to the list scroll."""
+        wheel = getattr(self._hist_list, "_wheel", None)
+        if wheel is not None:
+            for w in widgets:
+                w.bind("<MouseWheel>", wheel)
+
+    def _hist_ok_row(self, inner, entry):
+        ts, text = entry["ts"], entry["text"]
+        row = tk.Frame(inner, bg=MANTLE, cursor="hand2")
+        row.pack(fill="x", pady=1)
+        when = time.strftime("%H:%M", time.localtime(ts))
+        when_lbl = tk.Label(row, text=when, bg=MANTLE, fg=MUTED,
+                            font=HINT_FONT, width=6, anchor="w",
+                            padx=sc(10), cursor="hand2")
+        when_lbl.pack(side="left")
+        paste_btn = RoundButton(row, "Paste", lambda t=text: self._repaste(t),
+                                small=True, bg=MANTLE)
+        paste_btn.pack(side="right", padx=(0, sc(8)), pady=sc(3))
+        copy_btn = RoundButton(row, "Copy", lambda t=text: self._copy(t),
+                               small=True, bg=MANTLE)
+        copy_btn.pack(side="right", padx=(0, sc(6)), pady=sc(3))
+        preview = text.replace("\n", " ").strip()
+        if len(preview) > 46:
+            preview = preview[:45] + "…"
+        prev_lbl = tk.Label(row, text=preview, bg=MANTLE, fg=TEXT,
+                            font=FONT, anchor="w", cursor="hand2")
+        prev_lbl.pack(side="left", fill="x", expand=True,
+                      padx=(sc(4), sc(8)))
+        self._hover_row(row, [when_lbl, prev_lbl], (copy_btn, paste_btn))
+        # Clicking the row text expands/collapses the inline detail panel.
+        for w in (row, when_lbl, prev_lbl):
+            w.bind("<Button-1>", lambda _e, t=ts: self._hist_toggle(t))
+        self._hist_wheel(row, when_lbl, prev_lbl, copy_btn, paste_btn)
+        if self._hist_expanded_ts == ts:
+            self._hist_detail(inner, entry)
+
+    def _hist_detail(self, inner, entry):
+        """The inline expansion under a successful row: full text, what was
+        heard (when different), and quick actions."""
+        panel = tk.Frame(inner, bg=MANTLE)
+        panel.pack(fill="x", pady=(0, sc(6)))
+        pad = sc(66)   # align under the preview column
+        widgets = [panel]
+        full = tk.Label(panel, text=entry["text"], bg=MANTLE, fg=TEXT,
+                        font=FONT, anchor="w", justify="left",
+                        wraplength=sc(420))
+        full.pack(fill="x", padx=(pad, sc(10)))
+        widgets.append(full)
+        raw = entry.get("raw")
+        if raw and raw != entry["text"]:
+            heard = tk.Label(panel, text=f"Heard: {raw}", bg=MANTLE, fg=MUTED,
+                             font=HINT_FONT, anchor="w", justify="left",
+                             wraplength=sc(420))
+            heard.pack(fill="x", padx=(pad, sc(10)), pady=(sc(4), 0))
+            widgets.append(heard)
+        btns = tk.Frame(panel, bg=MANTLE)
+        btns.pack(fill="x", padx=(pad, sc(10)), pady=(sc(7), sc(4)))
+        widgets.append(btns)
+        if raw:
+            b = RoundButton(btns, "Copy raw", lambda r=raw: self._copy(r),
+                            small=True, bg=MANTLE)
+            b.pack(side="left", padx=(0, sc(6)))
+            widgets.append(b)
+        corr = RoundButton(
+            btns, "Add correction…",
+            lambda: self._hist_add_correction(raw or entry["text"]),
+            small=True, bg=MANTLE)
+        corr.pack(side="left")
+        widgets.append(corr)
+        self._hist_wheel(*widgets)
+
+    def _hist_toggle(self, ts):
+        self._hist_expanded_ts = None if self._hist_expanded_ts == ts else ts
+        self._render_history()
+
+    def _hist_add_correction(self, heard):
+        """Jump to Dictionary with the misheard text staged for a correction."""
+        self._select_section("Dictionary")
+        self._corr_heard.set(heard)
+        self._corr_heard_entry.focus_set()
+        self._corr_heard_entry.icursor("end")
+
+    def _hist_fail_row(self, inner, entry):
+        row = tk.Frame(inner, bg=MANTLE)
+        row.pack(fill="x", pady=1)
+        when = time.strftime("%H:%M", time.localtime(entry["ts"]))
+        when_lbl = tk.Label(row, text=f"✕ {when}", bg=MANTLE, fg=AMBER,
+                            font=HINT_FONT, width=8, anchor="w", padx=sc(10))
+        when_lbl.pack(side="left")
+        labels = [when_lbl]
+        buttons = []
+        if "wav" in entry:
+            retry = RoundButton(row, "Retry",
+                                lambda w=entry["wav"]: self._retry(w),
+                                kind="accent", small=True, bg=MANTLE)
+            retry.pack(side="right", padx=(0, sc(8)), pady=sc(3))
+            buttons.append(retry)
+        err = " ".join(entry.get("error", "").split())
+        if len(err) > 60:
+            err = err[:59].rstrip() + "…"
+        err_lbl = tk.Label(row, text=err, bg=MANTLE, fg=SUBTEXT, font=FONT,
+                           anchor="w")
+        err_lbl.pack(side="left", fill="x", expand=True, padx=(sc(4), sc(8)))
+        labels.append(err_lbl)
+        self._hover_row(row, labels, tuple(buttons))
+        self._hist_wheel(row, *labels, *buttons)
+
+    def _retry(self, wav):
+        """Retry a failed dictation. Minimize first so focus returns to the
+        previous app (same pattern as _repaste), then hand the audio back."""
+        if self._on_retry is None:
+            return
+        if self._win is not None and self._win.winfo_exists():
+            self._win.iconify()
+        self._root.after(600, lambda: self._on_retry(wav))
 
     def _copy(self, text):
         try:
@@ -1906,6 +2046,7 @@ class SettingsWindow:
             self._close()
 
     def _close(self):
+        self._cancel_history_poll()
         if self._capturing:
             self._capturing = False
             if self._on_capture_end is not None:

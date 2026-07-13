@@ -115,6 +115,7 @@ class App:
             on_capture_end=self._resume_hotkey,
             history_getter=self._history_snapshot,
             on_repaste=self._paste_from_history,
+            on_retry=self._retry_failed,
             config_getter=lambda: self.cfg,
         )
         # Tray pause state and icons (normal / red-tinted while recording).
@@ -252,6 +253,11 @@ class App:
             try:
                 if kind == "dictate":
                     self._transcribe_and_paste(*payload)
+                elif kind == "retry":
+                    # Re-run a failed dictation's audio; target=None means
+                    # the paste goes to whatever is focused now.
+                    self.overlay.show_transcribing()
+                    self._transcribe_and_paste(payload, target=None)
                 else:  # "paste" / "repaste"
                     if kind == "repaste":
                         self._wait_modifiers_lifted()
@@ -279,10 +285,12 @@ class App:
             )
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
+            self._register_failure(str(e), wav)
             self.overlay.show_message(str(e), duration_ms=5000, error=True)
             return
         except Exception as e:  # pragma: no cover - safety net
             logging.exception("Unexpected transcription error")
+            self._register_failure(f"Unexpected error: {e}", wav)
             self.overlay.show_message(f"Unexpected error: {e}", 5000, error=True)
             return
 
@@ -291,19 +299,22 @@ class App:
             return
 
         refocused = self._return_to_target(target)
+        raw = textproc.apply_corrections(text, self.cfg.get("corrections", {}))
         final = self._prepare_text(text)
+        if raw == final:
+            raw = None   # cleanup/format changed nothing worth showing
         if not refocused:
             # The target window is gone/unreachable: pasting would land the
             # text in the wrong app. Park it on the clipboard instead.
-            self._clipboard_fallback(final)
+            self._clipboard_fallback(final, raw)
             return
         try:
             paste_text(final, self.cfg.get("restore_clipboard", True))
         except Exception:
             logging.exception("Paste failed")
-            self._clipboard_fallback(final)
+            self._clipboard_fallback(final, raw)
             return
-        self._register_paste(final)
+        self._register_paste(final, raw)
         self._confirm_paste(final, 1600)
 
     def _confirm_paste(self, final: str, duration_ms: int):
@@ -312,10 +323,10 @@ class App:
             preview = preview[:47].rstrip() + "…"
         self.overlay.show_message(f"Pasted · {preview}", duration_ms)
 
-    def _clipboard_fallback(self, final: str):
+    def _clipboard_fallback(self, final: str, raw=None):
         """Never lose dictated text: clipboard + history instead of a paste."""
         pyperclip.copy(final)
-        self._register_paste(final)
+        self._register_paste(final, raw)
         combo = self.cfg.get("repaste_hotkey", "")
         msg = (f"Couldn't paste — press {pretty_combo(combo)} where you want it"
                if combo else "Couldn't paste — the text is on your clipboard")
@@ -386,17 +397,50 @@ class App:
                 ctx = textproc.tail_context(lp[1], 300)
         return ctx
 
-    def _register_paste(self, text: str):
+    def _register_paste(self, text: str, raw=None):
+        """Record a successful dictation. raw is the pre-cleanup transcript
+        (None when it matches the final text)."""
         with self._history_lock:
-            self._history.append((time.time(), text))
+            self._history.append(
+                {"ts": time.time(), "text": text, "raw": raw, "ok": True})
         self._last_paste = (_foreground_hwnd(), text, time.monotonic())
         self._typed_since_paste = False
+
+    def _register_failure(self, error: str, wav: bytes):
+        """Record a failed dictation, keeping its audio for a retry.
+
+        Only the 3 most recent failures keep their wav bytes — older ones
+        drop them so the deque can't pin ~20 recordings in memory."""
+        with self._history_lock:
+            self._history.append(
+                {"ts": time.time(), "ok": False, "error": error, "wav": wav})
+            kept = 0
+            for entry in reversed(self._history):
+                if entry.get("ok", True) or "wav" not in entry:
+                    continue
+                kept += 1
+                if kept > 3:
+                    del entry["wav"]
 
     def _history_snapshot(self):
         with self._history_lock:
             return list(reversed(self._history))
 
     # ---- history / re-paste ---------------------------------------------------
+
+    def _retry_failed(self, wav: bytes):
+        """Re-transcribe a failed dictation's audio (settings History pane).
+
+        The failed entry is removed up front so it can't be retried twice;
+        success/failure of the retry registers a fresh entry naturally."""
+        with self._history_lock:
+            for entry in self._history:
+                if not entry.get("ok", True) and entry.get("wav") is wav:
+                    self._history.remove(entry)
+                    break
+            else:
+                return  # already retried (stale UI click)
+        self._pipeline_q.put(("retry", wav))
 
     def _paste_from_history(self, text: str):
         """Paste a history entry (settings History pane; focus already
@@ -410,11 +454,11 @@ class App:
 
     def _repaste_last(self):
         """Global re-paste hotkey handler."""
-        snapshot = self._history_snapshot()
-        if not snapshot:
-            self.overlay.show_message("Nothing to re-paste yet")
-            return
-        self._pipeline_q.put(("repaste", snapshot[0][1]))
+        for entry in self._history_snapshot():
+            if entry.get("ok"):
+                self._pipeline_q.put(("repaste", entry["text"]))
+                return
+        self.overlay.show_message("Nothing to re-paste yet")
 
     # ---- settings / lifecycle ----------------------------------------------
 
