@@ -30,7 +30,8 @@ from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
 from transcriber import TranscriptionError, transcribe
-from ui import (SettingsWindow, create_tray, load_app_image,
+from settingsui import SettingsWindow
+from ui import (create_tray, load_app_image,
                 make_recording_tray_image, pretty_combo)
 
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono

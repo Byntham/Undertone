@@ -20,7 +20,8 @@ from config import DEFAULT_CONFIG  # noqa: E402
 from settingsui import SettingsWindow  # noqa: E402
 
 
-SECTIONS = ("General", "Get started")
+SECTIONS = ("Get started", "General", "Dictionary", "History",
+            "Providers", "About")
 
 
 def _fake_history():
@@ -28,12 +29,12 @@ def _fake_history():
     entries = [
         {"ts": now - index * 10, "ok": True,
          "text": f"Fake dictation {index}", "raw": f"fake {index}"}
-        for index in range(4)
+        for index in range(28)
     ]
     entries.extend((
-        {"ts": now - 50, "ok": False, "text": "", "raw": "",
+        {"ts": now - 280, "ok": False, "text": "", "raw": "",
          "error": "Temporary provider failure", "wav": b"RIFF"},
-        {"ts": now - 60, "ok": False, "text": "", "raw": "",
+        {"ts": now - 290, "ok": False, "text": "", "raw": "",
          "error": "Microphone disconnected", "wav": b"RIFF"},
     ))
     return entries
@@ -72,11 +73,15 @@ def _storm(settings, section):
     scene = settings._scene
     scene.relayout()
     settings._root.update()
-    assert len(settings._content.find_all()) < 200, (
-        section, len(settings._content.find_all()))
+    initial_items = len(settings._content.find_all())
+    if section == "History":
+        assert initial_items < 250, (section, initial_items)
+    else:
+        assert initial_items < 200, (section, initial_items)
 
     misses_before = canvasui.CAP_CACHE.misses
     samples = []
+    max_items = initial_items
     for step in range(40):
         amount = step / 39
         width = theme.sc(round(780 + (1050 - 780) * amount))
@@ -85,6 +90,11 @@ def _storm(settings, section):
         settings._win.geometry(f"{width}x{height}")
         settings._root.update()
         samples.append((time.perf_counter() - started) * 1000)
+        max_items = max(max_items, len(settings._content.find_all()))
+
+    if section == "History":
+        assert max_items < 250, (
+            f"History virtualization exceeded item budget: {max_items}")
 
     median = statistics.median(samples)
     misses = canvasui.CAP_CACHE.misses - misses_before

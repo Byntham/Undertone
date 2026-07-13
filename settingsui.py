@@ -1,27 +1,28 @@
-"""Canvas-rendered settings window for Undertone.
-
-Part 1 implements the window shell, navigation, General, and Get started.
-The remaining sections are intentionally lightweight placeholders until part 2.
-"""
+"""Canvas-rendered settings window for Undertone."""
 
 import io
+import os
 import queue
 import re
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import wave
+import webbrowser
 from typing import Callable, List, Optional
 
 import keyboard
+import pyperclip
 from PIL import ImageTk
 
 import autostart
 import canvasui
 import theme
-from config import KEY_FIELDS
-from ui import (ICON_ICO, LANGUAGES, PROVIDERS_UI, PROVIDER_BY_ID, SECTIONS,
-                _nav_glyph, load_app_image, pretty_combo)
+from config import APP_VERSION, CONFIG_PATH, KEY_FIELDS
+from ui import (ICON_ICO, LANGUAGES, PROVIDER_LINKS, PROVIDERS_UI,
+                PROVIDER_BY_ID, SECTIONS, _nav_glyph, load_app_image,
+                pretty_combo)
 
 
 WIN_W, WIN_H = 780, 724
@@ -71,6 +72,444 @@ class _Inline(canvasui.Widget):
 
     def destroy(self):
         for child in self.children:
+            child.destroy()
+        super().destroy()
+
+
+class _ActionRow(canvasui.Widget):
+    """One flexible field followed by natural-width actions."""
+
+    def __init__(self, field, actions, gap=6):
+        super().__init__()
+        self.field = field
+        self.actions = list(actions)
+        self.gap = theme.sc(gap)
+
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        self.field._attach(scene, self)
+        for action in self.actions:
+            action._attach(scene, self)
+
+    def measure(self, avail_w):
+        sizes = [action._measure(avail_w) for action in self.actions]
+        reserved = sum(width for width, _height in sizes)
+        reserved += self.gap * len(self.actions)
+        field_size = self.field._measure(max(1, avail_w - reserved))
+        return avail_w, max([field_size[1]] + [height for _width, height in sizes])
+
+    def layout(self, x, y, w):
+        sizes = [action._measure(w) for action in self.actions]
+        reserved = sum(width for width, _height in sizes)
+        reserved += self.gap * len(self.actions)
+        field_w = max(1, w - reserved)
+        field_h = self.field._measure(field_w)[1]
+        height = max([field_h] + [item[1] for item in sizes])
+        geometry = (x, y, w, height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        self.field.layout(x, y + (height - field_h) // 2, field_w)
+        left = x + field_w + self.gap
+        for action, (action_w, action_h) in zip(self.actions, sizes):
+            action.layout(left, y + (height - action_h) // 2, action_w)
+            left += action_w + self.gap
+
+    def destroy(self):
+        self.field.destroy()
+        for action in self.actions:
+            action.destroy()
+        super().destroy()
+
+
+class _CorrectionRow(canvasui.Widget):
+    def __init__(self, heard, arrow, right, add, gap=8):
+        super().__init__()
+        self.heard = heard
+        self.arrow = arrow
+        self.right = right
+        self.add = add
+        self.gap = theme.sc(gap)
+
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        for child in (self.heard, self.arrow, self.right, self.add):
+            child._attach(scene, self)
+
+    def measure(self, avail_w):
+        return avail_w, max(
+            child._measure(avail_w)[1]
+            for child in (self.heard, self.arrow, self.right, self.add))
+
+    def layout(self, x, y, w):
+        arrow_w, arrow_h = self.arrow._measure(w)
+        add_w, add_h = self.add._measure(w)
+        field_w = max(1, (w - arrow_w - add_w - self.gap * 3) // 2)
+        heard_h = self.heard._measure(field_w)[1]
+        right_h = self.right._measure(field_w)[1]
+        height = max(arrow_h, add_h, heard_h, right_h)
+        geometry = (x, y, w, height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        left = x
+        self.heard.layout(left, y + (height - heard_h) // 2, field_w)
+        left += field_w + self.gap
+        self.arrow.layout(left, y + (height - arrow_h) // 2, arrow_w)
+        left += arrow_w + self.gap
+        self.right.layout(left, y + (height - right_h) // 2, field_w)
+        left += field_w + self.gap
+        self.add.layout(left, y + (height - add_h) // 2, add_w)
+
+    def destroy(self):
+        for child in (self.heard, self.arrow, self.right, self.add):
+            child.destroy()
+        super().destroy()
+
+
+_PREVIEW_FONT = None
+
+
+def _fit_line(text, avail):
+    """Largest prefix of text (+ellipsis) that fits avail px, single line."""
+    global _PREVIEW_FONT
+    if _PREVIEW_FONT is None:
+        _PREVIEW_FONT = tkfont.Font(font=("Segoe UI", 10))
+    font = _PREVIEW_FONT
+    if font.measure(text) <= avail:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if font.measure(text[:mid].rstrip() + "…") <= avail:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…"
+
+
+class _Centered(canvasui.Widget):
+    def __init__(self, child, max_width=None):
+        super().__init__()
+        self.child = child
+        self.max_width = theme.sc(max_width) if max_width else None
+
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        self.child._attach(scene, self)
+
+    def measure(self, avail_w):
+        child_w = min(avail_w, self.max_width or avail_w)
+        return avail_w, self.child._measure(child_w)[1]
+
+    def layout(self, x, y, w):
+        limit = min(w, self.max_width or w)
+        child_w, child_h = self.child._measure(limit)
+        geometry = (x, y, w, child_h)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        self.child.layout(x + (w - child_w) // 2, y, child_w)
+
+    def destroy(self):
+        self.child.destroy()
+
+
+class _VCenter(canvasui.Widget):
+    """Centers its child in the scroll viewport (the old About pack(expand))."""
+
+    def __init__(self, child):
+        super().__init__()
+        self.child = child
+
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        self.child._attach(scene, self)
+
+    def _height(self, avail_w):
+        child_h = self.child._measure(avail_w)[1]
+        pad = self.scene.padding * 2 if self.scene else 0
+        return max(child_h, self.scene._viewport_height - pad)
+
+    def measure(self, avail_w):
+        return avail_w, self._height(avail_w)
+
+    def _measure(self, avail_w):
+        # Viewport height changes must invalidate the cached measurement
+        # (same pattern as ListView's responsive height).
+        if (self._measure_result is not None
+                and self._measure_result[1] != self._height(avail_w)):
+            self._measure_width = None
+            self._measure_result = None
+        return super()._measure(avail_w)
+
+    def layout(self, x, y, w):
+        child_h = self.child._measure(w)[1]
+        height = self._height(w)
+        geometry = (x, y, w, height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        self.child.layout(x, y + max(0, (height - child_h) // 2), w)
+
+    def destroy(self):
+        self.child.destroy()
+        super().destroy()
+
+
+class _ClickableText(canvasui.TextBlock):
+    focusable = True
+
+    def __init__(self, text, on_click, font=HINT_FONT, fill=None):
+        super().__init__(text, font, fill or theme.ACCENT, wrap=False)
+        self.on_click = on_click
+
+    def layout(self, x, y, w):
+        super().layout(x, y, w)
+        self._bind_clickable()
+
+    def hover(self, state):
+        super().hover(state)
+        if self._item is not None:
+            self.canvas.itemconfigure(
+                self._item, fill=theme.ACCENT_HOVER if state else self.fill)
+
+    def activate(self):
+        self.on_click()
+
+
+class _DictionaryListRow(canvasui.Widget):
+    def __init__(self, text, on_remove):
+        super().__init__()
+        self.text = text
+        self.on_remove = on_remove
+        self.height = theme.sc(32)
+        self._background = None
+        self._label = None
+        self._remove = None
+
+    def measure(self, avail_w):
+        return avail_w, self.height
+
+    def _ensure(self):
+        if self._background is not None:
+            return
+        remove_tag = self.tag + "_remove"
+        self._background = self.canvas.create_rectangle(
+            0, 0, 0, 0, width=0, fill=theme.MANTLE, tags=(self.tag,))
+        self._label = self.canvas.create_text(
+            0, 0, anchor="w", text=self.text, fill=theme.TEXT,
+            font=("Segoe UI", 10), tags=(self.tag,))
+        self._remove = self.canvas.create_text(
+            0, 0, text="✕", fill=theme.MUTED, font=("Segoe UI", 10),
+            tags=(self.tag, remove_tag))
+        self._items.extend((self._background, self._label, self._remove))
+        self.canvas.tag_bind(self.tag, "<Enter>", lambda _e: self._hover(True))
+        self.canvas.tag_bind(self.tag, "<Leave>", lambda _e: self._hover(False))
+        self.canvas.tag_bind(remove_tag, "<Button-1>",
+                             lambda _e: self.on_remove())
+        self.canvas.tag_bind(remove_tag, "<Enter>", lambda _e: self.canvas.itemconfigure(
+            self._remove, fill=theme.RED))
+        self.canvas.tag_bind(remove_tag, "<Leave>", lambda _e: self.canvas.itemconfigure(
+            self._remove, fill=theme.MUTED))
+
+    def _hover(self, inside):
+        self.canvas.itemconfigure(
+            self._background, fill=theme.ROW_HOVER if inside else theme.MANTLE)
+
+    def layout(self, x, y, w):
+        self._ensure()
+        geometry = (round(x), round(y), round(w), self.height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        self.scene._coords(self._background, x, y, x + w, y + self.height)
+        self.scene._coords(self._label, x + theme.sc(10), y + self.height / 2)
+        self.scene._coords(self._remove, x + w - theme.sc(14), y + self.height / 2)
+
+
+class _EmptyListRow(canvasui.TextBlock):
+    def __init__(self, text):
+        super().__init__(text, HINT_FONT, theme.MUTED)
+        self.pad = theme.sc(10)
+
+    def measure(self, avail_w):
+        width, height = super().measure(max(1, avail_w - self.pad * 2))
+        return avail_w, height + theme.sc(16)
+
+    def layout(self, x, y, w):
+        height = self._measure(w)[1]
+        geometry = (x, y, w, height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        canvasui.TextBlock.layout(
+            self, x + self.pad, y + theme.sc(8), max(1, w - self.pad * 2))
+
+
+class _HistoryRow(canvasui.Widget):
+    BASE_H = theme.sc(34)
+
+    def __init__(self, owner, entry):
+        super().__init__()
+        self.owner = owner
+        self.entry = entry
+        self.ok = entry.get("ok", True)
+        self.expanded = self.ok and owner._hist_expanded_ts == entry.get("ts")
+        self._background = None
+        self._time_item = None
+        self._preview_item = None
+        self._detail = []
+        self._buttons = []
+        if self.ok:
+            text = entry.get("text", "")
+            self._buttons = [
+                canvasui.PillButton(
+                    "Copy", "neutral", lambda value=text: owner._copy(value),
+                    small=True, compact=True),
+                canvasui.PillButton(
+                    "Paste", "neutral", lambda value=text: owner._repaste(value),
+                    small=True, compact=True),
+            ]
+            if self.expanded:
+                self._full = canvasui.TextBlock(text, ("Segoe UI", 10))
+                raw = entry.get("raw")
+                self._raw = (canvasui.TextBlock(
+                    f"Heard: {raw}", HINT_FONT, theme.MUTED)
+                    if raw and raw != text else None)
+                self._detail = [self._full]
+                if self._raw:
+                    self._detail.append(self._raw)
+                self._raw_button = (canvasui.PillButton(
+                    "Copy raw", "neutral", lambda value=raw: owner._copy(value),
+                    small=True, compact=True) if raw else None)
+                self._correction_button = canvasui.PillButton(
+                    "Add correction…", "neutral",
+                    lambda value=raw or text: owner._hist_add_correction(value),
+                    small=True, compact=True)
+                if self._raw_button:
+                    self._detail.append(self._raw_button)
+                self._detail.append(self._correction_button)
+        else:
+            wav = entry.get("wav")
+            if wav is not None:
+                self._buttons = [canvasui.PillButton(
+                    "Retry", "accent", lambda value=wav: owner._retry(value),
+                    small=True, compact=True)]
+
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        for child in self._buttons + self._detail:
+            child._attach(scene, self)
+
+    def _backdrop_for_child(self, _child):
+        return theme.MANTLE
+
+    def _detail_metrics(self, avail_w):
+        if not self.expanded:
+            return 0, None
+        detail_w = max(1, avail_w - theme.sc(76))
+        full_h = self._full._measure(detail_w)[1]
+        raw_h = self._raw._measure(detail_w)[1] if self._raw else 0
+        button_h = self._correction_button._measure(detail_w)[1]
+        height = full_h + theme.sc(7) + button_h + theme.sc(10)
+        if self._raw:
+            height += theme.sc(4) + raw_h
+        return height, (detail_w, full_h, raw_h, button_h)
+
+    def measure(self, avail_w):
+        detail_h, _metrics = self._detail_metrics(avail_w)
+        return avail_w, self.BASE_H + detail_h
+
+    def _ensure(self):
+        if self._background is not None:
+            return
+        self._background = self.canvas.create_rectangle(
+            0, 0, 0, 0, width=0, fill=theme.MANTLE, tags=(self.tag,))
+        when = time.strftime("%H:%M", time.localtime(self.entry.get("ts", 0)))
+        if self.ok:
+            shown_when = when
+            color = theme.MUTED
+            preview = self.entry.get("text", "").replace("\n", " ").strip()
+            if len(preview) > 46:
+                preview = preview[:45] + "…"
+        else:
+            shown_when = f"✕ {when}"
+            color = theme.AMBER
+            preview = " ".join(self.entry.get("error", "").split())
+            if len(preview) > 60:
+                preview = preview[:59].rstrip() + "…"
+        self._time_item = self.canvas.create_text(
+            0, 0, anchor="w", text=shown_when, fill=color,
+            font=HINT_FONT, tags=(self.tag,))
+        self._preview_text = preview
+        self._preview_avail = None
+        self._preview_item = self.canvas.create_text(
+            0, 0, anchor="w", text=preview,
+            fill=theme.TEXT if self.ok else theme.SUBTEXT,
+            font=("Segoe UI", 10), tags=(self.tag,))
+        self._items.extend(
+            (self._background, self._time_item, self._preview_item))
+        self.canvas.tag_bind(self.tag, "<Enter>", lambda _e: self.canvas.itemconfigure(
+            self._background, fill=theme.ROW_HOVER))
+        self.canvas.tag_bind(self.tag, "<Leave>", lambda _e: self.canvas.itemconfigure(
+            self._background, fill=theme.MANTLE))
+        if self.ok:
+            self.canvas.tag_bind(
+                self.tag, "<Button-1>",
+                lambda _e: self.owner._hist_toggle(self.entry.get("ts")))
+
+    def layout(self, x, y, w):
+        self._ensure()
+        height = self._measure(w)[1]
+        geometry = (round(x), round(y), round(w), height)
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        self.scene._coords(self._background, x, y, x + w, y + self.BASE_H)
+        self.scene._coords(
+            self._time_item, x + theme.sc(10), y + self.BASE_H / 2)
+        right = x + w - theme.sc(8)
+        for button in reversed(self._buttons):
+            button_w, button_h = button._measure(w)
+            right -= button_w
+            button.layout(right, y + (self.BASE_H - button_h) // 2, button_w)
+            right -= theme.sc(6)
+        self.scene._coords(
+            self._preview_item, x + theme.sc(66), y + self.BASE_H / 2)
+        # Single line with pixel-fit ellipsis — the old window truncated
+        # previews rather than wrapping them (row height stays uniform).
+        avail = max(1, int(right - x - theme.sc(70)))
+        if avail != self._preview_avail:
+            self._preview_avail = avail
+            self.scene._itemconfigure(
+                self._preview_item, text=_fit_line(self._preview_text, avail))
+        if not self.expanded:
+            return
+        _detail_h, metrics = self._detail_metrics(w)
+        detail_w, full_h, raw_h, button_h = metrics
+        left = x + theme.sc(66)
+        top = y + self.BASE_H
+        self._full.layout(left, top, detail_w)
+        top += full_h
+        if self._raw:
+            top += theme.sc(4)
+            self._raw.layout(left, top, detail_w)
+            top += raw_h
+        top += theme.sc(7)
+        action_left = left
+        if self._raw_button:
+            raw_w, _raw_button_h = self._raw_button._measure(detail_w)
+            self._raw_button.layout(action_left, top, raw_w)
+            action_left += raw_w + theme.sc(6)
+        correction_w, _correction_h = self._correction_button._measure(detail_w)
+        self._correction_button.layout(action_left, top, correction_w)
+
+    def list_tags(self):
+        return [self.tag] + [child.tag for child in self._buttons + self._detail]
+
+    def destroy(self):
+        for child in self._buttons + self._detail:
             child.destroy()
         super().destroy()
 
@@ -177,7 +616,8 @@ class _Reveal(canvasui.Widget):
 
     def _attach(self, scene, parent=None):
         super()._attach(scene, parent)
-        self.child._attach(scene, self)
+        if self.visible:
+            self.child._attach(scene, self)
 
     def measure(self, avail_w):
         return self.child._measure(avail_w) if self.visible else (avail_w, 0)
@@ -198,12 +638,35 @@ class _Reveal(canvasui.Widget):
         if self.visible == visible:
             return
         self.visible = visible
+        if visible and self.child.scene is None:
+            self.child._attach(self.scene, self)
         state = "normal" if visible else "hidden"
-        if self.child.canvas is not None:
-            for item in self.child._items:
-                self.child.canvas.itemconfigure(item, state=state)
+        self._set_tree_state(self.child, state)
+        if not visible:
+            self.scene._focusables = [
+                widget for widget in self.scene._focusables
+                if not self._contains(widget)]
         self._invalidate_measure()
         self.scene.relayout()
+
+    def _contains(self, target):
+        node = target
+        while node is not None:
+            if node is self.child:
+                return True
+            node = node.parent
+        return False
+
+    @staticmethod
+    def _set_tree_state(widget, state):
+        if widget.canvas is None:
+            return
+        widget.canvas.itemconfigure(widget.tag, state=state)
+        for child in getattr(widget, "children", ()):
+            _Reveal._set_tree_state(child, state)
+        child = getattr(widget, "child", None)
+        if child is not None:
+            _Reveal._set_tree_state(child, state)
 
     def destroy(self):
         self.child.destroy()
@@ -244,6 +707,10 @@ class SettingsWindow:
         self._mic_recorder = None
         self._saved_after_id = None
         self._practice_after_id = None
+        self._hist_poll_id = None
+        self._hist_expanded_ts = None
+        self._hist_fp = None
+        self._providers_advanced = False
         self._shortcut_rows = {}
         self._root.after(50, self._drain)
 
@@ -407,8 +874,12 @@ class SettingsWindow:
         builders = {
             "Get started": self._build_get_started,
             "General": self._build_general,
+            "Dictionary": self._build_dictionary,
+            "History": self._build_history,
+            "Providers": self._build_providers,
+            "About": self._build_about,
         }
-        root = builders.get(section, lambda: self._build_placeholder(section))()
+        root = builders[section]()
         self._scene.set_root(root)
         self._content.yview_moveto(0)
         self._position_saved()
@@ -421,12 +892,6 @@ class SettingsWindow:
 
     def _card(self, title, hint, control=None):
         return canvasui.Card(canvasui.Row(title, hint, control))
-
-    def _build_placeholder(self, section):
-        return canvasui.VStack([
-            self._heading(section),
-            canvasui.TextBlock("coming in part 2", HINT_FONT, theme.MUTED),
-        ], gap=10)
 
     def _build_general(self):
         children = [self._heading("General")]
@@ -564,16 +1029,16 @@ class SettingsWindow:
             canvasui.TextBlock(
                 "1.  Choose your transcription provider", CARD_TITLE_FONT,
                 wrap=False),
-            canvasui.Row("Provider", control=provider),
+            canvasui.Spacer(8),
+            provider,
+            canvasui.Spacer(8),
             self._gs_key_label,
-            self._gs_key_entry,
-            _Inline((save, self._test_button)),
+            canvasui.Spacer(2),
+            _ActionRow(self._gs_key_entry, (save, self._test_button)),
+            canvasui.Spacer(4),
             self._test_status,
-        ], gap=7))
+        ], gap=0))
 
-        microphone = _DynamicDropdown(
-            self._input_devices, lambda: self._config.get("input_device", ""),
-            lambda value: self._apply(input_device=value), width=190)
         self._mic_meter = _Meter()
         self._mic_button = canvasui.PillButton(
             "Test microphone", "neutral", self._start_mic_test, small=True)
@@ -581,16 +1046,16 @@ class SettingsWindow:
         step2 = canvasui.Card(canvasui.VStack([
             canvasui.TextBlock("2.  Try your microphone", CARD_TITLE_FONT,
                                wrap=False),
-            canvasui.Row("Microphone", control=microphone),
+            canvasui.Spacer(8),
             _Inline((self._mic_button, self._mic_meter), gap=12),
             self._mic_status,
-        ], gap=7))
+        ], gap=0))
 
         combo = pretty_combo(self._config.get("hotkey", "")) or "your shortcut"
         self._practice_value = ""
         self._practice_field = canvasui.EntryField(
             lambda: self._practice_value, self._set_practice,
-            "Practice dictation", multiline=True, width=1000)
+            "", width=1000)
         finish = canvasui.PillButton(
             "Finish", "accent", self._finish_onboarding, small=True)
         self._finish_reveal = _Reveal(_Inline((
@@ -601,12 +1066,15 @@ class SettingsWindow:
         step3 = canvasui.Card(canvasui.VStack([
             canvasui.TextBlock("3.  Say something", CARD_TITLE_FONT,
                                wrap=False),
+            canvasui.Spacer(2),
             canvasui.TextBlock(
                 f"Click into the box below, hold {combo} and read: “Testing, "
                 "one two three — it works.”", HINT_FONT, theme.MUTED),
+            canvasui.Spacer(8),
             self._practice_field,
+            canvasui.Spacer(8),
             self._finish_reveal,
-        ], gap=7))
+        ], gap=0))
 
         self._practice_after_id = self._root.after(500, self._poll_practice)
         return canvasui.VStack([
@@ -636,8 +1104,8 @@ class SettingsWindow:
 
     def _practice_text(self):
         if (self._scene.editing is self._practice_field
-                and self._scene._text is not None):
-            return self._scene._text.get("1.0", "end-1c")
+                and self._scene._entry is not None):
+            return self._scene._entry.get()
         return self._practice_value
 
     def _poll_practice(self):
@@ -711,6 +1179,13 @@ class SettingsWindow:
             button.enable()
 
     def _test_transcription(self):
+        if self._active_section == "Providers":
+            provider = self._config.get("provider", "xai")
+            field = KEY_FIELDS.get(provider, "api_key")
+            self._start_provider_test(
+                "stt", provider, field, self._test_stt_btn,
+                self._test_stt_worker)
+            return
         if self._testing:
             return
         self._scene.end_edit(commit=True)
@@ -724,6 +1199,7 @@ class SettingsWindow:
                 theme.RED)
             return
         self._testing = True
+        self._test_context = "get_started"
         self._test_button.disable()
         self._set_status(self._test_status, "Testing…", theme.MUTED)
         cfg = dict(self._config)
@@ -744,19 +1220,26 @@ class SettingsWindow:
                      or DEFAULT_STT_MODELS[provider])
             transcribe(buf.getvalue(), key, provider=provider, model=model)
             name = PROVIDER_BY_ID.get(provider, provider)
-            result = (True, f"Transcription works ({name}).")
+            result = ("stt", True, f"Transcription works ({name}).")
         except Exception as exc:
-            result = (False, str(exc))
+            result = ("stt", False, str(exc))
         self._queue.put(("tested", result))
 
     def _on_tested(self, result):
         self._testing = False
-        button = getattr(self, "_test_button", None)
-        status = getattr(self, "_test_status", None)
-        if button is None or button.scene is not self._scene or status is None:
+        which, ok, message = result
+        context = getattr(self, "_test_context", None)
+        if context == "get_started":
+            button = getattr(self, "_test_button", None)
+            status = getattr(self, "_test_status", None)
+        else:
+            button = (getattr(self, "_test_stt_btn", None) if which == "stt"
+                      else getattr(self, "_test_cleanup_btn", None))
+            status = getattr(self, "_providers_status", None)
+        if (button is None or button.scene is not self._scene
+                or status is None or status.scene is not self._scene):
             return
         button.enable()
-        ok, message = result
         self._set_status(
             status, ("✓ " if ok else "") + message,
             theme.GREEN if ok else theme.RED)
@@ -835,6 +1318,493 @@ class SettingsWindow:
         if not cancelled:
             self._apply(**{target: new_hotkey})
 
+    def _build_dictionary(self):
+        self._vocab_value = ""
+        self._corr_heard_value = ""
+        self._corr_right_value = ""
+        self._vocab_entry = canvasui.EntryField(
+            lambda: self._vocab_value,
+            lambda value: setattr(self, "_vocab_value", value),
+            "", width=1000, on_enter=self._add_vocab)
+        vocab_add = canvasui.PillButton(
+            "Add", "accent", self._add_vocab, small=True)
+        terms = list(self._config.get("vocabulary", []))
+        vocab_rows = terms or [None]
+        self._vocab_list = canvasui.ListView(
+            vocab_rows, self._vocab_row, height=108, gap=0)
+        vocab_card = canvasui.Card(canvasui.VStack([
+            canvasui.TextBlock(
+                "Words and names the transcriber should recognize — sent as "
+                "hints with every request.", HINT_FONT, theme.MUTED),
+            canvasui.Spacer(8),
+            _ActionRow(self._vocab_entry, (vocab_add,), gap=8),
+            canvasui.Spacer(8),
+            self._vocab_list,
+        ], gap=0))
+
+        self._corr_heard_entry = canvasui.EntryField(
+            lambda: self._corr_heard_value,
+            lambda value: setattr(self, "_corr_heard_value", value),
+            "", width=1000, on_enter=self._add_correction)
+        self._corr_right_entry = canvasui.EntryField(
+            lambda: self._corr_right_value,
+            lambda value: setattr(self, "_corr_right_value", value),
+            "", width=1000, on_enter=self._add_correction)
+        arrow = canvasui.TextBlock("→", ("Segoe UI", 10), theme.SUBTEXT,
+                                   wrap=False)
+        correction_add = canvasui.PillButton(
+            "Add", "accent", self._add_correction, small=True)
+        pairs = list((self._config.get("corrections") or {}).items())
+        correction_rows = pairs or [None]
+        self._correction_list = canvasui.ListView(
+            correction_rows, self._correction_row, height=108, gap=0)
+        correction_card = canvasui.Card(canvasui.VStack([
+            canvasui.TextBlock(
+                "Always replace a misheard phrase with the right one.",
+                HINT_FONT, theme.MUTED),
+            canvasui.Spacer(8),
+            _CorrectionRow(
+                self._corr_heard_entry, arrow, self._corr_right_entry,
+                correction_add),
+            canvasui.Spacer(8),
+            self._correction_list,
+        ], gap=0))
+        return canvasui.VStack([
+            self._heading("Dictionary"),
+            self._group("Vocabulary"),
+            vocab_card,
+            self._group("Corrections"),
+            correction_card,
+        ], gap=9)
+
+    def _vocab_row(self, term, _index):
+        if term is None:
+            return _EmptyListRow(
+                "No terms yet — add names and jargon the transcriber gets wrong.")
+        return _DictionaryListRow(
+            term, lambda value=term: self._remove_vocab(value))
+
+    def _correction_row(self, pair, _index):
+        if pair is None:
+            return _EmptyListRow("No corrections yet.")
+        heard, right = pair
+        return _DictionaryListRow(
+            f"{heard}   →   {right}",
+            lambda value=heard: self._remove_correction(value))
+
+    def _add_vocab(self):
+        if self._scene.editing is self._vocab_entry:
+            self._scene.end_edit(commit=True)
+        term = self._vocab_value.strip()
+        terms = list(self._config.get("vocabulary", []))
+        if not term or term in terms:
+            self._vocab_value = ""
+            self._vocab_entry.refresh()
+            return
+        terms.append(term)
+        self._vocab_value = ""
+        self._vocab_entry.refresh()
+        self._apply(vocabulary=terms)
+        self._vocab_list.set_rows(terms, self._vocab_row)
+
+    def _remove_vocab(self, term):
+        terms = [value for value in self._config.get("vocabulary", [])
+                 if value != term]
+        self._apply(vocabulary=terms)
+        self._vocab_list.set_rows(terms or [None], self._vocab_row)
+
+    def _add_correction(self):
+        if self._scene.editing in (self._corr_heard_entry,
+                                   self._corr_right_entry):
+            self._scene.end_edit(commit=True)
+        heard = self._corr_heard_value.strip()
+        right = self._corr_right_value.strip()
+        if not heard or not right:
+            return
+        pairs = dict(self._config.get("corrections", {}))
+        pairs[heard] = right
+        self._corr_heard_value = ""
+        self._corr_right_value = ""
+        self._corr_heard_entry.refresh()
+        self._corr_right_entry.refresh()
+        self._apply(corrections=pairs)
+        self._correction_list.set_rows(
+            list(pairs.items()), self._correction_row)
+
+    def _remove_correction(self, heard):
+        pairs = {key: value for key, value
+                 in self._config.get("corrections", {}).items()
+                 if key != heard}
+        self._apply(corrections=pairs)
+        self._correction_list.set_rows(
+            list(pairs.items()) or [None], self._correction_row)
+
+    def _build_history(self):
+        combo = pretty_combo(self._config.get("repaste_hotkey", ""))
+        if combo:
+            hint = (
+                "Dictations from this session, newest first. "
+                f"Press {combo} anywhere to re-paste the newest one — or "
+                "click into the target app first and use the buttons here.")
+        else:
+            hint = (
+                "Dictations from this session, newest first. Set a re-paste "
+                "shortcut in General to paste the newest one anywhere.")
+        items = self._hist_snapshot()
+        self._hist_fp = self._hist_fingerprint(items)
+        rows = items or [None]
+        self._hist_list = canvasui.ListView(
+            rows, self._history_row, height=None, gap=1)
+        self._hist_poll_id = self._root.after(2000, self._hist_poll)
+        return canvasui.VStack([
+            self._heading("History"),
+            canvasui.TextBlock(hint, HINT_FONT, theme.MUTED),
+            canvasui.Spacer(3),
+            self._hist_list,
+        ], gap=9)
+
+    def _hist_snapshot(self):
+        if self._history_getter is None:
+            return []
+        try:
+            return self._history_getter() or []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _hist_fingerprint(items):
+        return tuple((entry.get("ts"), entry.get("ok", True))
+                     for entry in items)
+
+    def _history_row(self, entry, _index):
+        if entry is None:
+            return _EmptyListRow(
+                "Nothing dictated yet this session. Hold your shortcut and "
+                "speak — dictations appear here.")
+        return _HistoryRow(self, entry)
+
+    def _hist_poll(self):
+        self._hist_poll_id = None
+        if (self._active_section != "History" or self._win is None
+                or not self._win.winfo_exists()):
+            return
+        items = self._hist_snapshot()
+        if self._hist_fingerprint(items) != self._hist_fp:
+            self._render_history(items)
+        self._hist_poll_id = self._root.after(2000, self._hist_poll)
+
+    def _render_history(self, items=None):
+        items = self._hist_snapshot() if items is None else items
+        self._hist_fp = self._hist_fingerprint(items)
+        if not any(entry.get("ts") == self._hist_expanded_ts
+                   for entry in items):
+            self._hist_expanded_ts = None
+        self._hist_list.set_rows(
+            items or [None], self._history_row, reset_scroll=False)
+
+    def _hist_toggle(self, ts):
+        self._hist_expanded_ts = None if self._hist_expanded_ts == ts else ts
+        self._render_history()
+
+    def _hist_add_correction(self, heard):
+        self._select_section("Dictionary")
+        self._corr_heard_value = heard
+        self._corr_heard_entry.refresh()
+        self._scene.begin_edit(self._corr_heard_entry)
+        if self._scene._entry is not None:
+            self._scene._entry.selection_clear()
+            self._scene._entry.icursor("end")
+
+    def _copy(self, text):
+        try:
+            pyperclip.copy(text)
+        except Exception:
+            pass
+        self._flash_saved()
+
+    def _repaste(self, text):
+        if self._on_repaste is None:
+            return
+        if self._win is not None and self._win.winfo_exists():
+            self._win.iconify()
+        self._root.after(600, lambda: self._on_repaste(text))
+
+    def _retry(self, wav):
+        if self._on_retry is None:
+            return
+        if self._win is not None and self._win.winfo_exists():
+            self._win.iconify()
+        self._root.after(600, lambda: self._on_retry(wav))
+
+    def _build_providers(self):
+        self._key_values = {
+            field: self._config.get(field, "")
+            for field in KEY_FIELDS.values()
+        }
+        self._key_entries = {}
+        self._key_status_blocks = {}
+        self._model_values = {
+            "stt": self._model_override("stt"),
+            "cleanup": self._model_override("cleanup"),
+        }
+        self._model_entries = {}
+        self._model_hints = {}
+        self._providers_status = canvasui.TextBlock(
+            "", HINT_FONT, theme.MUTED)
+
+        stt_dropdown = canvasui.DropdownButton(
+            PROVIDERS_UI, lambda: self._config.get("provider", "xai"),
+            lambda value: self._pick_provider("provider", value), width=130)
+        self._test_stt_btn = canvasui.PillButton(
+            "Test", "neutral", self._test_transcription, small=True)
+        cleanup_dropdown = canvasui.DropdownButton(
+            PROVIDERS_UI,
+            lambda: self._config.get("cleanup_provider", "xai"),
+            lambda value: self._pick_provider("cleanup_provider", value),
+            width=130)
+        self._test_cleanup_btn = canvasui.PillButton(
+            "Test", "neutral", self._test_cleanup, small=True)
+        children = [
+            self._heading("Providers"),
+            self._group("Services"),
+            self._card(
+                "Transcription", "Turns your speech into text.",
+                _Inline((stt_dropdown, self._test_stt_btn), gap=8)),
+            self._card(
+                "AI cleanup", "Polishes the wording before it's pasted.",
+                _Inline((cleanup_dropdown, self._test_cleanup_btn), gap=8)),
+            self._providers_status,
+            self._group("API keys"),
+        ]
+        for provider, field in KEY_FIELDS.items():
+            children.append(self._provider_key_card(
+                PROVIDER_BY_ID.get(provider, provider), field))
+
+        links = [canvasui.TextBlock(
+            "Get a key:", HINT_FONT, theme.MUTED, wrap=False)]
+        for index, (label, url) in enumerate(PROVIDER_LINKS):
+            if index:
+                links.append(canvasui.TextBlock(
+                    "·", HINT_FONT, theme.MUTED, wrap=False))
+            links.append(_ClickableText(
+                label, lambda target=url: webbrowser.open(target)))
+        children.append(_Inline(links, gap=6))
+
+        disclosure = "Advanced  ▾" if self._providers_advanced else "Advanced  ▸"
+        children.append(_ClickableText(
+            disclosure, self._toggle_providers_advanced,
+            font=GROUP_FONT, fill=theme.SUBTEXT))
+        if self._providers_advanced:
+            children.append(canvasui.Card(canvasui.VStack([
+                self._model_control("Transcription model", "stt"),
+                canvasui.Spacer(10),
+                self._model_control("Cleanup model", "cleanup"),
+            ], gap=0)))
+        return canvasui.VStack(children, gap=9)
+
+    def _provider_key_card(self, name, field):
+        status = canvasui.TextBlock("", HINT_FONT, theme.MUTED, wrap=False)
+        self._key_status_blocks[field] = status
+        self._refresh_key_status(field)
+        entry = canvasui.EntryField(
+            lambda key=field: self._key_values[key],
+            lambda value, key=field: self._key_values.__setitem__(key, value),
+            "", secret=True, width=1000,
+            on_enter=lambda key=field: self._save_provider_key(key))
+        self._key_entries[field] = entry
+        show = canvasui.PillButton("Show", "neutral", small=True)
+        show.on_click = lambda node=entry, button=show: self._toggle_show(
+            node, button)
+        save = canvasui.PillButton(
+            "Save", "accent", lambda key=field: self._save_provider_key(key),
+            small=True)
+        return canvasui.Card(canvasui.VStack([
+            canvasui.Row(name, control=status),
+            canvasui.Spacer(7),
+            _ActionRow(entry, (show, save)),
+        ], gap=0))
+
+    def _refresh_key_status(self, field):
+        block = self._key_status_blocks.get(field)
+        if block is None:
+            return
+        key = self._config.get(field, "")
+        text = f"●  saved · ····{key[-4:]}" if key else "no key"
+        self._set_status(block, text, theme.GREEN if key else theme.MUTED)
+
+    def _toggle_show(self, entry, button):
+        entry.secret = not entry.secret
+        button.set_text("Show" if entry.secret else "Hide")
+        entry.refresh()
+        if self._scene.editing is entry and self._scene._entry is not None:
+            self._scene._entry.configure(show="•" if entry.secret else "")
+
+    def _save_provider_key(self, field):
+        if self._scene.editing is self._key_entries[field]:
+            self._scene.end_edit(commit=True)
+        self._apply(**{field: self._key_values[field].strip()})
+        self._refresh_key_status(field)
+
+    def _pick_provider(self, config_key, provider):
+        self._apply(**{config_key: provider})
+        for kind, entry in self._model_entries.items():
+            self._model_values[kind] = self._model_override(kind)
+            entry.refresh()
+        self._refresh_model_hints()
+
+    def _toggle_providers_advanced(self):
+        self._providers_advanced = not self._providers_advanced
+        self._select_section("Providers")
+
+    def _model_control(self, label, kind):
+        entry = canvasui.EntryField(
+            lambda key=kind: self._model_values[key],
+            lambda value, key=kind: self._model_values.__setitem__(key, value),
+            "", width=1000,
+            on_enter=lambda key=kind: self._save_model(key))
+        self._model_entries[kind] = entry
+        save = canvasui.PillButton(
+            "Save", "accent", lambda key=kind: self._save_model(key),
+            small=True)
+        hint = canvasui.TextBlock("", HINT_FONT, theme.MUTED)
+        self._model_hints[kind] = hint
+        self._refresh_model_hint(kind)
+        return canvasui.VStack([
+            canvasui.TextBlock(label, ("Segoe UI", 10), theme.SUBTEXT,
+                               wrap=False),
+            canvasui.Spacer(3),
+            _ActionRow(entry, (save,)),
+            canvasui.Spacer(3),
+            hint,
+        ], gap=0)
+
+    def _model_provider(self, kind):
+        config_key = "provider" if kind == "stt" else "cleanup_provider"
+        return self._config.get(config_key, "xai")
+
+    def _model_override(self, kind):
+        return (self._config.get(kind + "_models") or {}).get(
+            self._model_provider(kind), "")
+
+    def _save_model(self, kind):
+        entry = self._model_entries[kind]
+        if self._scene.editing is entry:
+            self._scene.end_edit(commit=True)
+        models = dict(self._config.get(kind + "_models") or {})
+        provider = self._model_provider(kind)
+        value = self._model_values[kind].strip()
+        if value:
+            models[provider] = value
+        else:
+            models.pop(provider, None)
+        self._apply(**{kind + "_models": models})
+        self._refresh_model_hint(kind)
+
+    def _default_model(self, kind, provider):
+        try:
+            if kind == "stt":
+                from transcriber import DEFAULT_STT_MODELS
+                return DEFAULT_STT_MODELS.get(provider, "")
+            from cleanup import DEFAULT_CLEANUP_MODELS
+            return DEFAULT_CLEANUP_MODELS.get(provider, "")
+        except Exception:
+            return ""
+
+    def _refresh_model_hint(self, kind):
+        block = self._model_hints.get(kind)
+        if block is None:
+            return
+        default = self._default_model(kind, self._model_provider(kind))
+        tail = f" ({default})" if default else ""
+        block.set_text(f"Empty = provider default{tail}.")
+
+    def _refresh_model_hints(self):
+        for kind in tuple(self._model_hints):
+            self._refresh_model_hint(kind)
+
+    def _test_cleanup(self):
+        provider = self._config.get("cleanup_provider", "xai")
+        field = KEY_FIELDS.get(provider, "api_key")
+        self._start_provider_test(
+            "cleanup", provider, field, self._test_cleanup_btn,
+            self._test_cleanup_worker)
+
+    def _start_provider_test(self, which, provider, field, button, worker):
+        if self._testing:
+            return
+        entry = self._key_entries.get(field)
+        if entry is not None and self._scene.editing is entry:
+            self._scene.end_edit(commit=True)
+        key = self._key_values.get(field, "").strip()
+        if not key:
+            name = PROVIDER_BY_ID.get(provider, provider)
+            self._set_status(
+                self._providers_status,
+                f"Enter your {name} API key below first.", theme.RED)
+            return
+        self._testing = True
+        self._test_context = which
+        button.disable()
+        self._set_status(self._providers_status, "Testing…", theme.MUTED)
+        cfg = dict(self._config)
+        threading.Thread(
+            target=worker, args=(key, provider, cfg), daemon=True).start()
+
+    def _test_cleanup_worker(self, key, provider, cfg):
+        try:
+            from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
+            model = ((cfg.get("cleanup_models") or {}).get(provider)
+                     or DEFAULT_CLEANUP_MODELS[provider])
+            output = cleanup(
+                "testing one two three", None, "", {}, key, model,
+                provider=provider)
+            if output is not None:
+                name = PROVIDER_BY_ID.get(provider, provider)
+                result = ("cleanup", True, f"Cleanup works ({name}).")
+            else:
+                result = (
+                    "cleanup", False,
+                    "Cleanup failed — check the key, or see app.log.")
+        except Exception:
+            result = (
+                "cleanup", False,
+                "Cleanup failed — check the key, or see app.log.")
+        self._queue.put(("tested", result))
+
+    def _build_about(self):
+        icon = _Centered(canvasui.Icon(pil_image=load_app_image(theme.sc(64)),
+                                       size=64))
+        name = _Centered(canvasui.TextBlock(
+            "Undertone", ("Segoe UI Semibold", 16), wrap=False))
+        version = _Centered(canvasui.TextBlock(
+            f"Version {APP_VERSION}", HINT_FONT, theme.MUTED, wrap=False))
+        tagline = _Centered(canvasui.TextBlock(
+            "Push-to-talk dictation for Windows.", ("Segoe UI", 10),
+            theme.SUBTEXT, wrap=False))
+        description = _Centered(canvasui.TextBlock(
+            "Hold your shortcut, speak, release — the transcript is typed "
+            "into whatever text box has focus. Audio is sent only to your "
+            "chosen provider, only while you dictate. Your API keys and "
+            "settings stay on this computer.", HINT_FONT, theme.MUTED,
+            justify="center"), max_width=400)
+        links = _Centered(_Inline((
+            _ClickableText("Open settings folder", self._open_config_folder),
+            canvasui.TextBlock("·", HINT_FONT, theme.MUTED, wrap=False),
+            _ClickableText("View log", self._open_log),
+        ), gap=8))
+        return _VCenter(canvasui.VStack([
+            icon, canvasui.Spacer(3), name,
+            canvasui.Spacer(2), version, canvasui.Spacer(5), tagline,
+            canvasui.Spacer(10), description, canvasui.Spacer(10), links,
+        ], gap=0))
+
+    def _open_config_folder(self):
+        os.startfile(CONFIG_PATH.parent)
+
+    def _open_log(self):
+        log = CONFIG_PATH.parent / "app.log"
+        os.startfile(log if log.exists() else CONFIG_PATH.parent)
+
     def _provider_key(self, provider_config_key):
         provider = self._config.get(provider_config_key, "xai")
         return self._config.get(KEY_FIELDS.get(provider, "api_key"), "")
@@ -881,6 +1851,12 @@ class SettingsWindow:
         self._content.tag_raise(self._saved_item)
 
     def _cancel_section_tasks(self):
+        if self._hist_poll_id is not None:
+            try:
+                self._root.after_cancel(self._hist_poll_id)
+            except tk.TclError:
+                pass
+            self._hist_poll_id = None
         if self._practice_after_id is not None:
             try:
                 self._root.after_cancel(self._practice_after_id)

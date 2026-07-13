@@ -139,8 +139,41 @@ class _CapCache:
         self._items[key] = images
         return images
 
+    def fixed_pill(self, width, height, fill, border=None, border_width=1,
+                   backdrop=None):
+        """One cached image for controls whose measured size never stretches."""
+        backdrop = backdrop or theme.BASE
+        key = ("fixed_pill", width, height, fill, border, border_width,
+               backdrop)
+        image = self._items.get(key)
+        if image is not None:
+            return image
+        self.misses += 1
+        ss = 4
+        artwork = Image.new(
+            "RGBA", (width * ss, height * ss), (0, 0, 0, 0))
+        ImageDraw.Draw(artwork).rounded_rectangle(
+            (0, 0, width * ss - 1, height * ss - 1),
+            radius=height * ss // 2,
+            fill=_rgb(fill) + (255,),
+            outline=_rgb(border) + (255,) if border else None,
+            width=max(1, border_width * ss),
+        )
+        artwork = _bake_opaque(
+            artwork.resize((width, height), Image.LANCZOS), backdrop)
+        image = ImageTk.PhotoImage(artwork)
+        self._items[key] = image
+        return image
+
 
 CAP_CACHE = _CapCache()
+
+# Escapes that turn any Python string into one literal Tcl word (see
+# Scene._flush_layout's eval batching).
+_TCL_WORD = str.maketrans({
+    "\\": r"\\", "\n": r"\n", "\t": r"\t", "\r": r"\r",
+    **{ch: "\\" + ch for ch in ' "$[]{};'},
+})
 
 
 class _RoundSurface:
@@ -633,7 +666,7 @@ def _padding(value):
 
 
 class Card(Widget):
-    def __init__(self, child, padding=(10, 14), radius=8, fill=None, border=None):
+    def __init__(self, child, padding=(9, 14), radius=8, fill=None, border=None):
         super().__init__()
         self.child = child
         self.padding = _padding(padding)
@@ -678,12 +711,13 @@ class Card(Widget):
 
 
 class TextBlock(Widget):
-    def __init__(self, text, font=FONT, fill=None, wrap=True):
+    def __init__(self, text, font=FONT, fill=None, wrap=True, justify="left"):
         super().__init__()
         self.text = text
         self.font = font
         self.fill = fill or theme.TEXT
         self.wrap = wrap
+        self.justify = justify
         self._font = None
         self._measure_cache = {}
         self._wrap_cache = {}
@@ -756,7 +790,7 @@ class TextBlock(Widget):
         if self._item is None:
             self._item = self.canvas.create_text(
                 x, y, anchor="nw", text=self.text, font=self.font,
-                fill=self.fill, justify="left", tags=(self.tag,))
+                fill=self.fill, justify=self.justify, tags=(self.tag,))
             self._items.append(self._item)
         width = max(1, int(w))
         geometry = (round(x), round(y), width)
@@ -873,17 +907,21 @@ class _Control(Widget):
 
 
 class PillButton(_Control):
-    def __init__(self, text, kind="accent", on_click=None, small=False):
+    def __init__(self, text, kind="accent", on_click=None, small=False,
+                 compact=False):
         super().__init__()
         self.text = text
         self.kind = kind
         self.on_click = on_click
         self.enabled = True
+        self.compact = compact
         self.font = SMALL_BUTTON_FONT if small else BUTTON_FONT
         self.height = theme.sc(26 if small else 32)
         self.pad = theme.sc(13 if small else 17)
         self._font = None
         self._surface = None
+        self._compact_item = None
+        self._compact_images = None
         self._text_item = None
         self._measured_width = None
 
@@ -910,13 +948,27 @@ class PillButton(_Control):
         }
 
     def _ensure(self):
-        if self._surface:
+        if self._surface or self._compact_item:
             return
         states = self._states()
         fill, border, _fg = states["normal"]
-        self._surface = _PillSurface(self, self.height, fill, border)
-        self._surface.prewarm((value[:2] for value in states.values()))
-        self._surface._create()
+        if self.compact:
+            width = self._measured_width or self.measure(10000)[0]
+            self._compact_images = {
+                name: CAP_CACHE.fixed_pill(
+                    width, self.height, state_fill, state_border,
+                    max(1, theme.sc(1)), self.backdrop)
+                for name, (state_fill, state_border, _state_fg)
+                in states.items()
+            }
+            self._compact_item = self.canvas.create_image(
+                0, 0, anchor="nw", image=self._compact_images["normal"],
+                tags=(self.tag,))
+            self._items.append(self._compact_item)
+        else:
+            self._surface = _PillSurface(self, self.height, fill, border)
+            self._surface.prewarm((value[:2] for value in states.values()))
+            self._surface._create()
         self._text_item = self.canvas.create_text(
             0, 0, text=self.text, font=self.font, fill=_fg,
             tags=(self.tag,))
@@ -940,7 +992,10 @@ class PillButton(_Control):
         if geometry == self._geometry:
             return
         self._geometry = geometry
-        self._surface.layout(*geometry)
+        if self._surface:
+            self._surface.layout(*geometry)
+        else:
+            self.scene._coords(self._compact_item, x, y)
         self.scene._coords(self._text_item, x + w / 2, y + height / 2)
         self._layout_focus(*geometry)
 
@@ -949,7 +1004,11 @@ class PillButton(_Control):
                  "down" if self._pressed else
                  "hover" if self._hovered else "normal")
         fill, border, fg = self._states()[state]
-        self._surface.set_style(fill, border)
+        if self._surface:
+            self._surface.set_style(fill, border)
+        else:
+            self.canvas.itemconfigure(
+                self._compact_item, image=self._compact_images[state])
         self.canvas.itemconfigure(self._text_item, fill=fg)
 
     def hover(self, state):
@@ -1385,26 +1444,223 @@ class Spacer(Widget):
         return avail_w, self.height
 
 
-class ListView(VStack):
-    def __init__(self, rows=None, gap=6):
-        super().__init__(rows, gap)
+class ListView(Widget):
+    """Fixed-height virtual list; only intersecting rows own canvas items."""
 
-    @property
-    def rows(self):
-        return self.children
+    def __init__(self, rows=None, row_factory=None, height=108, gap=1,
+                 max_height=None, reserve=150):
+        super().__init__()
+        self.rows = list(rows or [])
+        self.row_factory = row_factory or (lambda row, _index: row)
+        self.height = theme.sc(height) if height is not None else None
+        self.max_height = theme.sc(max_height) if max_height else None
+        self.reserve = theme.sc(reserve)
+        self.gap = theme.sc(gap)
+        self.padding = theme.sc(6)
+        self._surface = None
+        self._row_widgets = {}
+        self._attached = set()
+        self._row_layout = None
+        self._scroll_y = 0
+        self._scrollbar = None
+        self._scrollbar_geometry = None
+        self._drag_offset = 0
 
-    def set_rows(self, rows):
-        scene = self.scene
-        for row in self.children:
-            row.destroy()
-        self.children = list(rows)
-        self._invalidate_measure()
-        if scene:
-            scene._focusables = [widget for widget in scene._focusables
-                                 if widget.scene is scene]
-            for row in self.children:
-                row._attach(scene, self)
-            scene.relayout()
+    def _attach(self, scene, parent=None):
+        super()._attach(scene, parent)
+        self._surface = _RoundSurface(
+            self, theme.sc(8), theme.MANTLE, theme.CARD_BORDER)
+        # Canvas tag_bind rejects <MouseWheel>; the Scene's canvas-level
+        # wheel handler routes here when the pointer is over this list.
+        scene._wheel_widgets.append(self)
+        self.canvas.tag_bind(self.tag + "_scrollbar", "<Button-1>",
+                             self._start_drag)
+        self.canvas.tag_bind(self.tag + "_scrollbar", "<B1-Motion>",
+                             self._drag)
+
+    def _backdrop_for_child(self, _child):
+        return theme.MANTLE
+
+    def measure(self, avail_w):
+        return avail_w, self._resolved_height()
+
+    def _resolved_height(self):
+        if self.height is not None:
+            return self.height
+        available = max(theme.sc(108), self.scene._viewport_height - self.reserve)
+        return min(available, self.max_height or available)
+
+    def _measure(self, avail_w):
+        if (self.height is None and self._measure_result is not None
+                and self._measure_result[1] != self._resolved_height()):
+            self._measure_width = None
+            self._measure_result = None
+        return super()._measure(avail_w)
+
+    def _row(self, index):
+        row = self._row_widgets.get(index)
+        if row is None:
+            row = self.row_factory(self.rows[index], index)
+            self._row_widgets[index] = row
+        return row
+
+    def _measure_rows(self, width):
+        key = (width, len(self.rows))
+        if self._row_layout is not None and self._row_layout[0] == key:
+            return self._row_layout[1], self._row_layout[2]
+        heights = [self._row(index)._measure(width)[1]
+                   for index in range(len(self.rows))]
+        offsets = []
+        top = 0
+        for height in heights:
+            offsets.append(top)
+            top += height + self.gap
+        total = max(0, top - self.gap)
+        self._row_layout = (key, (offsets, heights), total)
+        return (offsets, heights), total
+
+    def _ensure_scrollbar(self):
+        if self._scrollbar:
+            return
+        tag = self.tag + "_scrollbar"
+        self._scrollbar = (
+            self.canvas.create_oval(
+                0, 0, 0, 0, width=0, fill=theme.SURFACE1,
+                tags=(self.tag, tag)),
+            self.canvas.create_rectangle(
+                0, 0, 0, 0, width=0, fill=theme.SURFACE1,
+                tags=(self.tag, tag)),
+            self.canvas.create_oval(
+                0, 0, 0, 0, width=0, fill=theme.SURFACE1,
+                tags=(self.tag, tag)),
+        )
+        self._items.extend(self._scrollbar)
+
+    def layout(self, x, y, w):
+        geometry = (round(x), round(y), round(w), self._resolved_height())
+        geometry_changed = geometry != self._geometry
+        self._geometry = geometry
+        self._surface.layout(*geometry)
+        self._layout_rows(geometry_changed)
+
+    def _layout_rows(self, _geometry_changed=False):
+        x, y, w, height = self._geometry
+        inner_x = x + self.padding
+        inner_y = y + max(1, theme.sc(1))
+        inner_w = max(1, w - self.padding * 2 - theme.sc(8))
+        viewport_h = max(1, height - max(2, theme.sc(2)))
+        (offsets, heights), total = self._measure_rows(inner_w)
+        maximum = max(0, total - viewport_h)
+        self._scroll_y = max(0, min(self._scroll_y, maximum))
+        visible = {
+            index for index, (top, row_h) in enumerate(zip(offsets, heights))
+            if ((top >= self._scroll_y
+                 and top + row_h <= self._scroll_y + viewport_h)
+                or (row_h > viewport_h
+                    and top + row_h >= self._scroll_y
+                    and top <= self._scroll_y + viewport_h))
+        }
+        for index in self._attached - visible:
+            self._row_widgets.pop(index).destroy()
+        self._attached.intersection_update(visible)
+        if self.scene:
+            self.scene._focusables = [widget for widget in self.scene._focusables
+                                      if widget.scene is self.scene]
+        for index in sorted(visible):
+            row = self._row(index)
+            if index not in self._attached:
+                row._attach(self.scene, self)
+                self._attached.add(index)
+            row.layout(
+                inner_x, inner_y + offsets[index] - self._scroll_y, inner_w)
+            tags = row.list_tags() if hasattr(row, "list_tags") else (row.tag,)
+            for tag in tags:
+                self.canvas.addtag_withtag(self.tag, tag)
+        self._layout_scrollbar(x, y, w, height, total, viewport_h)
+
+    def _layout_scrollbar(self, x, y, w, height, total, viewport_h):
+        self._ensure_scrollbar()
+        if total <= viewport_h:
+            for item in self._scrollbar:
+                self.scene._itemconfigure(item, state="hidden")
+            return
+        for item in self._scrollbar:
+            self.scene._itemconfigure(item, state="normal")
+            self.canvas.tag_raise(item)
+        width = theme.sc(5)
+        inset = theme.sc(5)
+        track = max(1, height - inset * 2)
+        thumb_h = max(theme.sc(24), track * viewport_h / total)
+        maximum = max(1, total - viewport_h)
+        top = y + inset + (track - thumb_h) * self._scroll_y / maximum
+        left = x + w - inset - width
+        radius = width / 2
+        geometry = (left, top, width, thumb_h)
+        if geometry != self._scrollbar_geometry:
+            self.scene._coords(
+                self._scrollbar[0], left, top, left + width, top + width)
+            self.scene._coords(
+                self._scrollbar[1], left, top + radius,
+                left + width, top + thumb_h - radius)
+            self.scene._coords(
+                self._scrollbar[2], left, top + thumb_h - width,
+                left + width, top + thumb_h)
+            self._scrollbar_geometry = geometry
+
+    def _on_wheel(self, event):
+        if not self._geometry:
+            return "break"
+        direction = -1 if event.delta > 0 else 1
+        self._scroll_y += direction * theme.sc(72)
+        self._layout_rows()
+        return "break"
+
+    def _start_drag(self, event):
+        if not self._scrollbar_geometry:
+            return "break"
+        pointer = self.canvas.canvasy(event.y)
+        self._drag_offset = pointer - self._scrollbar_geometry[1]
+        return "break"
+
+    def _drag(self, event):
+        if not self._geometry or not self._scrollbar_geometry:
+            return "break"
+        x, y, w, height = self._geometry
+        inner_w = max(1, w - self.padding * 2 - theme.sc(8))
+        (_offsets, _heights), total = self._measure_rows(inner_w)
+        viewport_h = max(1, height - max(2, theme.sc(2)))
+        inset = theme.sc(5)
+        track = max(1, height - inset * 2)
+        thumb_h = self._scrollbar_geometry[3]
+        travel = max(1, track - thumb_h)
+        pointer = self.canvas.canvasy(event.y)
+        fraction = (pointer - self._drag_offset - y - inset) / travel
+        self._scroll_y = max(0, min(1, fraction)) * max(0, total - viewport_h)
+        self._layout_rows()
+        return "break"
+
+    def set_rows(self, rows, row_factory=None, reset_scroll=True):
+        for index in tuple(self._attached):
+            self._row_widgets[index].destroy()
+        self.rows = list(rows)
+        if row_factory is not None:
+            self.row_factory = row_factory
+        self._row_widgets = {}
+        self._attached.clear()
+        self._row_layout = None
+        if reset_scroll:
+            self._scroll_y = 0
+        if self.scene and self._geometry:
+            self._layout_rows()
+
+    def destroy(self):
+        for index in tuple(self._attached):
+            self._row_widgets[index].destroy()
+        self._attached.clear()
+        self._row_widgets.clear()
+        if self._surface:
+            self._surface.destroy()
+        super().destroy()
 
 
 class Scene:
@@ -1443,6 +1699,7 @@ class Scene:
         self._focus_owner.scene = self
         self._focus_surfaces = {}
         self._shown_focus = None
+        self._wheel_widgets = []
         self.canvas.configure(
             bg=theme.BASE, highlightthickness=0, bd=0,
             yscrollcommand=self._on_yview, takefocus=1)
@@ -1467,6 +1724,7 @@ class Scene:
         self.root = root
         self._focusables = []
         self.focused = None
+        self._wheel_widgets = []
         root._attach(self)
         self._layout_width = None
         self._layout_dirty = True
@@ -1484,6 +1742,14 @@ class Scene:
             force = width is None
             width = int(width or self.canvas.winfo_width())
             viewport = max(1, self.canvas.winfo_height())
+            viewport_changed = viewport != self._viewport_height
+            self._viewport_height = viewport
+            if viewport_changed and self.root is not None:
+                self.root._measure_width = None
+                self.root._measure_result = None
+                # Height-sensitive widgets (ListView, About's centering)
+                # must re-flow on pure vertical resizes too.
+                self._layout_dirty = True
             content_changed = False
             if force or self._layout_dirty or width != self._layout_width:
                 inner_w = max(1, width - self.padding * 2)
@@ -1494,8 +1760,7 @@ class Scene:
                 self._layout_width = width
                 self._layout_dirty = False
                 content_changed = True
-            if viewport != self._viewport_height or content_changed:
-                self._viewport_height = viewport
+            if viewport_changed or content_changed:
                 self._update_scrollregion(width)
             if self.editing:
                 self._position_editor()
@@ -1543,10 +1808,18 @@ class Scene:
                 numbers = " ".join(format(value, ".12g") for value in values)
                 lines.append(f"{path} coords {item} {numbers}")
             else:
-                options = " ".join(
-                    f"-{name} {format(value, '.12g') if isinstance(value, (int, float)) else value}"
-                    for name, value in values.items())
-                lines.append(f"{path} itemconfigure {item} {options}")
+                words = []
+                for name, value in values.items():
+                    if isinstance(value, (int, float)):
+                        word = format(value, ".12g")
+                    else:
+                        # Backslash-escape into a single Tcl word —
+                        # arbitrary strings (user text) must survive
+                        # the eval batching untouched.
+                        word = str(value).translate(_TCL_WORD) or "{}"
+                    words.append(f"-{name} {word}")
+                lines.append(
+                    f"{path} itemconfigure {item} {' '.join(words)}")
         self.canvas.tk.call("eval", "\n".join(lines))
 
     def _on_configure(self, event):
@@ -1564,6 +1837,13 @@ class Scene:
     def _on_wheel(self, event):
         self.end_edit(commit=True)
         self.close_popup()
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        for widget in self._wheel_widgets:
+            geometry = widget._geometry
+            if geometry and geometry[0] <= x <= geometry[0] + geometry[2] \
+                    and geometry[1] <= y <= geometry[1] + geometry[3]:
+                return widget._on_wheel(event)
         amount = -1 if event.delta > 0 else 1
         self.canvas.yview_scroll(amount * 3, "units")
         return "break"
