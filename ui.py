@@ -535,6 +535,7 @@ class SettingsWindow:
         self._resize_snapshot_photo = None
         self._client_hwnd = None
         self._last_client_size = None
+        self._freeze_content_ts = 0.0
         self._root.after(50, self._drain)
 
     # --- Public, thread-safe API ------------------------------------------
@@ -770,6 +771,14 @@ class SettingsWindow:
         self._last_client_size = size
         if not self._size_move_active:
             self._queue_freeze_enter()
+        elif (self._freeze_enter_after_id is None
+                and time.monotonic() - self._freeze_content_ts > 0.15):
+            # Mid-storm refresh: settle the real tree at the current size
+            # once; the next Configure re-freezes with a fresh snapshot.
+            # Content catches up ~6x/s while the frame keeps tracking the
+            # cursor (the Steam behavior), instead of staying stale until
+            # the drag ends.
+            self._queue_freeze_exit()
         if self._resize_after_id is not None:
             try:
                 win.after_cancel(self._resize_after_id)
@@ -911,6 +920,7 @@ class SettingsWindow:
         self._freeze_start_size = (self._win.winfo_width(),
                                    self._win.winfo_height())
         snapshot = self._capture_resize_snapshot()
+        self._freeze_content_ts = time.monotonic()
         if snapshot is not None:
             self._resize_snapshot_photo = ImageTk.PhotoImage(snapshot)
             self._resize_snapshot_label = tk.Label(
@@ -927,6 +937,7 @@ class SettingsWindow:
         self._resize_snapshot_photo = None
         self._freeze_start_size = None
         self._size_move_active = False
+        self._freeze_content_ts = time.monotonic()
 
     def _freeze_exit(self):
         """Restore and settle the host once at the native drag's final size."""
