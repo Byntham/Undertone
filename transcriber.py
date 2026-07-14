@@ -31,6 +31,23 @@ def _vocab_prompt(vocabulary: list) -> "str | None":
     return ("Vocabulary: " + ", ".join(terms[:100])) if terms else None
 
 
+def _looks_like_prompt_echo(text: str, vocabulary: list) -> bool:
+    """True when the model returned our vocabulary prompt instead of speech.
+
+    Whisper-family models handed near-silence tend to continue the biasing
+    prompt ("Context: Vocabulary: term1, term2, ..."). Dictating a single
+    vocabulary term must NOT match — the scaffold word plus at least two
+    configured terms are required.
+    """
+    lowered = " ".join(text.lower().split())
+    if "vocabulary" not in lowered:
+        return False
+    terms = [str(t).strip().lower() for t in (vocabulary or [])
+             if str(t).strip()]
+    hits = sum(1 for t in terms if t in lowered)
+    return hits >= 2
+
+
 def _check_response(resp, provider: str) -> None:
     """Map HTTP failures to friendly TranscriptionErrors (raises)."""
     if resp.status_code == 200:
@@ -169,4 +186,7 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
             "No API key configured for the transcription provider. Open "
             "Settings → Providers and enter one.")
     fn = PROVIDERS.get(provider, transcribe_xai)
-    return fn(wav_bytes, api_key, language, vocabulary, model)
+    text = fn(wav_bytes, api_key, language, vocabulary, model)
+    if text and _looks_like_prompt_echo(text, vocabulary):
+        return ""   # main treats empty text as "no speech detected"
+    return text

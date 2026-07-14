@@ -4,6 +4,7 @@ Entry point: wires together the recorder, global hotkey, xAI transcriber,
 status overlay, and system tray. Run with:  python main.py
 """
 
+import array
 import ctypes
 import logging
 import queue
@@ -38,7 +39,21 @@ from ui import (create_tray, load_app_image,
 # int16) are treated as an accidental tap and skipped.
 MIN_AUDIO_BYTES = 16000 * 2 * 0.3
 
+# Peak int16 amplitude below which a recording is treated as silence and
+# never sent to the STT API — Whisper-family models hallucinate on silent
+# audio (echoing the vocabulary prompt, or fragments like "Of the").
+# ~1% of full scale; even whispered speech on a normal mic peaks well above.
+SILENCE_PEAK = 350
+
 HISTORY_SIZE = 20
+
+
+def _audio_peak(wav: bytes) -> int:
+    """Peak absolute int16 sample of a standard 44-byte-header WAV."""
+    pcm = wav[44:]
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    return max((abs(s) for s in samples), default=0)
 
 LOG_PATH = config_mod.CONFIG_PATH.parent / "app.log"
 
@@ -213,6 +228,12 @@ class App:
         if len(wav) < MIN_AUDIO_BYTES:
             self.overlay.show_message(
                 "Too short — hold the key while you speak", 2200, warn=True)
+            return
+        peak = _audio_peak(wav)
+        if peak < SILENCE_PEAK:
+            logging.info("Silent recording skipped (peak %d)", peak)
+            self.overlay.show_message(
+                "Didn't catch any speech", 2200, warn=True)
             return
         self.overlay.show_transcribing()
         # The paste belongs to the window being dictated into, captured now —
