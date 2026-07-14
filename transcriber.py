@@ -16,7 +16,9 @@ import requests
 DEFAULT_STT_MODELS = {
     "xai": "",
     "openai": "gpt-4o-mini-transcribe",
-    "openrouter": "openai/whisper-large-v3-turbo",
+    # Not whisper-large-v3-turbo: it has no no-speech rejection and
+    # hallucinates fragments on silent audio (field-tested 2026-07).
+    "openrouter": "openai/gpt-4o-mini-transcribe",
 }
 
 _TIMEOUT = (10, 120)

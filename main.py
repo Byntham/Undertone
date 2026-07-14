@@ -4,10 +4,8 @@ Entry point: wires together the recorder, global hotkey, xAI transcriber,
 status overlay, and system tray. Run with:  python main.py
 """
 
-import array
 import ctypes
 import logging
-import math
 import queue
 import sys
 import threading
@@ -40,38 +38,7 @@ from ui import (create_tray, load_app_image,
 # int16) are treated as an accidental tap and skipped.
 MIN_AUDIO_BYTES = 16000 * 2 * 0.3
 
-# Speech detection: Whisper-family models hallucinate on speechless audio
-# (echoing the vocabulary prompt, or fragments like "Of the"), so recordings
-# with no sustained energy are never sent. A raw peak threshold proved
-# fragile — the owner's ambient floor peaks at ~360 int16 (window RMS <=120)
-# and the hotkey's own click can spike single samples — so the gate needs
-# SPEECH_MIN_WINDOWS 30ms windows at >= SPEECH_WINDOW_RMS, ignoring
-# EDGE_TRIM_S at each end where the key press/release clack lives.
-SPEECH_WINDOW = 480          # samples: 30ms at 16kHz
-SPEECH_WINDOW_RMS = 250
-SPEECH_MIN_WINDOWS = 3       # >=90ms of energy; a click is 1-2 windows
-EDGE_TRIM_S = 0.1
-
 HISTORY_SIZE = 20
-
-
-def _speech_windows(wav: bytes) -> tuple:
-    """(hot_windows, max_window_rms) over a 44-byte-header 16kHz mono WAV,
-    ignoring EDGE_TRIM_S at each end."""
-    pcm = wav[44:]
-    samples = array.array("h")
-    samples.frombytes(pcm[: len(pcm) // 2 * 2])
-    trim = int(EDGE_TRIM_S * 16000)
-    body = samples[trim:len(samples) - trim] or samples
-    hot = 0
-    max_rms = 0
-    for i in range(0, len(body) - SPEECH_WINDOW + 1, SPEECH_WINDOW):
-        window = body[i:i + SPEECH_WINDOW]
-        rms = math.sqrt(sum(x * x for x in window) / SPEECH_WINDOW)
-        max_rms = max(max_rms, rms)
-        if rms >= SPEECH_WINDOW_RMS:
-            hot += 1
-    return hot, int(max_rms)
 
 LOG_PATH = config_mod.CONFIG_PATH.parent / "app.log"
 
@@ -247,17 +214,6 @@ class App:
             self.overlay.show_message(
                 "Too short — hold the key while you speak", 2200, warn=True)
             return
-        hot, max_rms = _speech_windows(wav)
-        if hot < SPEECH_MIN_WINDOWS:
-            logging.info("Speechless recording skipped "
-                         "(%d hot windows, max window RMS %d)", hot, max_rms)
-            self.overlay.show_message(
-                "Didn't catch any speech", 2200, warn=True)
-            return
-        # Reference numbers for tuning the gate against a mic's noise floor
-        # if speechless audio ever slips through again.
-        logging.info("Recording sent (%d hot windows, max window RMS %d, "
-                     "%d bytes)", hot, max_rms, len(wav))
         self.overlay.show_transcribing()
         # The paste belongs to the window being dictated into, captured now —
         # if focus moves (or is stolen) during transcription, it is restored
