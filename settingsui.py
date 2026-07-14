@@ -329,6 +329,26 @@ class _DictionaryListRow(canvasui.Widget):
         self.scene._coords(self._label, x + theme.sc(10), y + self.height / 2)
         self.scene._coords(self._remove, x + w - theme.sc(14), y + self.height / 2)
 
+    def clip(self, top, bottom):
+        # Keep the row inside the list surface: clamp the background band and
+        # drop the text once its centre nears the edge (a half-line would spill
+        # otherwise). See ListView._layout_rows.
+        if self._geometry is None:
+            return
+        x, y, w, _h = self._geometry
+        lo, hi = max(top, y), min(bottom, y + self.height)
+        if hi <= lo:
+            for item in (self._background, self._label, self._remove):
+                self.scene._itemconfigure(item, state="hidden")
+            return
+        self.scene._itemconfigure(self._background, state="normal")
+        self.scene._coords(self._background, x, lo, x + w, hi)
+        center = y + self.height / 2
+        margin = theme.sc(9)
+        shown = "normal" if top + margin <= center <= bottom - margin else "hidden"
+        self.scene._itemconfigure(self._label, state=shown)
+        self.scene._itemconfigure(self._remove, state=shown)
+
 
 class _EmptyListRow(canvasui.TextBlock):
     def __init__(self, text):
@@ -341,12 +361,20 @@ class _EmptyListRow(canvasui.TextBlock):
 
     def layout(self, x, y, w):
         height = self._measure(w)[1]
-        geometry = (x, y, w, height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
+        # TextBlock.layout overwrites self._geometry with its own 3-tuple, so
+        # remember this row's band separately for clip().
+        self._band = (y, height)
         canvasui.TextBlock.layout(
             self, x + self.pad, y + theme.sc(8), max(1, w - self.pad * 2))
+
+    def clip(self, top, bottom):
+        band = getattr(self, "_band", None)
+        if self._item is None or band is None:
+            return
+        y, h = band
+        inside = top <= y and y + h <= bottom
+        self.scene._itemconfigure(
+            self._item, state="normal" if inside else "hidden")
 
 
 class _HistoryRow(canvasui.Widget):
@@ -506,6 +534,36 @@ class _HistoryRow(canvasui.Widget):
             action_left += raw_w + theme.sc(6)
         correction_w, _correction_h = self._correction_button._measure(detail_w)
         self._correction_button.layout(action_left, top, correction_w)
+
+    def clip(self, top, bottom):
+        # Contain the row within the list surface. The header band is clamped;
+        # its text and every button/detail sub-widget hide once they fall
+        # (partly) outside the viewport, so nothing spills past the surface.
+        if self._geometry is None:
+            return
+        x, y, w, _h = self._geometry
+        lo, hi = max(top, y), min(bottom, y + self.BASE_H)
+        if hi <= lo:
+            for item in (self._background, self._time_item, self._preview_item):
+                self.scene._itemconfigure(item, state="hidden")
+        else:
+            self.scene._itemconfigure(self._background, state="normal")
+            self.scene._coords(self._background, x, lo, x + w, hi)
+            center = y + self.BASE_H / 2
+            margin = theme.sc(9)
+            shown = ("normal" if top + margin <= center <= bottom - margin
+                     else "hidden")
+            self.scene._itemconfigure(self._time_item, state=shown)
+            self.scene._itemconfigure(self._preview_item, state=shown)
+        for widget in self._buttons + self._detail:
+            geo = widget._geometry
+            if geo is None:
+                continue
+            wy = geo[1]
+            wh = geo[3] if len(geo) >= 4 else widget._measure(geo[2])[1]
+            state = "normal" if top <= wy and wy + wh <= bottom else "hidden"
+            for item in widget._items:
+                self.scene._itemconfigure(item, state=state)
 
     def list_tags(self):
         return [self.tag] + [child.tag for child in self._buttons + self._detail]

@@ -918,9 +918,10 @@ class _Control(Widget):
         self._focus_radius = None
 
     def _make_focus_surface(self, radius):
+        # Radius the focus ring should hug (pill = height/2 + pad, rounded
+        # fields = corner radius + pad). The ring itself is drawn by the
+        # Scene's shared vector _FocusRing, so nothing to pre-bake here.
         self._focus_radius = radius
-        CAP_CACHE.corners(
-            radius, theme.ACCENT, None, max(1, theme.sc(1)), self.backdrop)
 
     def _layout_focus(self, x, y, w, h):
         if self._focused:
@@ -1199,6 +1200,8 @@ class EntryField(_Control):
         self._surface = None
         self._text_item = None
         self._last_text_width = None
+        self._font = None
+        self._avail = None
 
     def _ensure(self):
         if self._surface:
@@ -1228,9 +1231,16 @@ class EntryField(_Control):
         self._surface.layout(*geometry)
         anchor_y = y + theme.sc(13) if self.multiline else y + self.height / 2
         text_width = max(1, width - theme.sc(20))
-        if text_width != self._last_text_width:
-            self.scene._itemconfigure(self._text_item, width=text_width)
-            self._last_text_width = text_width
+        # Multiline wraps at the box width; single-line never wraps (a masked
+        # 80-char key would spill onto a second row and over the card above),
+        # so it clips the drawn text to the box instead.
+        wrap = text_width if self.multiline else 0
+        if wrap != self._last_text_width:
+            self.scene._itemconfigure(self._text_item, width=wrap)
+            self._last_text_width = wrap
+        if not self.multiline and text_width != self._avail:
+            self._avail = text_width
+            self.refresh()
         self.scene._coords(self._text_item, x + theme.sc(10), anchor_y)
         self._layout_focus(*geometry)
         if self.scene.editing is self:
@@ -1240,13 +1250,33 @@ class EntryField(_Control):
         value = str(self.getter() or "")
         return ("•" * len(value)) if self.secret and value else value
 
+    def _fit(self, text):
+        # Longest prefix of text that fits the box width, single line. Plain
+        # clip (no ellipsis): for a masked key the count of dots is noise, and
+        # the full value is always kept — this only trims what's drawn.
+        if self.multiline or self._avail is None or not text:
+            return text
+        if self._font is None:
+            self._font = tkfont.Font(font=FONT)
+        if self._font.measure(text) <= self._avail:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self._font.measure(text[:mid]) <= self._avail:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo]
+
     def refresh(self):
         if self._text_item is None:
             return
-        text = self.display_value()
+        value = self.display_value()
+        text = value or self.placeholder
         self.canvas.itemconfigure(
-            self._text_item, text=text or self.placeholder,
-            fill=theme.TEXT if text else theme.MUTED)
+            self._text_item, text=self._fit(text),
+            fill=theme.TEXT if value else theme.MUTED)
 
     def activate(self):
         self.scene.begin_edit(self)
@@ -1279,6 +1309,9 @@ class DropdownButton(_Control):
         self._arrow = None
         self._popup = None
         self._menu_closed_at = float("-inf")
+        self._parent = None
+        self._parent_binds = None
+        self._parent_pos = None
 
     def _pairs(self):
         return [item if isinstance(item, (tuple, list)) else (item, item) for item in self.options]
@@ -1377,6 +1410,38 @@ class DropdownButton(_Control):
         popup.lift()
         popup.attributes("-topmost", True)
         popup.focus_set()
+        # A popup is a detached topmost Toplevel: it does not follow the
+        # settings window, so a move would strand it. Close it when the parent
+        # moves or is minimized. Bound on the parent Toplevel (add="+") so the
+        # canvas's live-relayout <Configure> is untouched.
+        self._parent = self.canvas.winfo_toplevel()
+        self._parent_pos = (self._parent.winfo_rootx(),
+                            self._parent.winfo_rooty())
+        self._parent_binds = (
+            self._parent.bind("<Configure>", self._on_parent_configure,
+                              add="+"),
+            self._parent.bind("<Unmap>", self._on_parent_unmap, add="+"),
+        )
+
+    def _on_parent_configure(self, _event):
+        if self._popup is None or self._parent is None:
+            return
+        pos = (self._parent.winfo_rootx(), self._parent.winfo_rooty())
+        if pos != self._parent_pos:  # position change with same/any size = move
+            self.close_popup()
+
+    def _on_parent_unmap(self, _event):
+        self.close_popup()
+
+    def _unbind_parent(self):
+        parent, self._parent = self._parent, None
+        binds, self._parent_binds = self._parent_binds, None
+        if parent is not None and binds is not None:
+            try:
+                parent.unbind("<Configure>", binds[0])
+                parent.unbind("<Unmap>", binds[1])
+            except tk.TclError:
+                pass
 
     def _popup_focus_out(self, _event):
         popup = self._popup
@@ -1389,6 +1454,7 @@ class DropdownButton(_Control):
         self.close_popup()
 
     def close_popup(self):
+        self._unbind_parent()
         popup, self._popup = self._popup, None
         if self.scene and self.scene.popup is self:
             self.scene.popup = None
@@ -1499,8 +1565,6 @@ class ListView(Widget):
         self._scrollbar = None
         self._scrollbar_geometry = None
         self._drag_offset = 0
-        self._masks = None
-        self._mask_geometry = None
 
     def _attach(self, scene, parent=None):
         super()._attach(scene, parent)
@@ -1607,9 +1671,8 @@ class ListView(Widget):
         if self.scene:
             self.scene._focusables = [widget for widget in self.scene._focusables
                                       if widget.scene is self.scene]
-        interior_top = inner_y
-        interior_bottom = inner_y + viewport_h
-        top_overflow = bottom_overflow = 0
+        clip_top = inner_y
+        clip_bottom = inner_y + viewport_h
         created = False
         for index in sorted(visible):
             row = self._row(index)
@@ -1619,55 +1682,23 @@ class ListView(Widget):
                 created = True
             row_top = inner_y + offsets[index] - self._scroll_y
             row.layout(inner_x, row_top, inner_w)
-            top_overflow = max(top_overflow, interior_top - row_top)
-            bottom_overflow = max(
-                bottom_overflow, row_top + heights[index] - interior_bottom)
+            # Contain the row inside the rounded surface: a partially scrolled
+            # row would otherwise render past the surface (backdrop-coloured
+            # masks used to hide it, but couldn't span the card→section colour
+            # change below the list). Clipping clamps each row's items to the
+            # viewport band, so nothing ever paints over neighbouring UI.
+            if hasattr(row, "clip"):
+                row.clip(clip_top, clip_bottom)
             tags = row.list_tags() if hasattr(row, "list_tags") else (row.tag,)
             for tag in tags:
                 self.canvas.addtag_withtag(self.tag, tag)
-        self._layout_masks(x, w, interior_top, interior_bottom,
-                           max(0, top_overflow), max(0, bottom_overflow),
-                           created)
-        self._layout_scrollbar(x, y, w, height, total, viewport_h)
-
-    def _ensure_masks(self):
-        if self._masks:
-            return
-        tag = self.tag + "_mask"
-        self._masks = (
-            self.canvas.create_rectangle(
-                0, 0, 0, 0, width=0, fill=self.backdrop, tags=(self.tag, tag)),
-            self.canvas.create_rectangle(
-                0, 0, 0, 0, width=0, fill=self.backdrop, tags=(self.tag, tag)),
-        )
-        self._items.extend(self._masks)
-
-    def _layout_masks(self, x, w, interior_top, interior_bottom,
-                      top_overflow, bottom_overflow, rows_created=False):
-        first = self._masks is None
-        self._ensure_masks()
-        top_mask, bottom_mask = self._masks
-        if top_overflow > 0:
-            self.scene._itemconfigure(top_mask, state="normal")
-            self.scene._coords(top_mask, x, interior_top - top_overflow,
-                               x + w, interior_top)
-        else:
-            self.scene._itemconfigure(top_mask, state="hidden")
-        if bottom_overflow > 0:
-            self.scene._itemconfigure(bottom_mask, state="normal")
-            self.scene._coords(bottom_mask, x, interior_bottom,
-                               x + w, interior_bottom + bottom_overflow)
-        else:
-            self.scene._itemconfigure(bottom_mask, state="hidden")
-        # Newly created row items stack on top; re-establish z-order only then.
-        # Masks hide the strips where partially-scrolled rows spill past the
-        # rounded surface: above the rows but below the rounded corner caps
-        # (so corners stay round) and below the scrollbar.
-        if first or rows_created:
-            for mask in self._masks:
-                self.canvas.tag_raise(mask)
+        # Rows are created after the surface, so they stack above it; lift the
+        # rounded corner caps back over the (clamped) row edges when rows
+        # materialize so the corners stay round.
+        if created:
             for cap in self._surface.items[self._surface._rect_count:]:
                 self.canvas.tag_raise(cap)
+        self._layout_scrollbar(x, y, w, height, total, viewport_h)
 
     def _layout_scrollbar(self, x, y, w, height, total, viewport_h):
         self._ensure_scrollbar()
@@ -1754,6 +1785,81 @@ class ListView(Widget):
         super().destroy()
 
 
+class _FocusRing:
+    """Vector accent outline that hugs a control's rounded/pill contour.
+
+    Native canvas lines + corner arcs, so the ring follows the requested
+    radius exactly. The old approach lowered a filled accent surface behind
+    the control and let a 2px margin peek out; at rounded corners the peek
+    fell outside the fill's arc and showed the backdrop, so pills got a
+    square-cornered ring. Lines/arcs are thin strokes drawn on top, cheap to
+    reposition (coords only) and image-free — no CAP_CACHE traffic.
+    """
+
+    def __init__(self, scene):
+        self.scene = scene
+        self.canvas = scene.canvas
+        self.width = max(1, theme.sc(2))
+        tag = scene._focus_owner.tag
+        self.lines = [
+            self.canvas.create_line(
+                0, 0, 0, 0, fill=theme.ACCENT, width=self.width,
+                state="hidden", tags=(tag,))
+            for _ in range(4)
+        ]
+        self.arcs = [
+            self.canvas.create_arc(
+                0, 0, 0, 0, style="arc", outline=theme.ACCENT,
+                width=self.width, start=start, extent=90, state="hidden",
+                tags=(tag,))
+            for start in (90, 0, 270, 180)  # TL, TR, BR, BL
+        ]
+        self.items = self.lines + self.arcs
+        self._geometry = None
+        self._visible = False
+
+    def layout(self, x, y, w, h, radius):
+        geometry = (round(x), round(y), round(w), round(h), round(radius))
+        if geometry == self._geometry:
+            return
+        self._geometry = geometry
+        x, y, w, h, radius = geometry
+        r = max(0, min(radius, w // 2, h // 2))
+        lines = (
+            (x + r, y, x + w - r, y),
+            (x + r, y + h, x + w - r, y + h),
+            (x, y + r, x, y + h - r),
+            (x + w, y + r, x + w, y + h - r),
+        )
+        arcs = (
+            (x, y, x + 2 * r, y + 2 * r),
+            (x + w - 2 * r, y, x + w, y + 2 * r),
+            (x + w - 2 * r, y + h - 2 * r, x + w, y + h),
+            (x, y + h - 2 * r, x + 2 * r, y + h),
+        )
+        for item, coords in zip(self.lines, lines):
+            self.scene._coords(item, *coords)
+        for item, coords in zip(self.arcs, arcs):
+            self.scene._coords(item, *coords)
+
+    def set_visible(self, visible):
+        if self._visible == bool(visible):
+            return
+        self._visible = bool(visible)
+        state = "normal" if visible else "hidden"
+        for item in self.items:
+            self.scene._itemconfigure(item, state=state)
+
+    def raise_above(self, tag):
+        for item in self.items:
+            self.canvas.tag_raise(item, tag)
+
+    def destroy(self):
+        for item in self.items:
+            self.canvas.delete(item)
+        self.items = []
+
+
 class Scene:
     """Own one Canvas, its retained widget tree, focus, editing and scrolling."""
 
@@ -1788,7 +1894,7 @@ class Scene:
         self._focus_owner.canvas = canvas
         self._focus_owner.tag = "focus_ring"
         self._focus_owner.scene = self
-        self._focus_surfaces = {}
+        self._focus_ring = None
         self._shown_focus = None
         self._wheel_widgets = []
         self._scrollbar_drag_offset = 0
@@ -2052,46 +2158,28 @@ class Scene:
         if widget:
             widget.focus(True)
 
-    def _focus_surface(self, radius):
-        backdrop = self.focused.backdrop if self.focused else self.backdrop
-        key = (radius, backdrop)
-        surface = self._focus_surfaces.get(key)
-        if surface is None:
-            surface = _RoundSurface(
-                self._focus_owner, radius, theme.ACCENT, None,
-                max(1, theme.sc(1)), backdrop)
-            surface._create()
-            surface.set_visible(False)
-            self._focus_surfaces[key] = surface
-        return surface
-
     def _show_focus_ring(self, widget):
         if not widget._geometry or widget._focus_radius is None:
             return
-        if self._shown_focus is not None and self._shown_focus is not widget:
-            old = self._focus_surfaces.get(
-                (self._shown_focus._focus_radius,
-                 self._shown_focus.backdrop))
-            if old:
-                old.set_visible(False)
-        surface = self._focus_surface(widget._focus_radius)
+        if self._focus_ring is None:
+            self._focus_ring = _FocusRing(self)
+        ring = self._focus_ring
         x, y, w, h = widget._geometry
         pad = theme.sc(2)
-        surface.layout(x - pad, y - pad, w + pad * 2, h + pad * 2)
-        surface.set_visible(True)
-        for item in surface.items:
-            self._itemconfigure(item, state="disabled")
-            if self._shown_focus is not widget:
-                self.canvas.tag_lower(item, widget.tag)
+        ring.layout(x - pad, y - pad, w + pad * 2, h + pad * 2,
+                    widget._focus_radius)
+        ring.set_visible(True)
+        # Draw the ring just above the focused control so its stroke sits on
+        # top of the control edge; only reorder when the target changes.
+        if self._shown_focus is not widget:
+            ring.raise_above(widget.tag)
         self._shown_focus = widget
 
     def _hide_focus_ring(self, widget):
         if self._shown_focus is not widget:
             return
-        surface = self._focus_surfaces.get(
-            (widget._focus_radius, widget.backdrop))
-        if surface:
-            surface.set_visible(False)
+        if self._focus_ring is not None:
+            self._focus_ring.set_visible(False)
         self._shown_focus = None
 
     def _tab(self, _event=None, reverse=False):
@@ -2226,9 +2314,9 @@ class Scene:
             self._entry.destroy()
         if self._text:
             self._text.destroy()
-        for surface in self._focus_surfaces.values():
-            surface.destroy()
-        self._focus_surfaces.clear()
+        if self._focus_ring is not None:
+            self._focus_ring.destroy()
+            self._focus_ring = None
 
 
 def style_toplevel(win, icon_path=None):
