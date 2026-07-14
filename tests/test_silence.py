@@ -22,21 +22,44 @@ def make_wav(samples):
     return buf.getvalue()
 
 
-# --- _audio_peak / SILENCE_PEAK ------------------------------------------
+# --- _speech_windows gate --------------------------------------------------
 
-silence = make_wav([0] * 16000)
-assert main_mod._audio_peak(silence) == 0
+def gated(wav):
+    hot, _ = main_mod._speech_windows(wav)
+    return hot < main_mod.SPEECH_MIN_WINDOWS
 
-room_noise = make_wav([(-1) ** i * 120 for i in range(16000)])
-assert main_mod._audio_peak(room_noise) == 120
-assert main_mod._audio_peak(room_noise) < main_mod.SILENCE_PEAK
+# pure silence and steady room noise (owner's floor: window RMS <= 120)
+assert gated(make_wav([0] * 16000))
+assert gated(make_wav([(-1) ** i * 120 for i in range(16000)]))
 
-quiet_speech = make_wav(
-    [int(2500 * math.sin(i * 2 * math.pi * 220 / 16000)) for i in range(16000)])
-assert main_mod._audio_peak(quiet_speech) >= main_mod.SILENCE_PEAK
+# sustained quiet speech (1s tone, RMS ~1770) passes
+tone = [int(2500 * math.sin(i * 2 * math.pi * 220 / 16000))
+        for i in range(16000)]
+assert not gated(make_wav(tone))
 
-odd_payload = make_wav([0] * 3)   # odd trailing byte must not crash
-assert main_mod._audio_peak(odd_payload[:-1]) == 0
+# a lone key clack (45ms burst) in otherwise silent audio stays gated
+clack = [0] * 16000
+for i in range(8000, 8720):
+    clack[i] = int(4000 * math.sin(i * 1.1))
+assert gated(make_wav(clack))
+
+# a short word (240ms burst mid-recording) passes
+word = [0] * 16000
+for i in range(6000, 9840):
+    word[i] = int(1500 * math.sin(i * 2 * math.pi * 180 / 16000))
+assert not gated(make_wav(word))
+
+# energy only inside the trimmed press/release edges stays gated
+edges = [0] * 16000
+for i in range(0, 1600):          # first 100ms (key press clack)
+    edges[i] = 5000
+for i in range(14400, 16000):     # last 100ms (key release clack)
+    edges[i] = 5000
+assert gated(make_wav(edges))
+
+# odd trailing byte must not crash
+odd_payload = make_wav([0] * 3)
+main_mod._speech_windows(odd_payload[:-1])
 
 # --- _looks_like_prompt_echo ----------------------------------------------
 
