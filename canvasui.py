@@ -1320,10 +1320,15 @@ class EntryField(_Control):
         self.scene.begin_edit(self)
 
     def focus(self, state):
+        # Keyboard focus shows the Scene's outer ring (like every control);
+        # the field's own accent border is reserved for the editing state so
+        # only one ring is ever visible at once.
         super().focus(state)
+
+    def set_editing(self, active):
         if self._surface:
             self._surface.set_style(
-                theme.SURFACE0, theme.ACCENT if state else theme.SURFACE1)
+                theme.SURFACE0, theme.ACCENT if active else theme.SURFACE1)
 
     def destroy(self):
         if self.scene and self.scene.editing is self:
@@ -2222,6 +2227,11 @@ class Scene:
             widget.focus(True)
 
     def _show_focus_ring(self, widget):
+        # While a field is being edited its own accent border is the focus
+        # indication; suppressing the outer ring keeps it to a single ring
+        # (and stops relayout/focus paths from re-showing it mid-edit).
+        if self.editing is widget:
+            return
         if not widget._geometry or widget._focus_radius is None:
             return
         if self._focus_ring is None:
@@ -2277,11 +2287,18 @@ class Scene:
 
     def begin_edit(self, field):
         if self.editing is field:
+            # Re-click on the field already being edited: just restore focus to
+            # the shared editor (a press on the field's exposed corner strip
+            # moves focus to the canvas — grab it back so no caret is lost).
+            widget = self._text if field.multiline else self._entry
+            widget.focus_set()
             return
         self.end_edit(commit=True)
         self.close_popup()
         self.editing = field
         self.focus_widget(field)
+        self._hide_focus_ring(field)
+        field.set_editing(True)
         widget = self._shared_editor(field.multiline)
         value = str(field.getter() or "")
         if field.multiline:
@@ -2338,18 +2355,37 @@ class Scene:
         return "break"
 
     def _commit_if_editor(self):
-        if self.editing is not None:
-            self.end_edit(commit=True)
+        # Fired from a FocusOut's after_idle. The editor widget is SHARED and
+        # reused across fields, so focus churn (A -> canvas -> B) can deliver a
+        # late/duplicate FocusOut after a new edit already began. Only commit
+        # if the editor has genuinely lost focus — if it still (or again) holds
+        # focus, a live edit is in progress and must not be torn down.
+        if self.editing is None:
+            return
+        editor = self._text if self.editing.multiline else self._entry
+        try:
+            focused = self.canvas.focus_get()
+        except KeyError:
+            focused = None
+        if focused is editor:
+            return
+        self.end_edit(commit=True)
 
     def _position_editor(self):
         if not self.editing or self._editor_item is None:
             return
-        x, y, w, h = self.editing._geometry
-        inset = max(1, theme.sc(1))
-        self._coords(self._editor_item, x + inset, y + inset)
+        field = self.editing
+        x, y, w, h = field._geometry
+        # Inset the native (rectangular) editor so it never paints over the
+        # field surface's rounded accent border: horizontally past the corner
+        # radius, vertically past the border stroke. The editor bg matches the
+        # field fill, so the seam is invisible.
+        h_inset = getattr(field, "radius", None) or max(1, theme.sc(1))
+        v_inset = max(1, theme.sc(2))
+        self._coords(self._editor_item, x + h_inset, y + v_inset)
         self._itemconfigure(
-            self._editor_item, width=max(1, w - inset * 2),
-            height=max(1, h - inset * 2))
+            self._editor_item, width=max(1, w - h_inset * 2),
+            height=max(1, h - v_inset * 2))
 
     def end_edit(self, commit=True):
         field = self.editing
@@ -2364,8 +2400,13 @@ class Scene:
             self.forget_items((self._editor_item,))
             self.canvas.delete(self._editor_item)
             self._editor_item = None
+        field.set_editing(False)
         field.refresh()
         self.canvas.focus_set()
+        # Edit ended but the field keeps keyboard focus: restore the outer ring
+        # (now that self.editing is None, the show guard lets it through).
+        if self.focused is field:
+            self._show_focus_ring(field)
 
     def close_popup(self):
         popup = self.popup
