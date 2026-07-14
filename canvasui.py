@@ -175,44 +175,6 @@ class _CapCache:
         self._items[key] = image
         return image
 
-    def focus_corners(self, radius, ring_width, color):
-        """Four transparent quarter-annulus corners for the focus ring.
-
-        `radius` is the band's OUTER corner radius, `ring_width` its
-        thickness. Antialiasing lives in the alpha channel only (accent RGB
-        everywhere, mask in alpha), so the band composites cleanly over ANY
-        background with no dark fringe — unlike the backdrop-baked opaque
-        caps. At most one control is focused, so the alpha compositing Tk
-        does for these four tiny images has no perf relevance. Returned in
-        TL, TR, BL, BR order.
-        """
-        key = ("focus_corners", radius, ring_width, color)
-        images = self._items.get(key)
-        if images is not None:
-            return images
-        self.misses += 1
-        ss = 4
-        side = max(2, radius * 2)
-        off = ring_width * ss  # inner-circle inset from each edge
-        mask = Image.new("L", (side * ss, side * ss), 0)
-        draw = ImageDraw.Draw(mask)
-        draw.ellipse((0, 0, side * ss - 1, side * ss - 1), fill=255)
-        draw.ellipse(
-            (off, off, side * ss - 1 - off, side * ss - 1 - off), fill=0)
-        mask = mask.resize((side, side), Image.LANCZOS)
-        band = Image.new("RGBA", (side, side), _rgb(color) + (0,))
-        band.putalpha(mask)
-        r = side // 2
-        crops = (
-            band.crop((0, 0, r, r)),
-            band.crop((r, 0, side, r)),
-            band.crop((0, r, r, side)),
-            band.crop((r, r, side, side)),
-        )
-        images = tuple(ImageTk.PhotoImage(part) for part in crops)
-        self._items[key] = images
-        return images
-
 
 CAP_CACHE = _CapCache()
 
@@ -377,11 +339,19 @@ class _PillSurface:
         if self._style == (fill, border) and self.items:
             return
         self._create()
+        previous = self._style
         self._style = (fill, border)
         self.scene._itemconfigure(self.items[0], fill=border or fill)
         self.scene._itemconfigure(self.items[1], fill=fill)
         for item, image in zip(self.items[2:], self._styles[self._style]):
             self.scene._itemconfigure(item, image=image)
+        # The centre-fill inset depends on whether a border exists (see
+        # layout); a style change that adds/removes the border (focus) must
+        # re-derive the coords or the fill paints over the new border.
+        if previous and bool(previous[1]) != bool(border) \
+                and self._geometry is not None:
+            geometry, self._geometry = self._geometry, None
+            self.layout(*geometry)
 
     def layout(self, x, y, w, h=None):
         self._create()
@@ -451,11 +421,18 @@ class _FixedRoundSurface:
         if self._style == (fill, border) and self.items:
             return
         self._create()
+        previous = self._style
         self._style = (fill, border)
         self.scene._itemconfigure(self.items[0], fill=border or fill)
         self.scene._itemconfigure(self.items[1], fill=fill)
         for item, image in zip(self.items[2:], self._styles[self._style]):
             self.scene._itemconfigure(item, image=image)
+        # Same border-presence rule as _PillSurface.set_style: the inner
+        # fill's vertical inset must track the border appearing/vanishing.
+        if previous and bool(previous[1]) != bool(border) \
+                and self._geometry is not None:
+            geometry, self._geometry = self._geometry, None
+            self.layout(*geometry)
 
     def layout(self, x, y, w, h=None):
         self._create()
@@ -544,8 +521,6 @@ class Widget:
         scene = self.scene
         canvas = self.canvas
         if scene is not None and scene.focused is self:
-            if hasattr(scene, "_hide_focus_ring"):
-                scene._hide_focus_ring(self)
             scene.focused = None
         if canvas is not None:
             for tag, sequence, funcid in self._tag_bindings:
@@ -949,29 +924,10 @@ class Row(Widget):
 
 
 class _Control(Widget):
+    """Focusable leaf. Keyboard focus is indicated by the control's own
+    surface taking an accent-family border — there is no separate ring."""
+
     focusable = True
-
-    def __init__(self):
-        super().__init__()
-        self._focus_radius = None
-
-    def _make_focus_surface(self, radius):
-        # Radius the focus ring should hug (pill = height/2 + pad, rounded
-        # fields = corner radius + pad). The ring itself is drawn by the
-        # Scene's shared vector _FocusRing, so nothing to pre-bake here.
-        self._focus_radius = radius
-
-    def _layout_focus(self, x, y, w, h):
-        if self._focused:
-            self.scene._show_focus_ring(self)
-
-    def focus(self, state):
-        super().focus(state)
-        if self.scene:
-            if state:
-                self.scene._show_focus_ring(self)
-            else:
-                self.scene._hide_focus_ring(self)
 
 
 class PillButton(_Control):
@@ -1021,16 +977,11 @@ class PillButton(_Control):
         states = self._states()
         fill, border, _fg = states["normal"]
         if self.compact:
-            width = self._measured_width or self.measure(10000)[0]
-            self._compact_images = {
-                name: CAP_CACHE.fixed_pill(
-                    width, self.height, state_fill, state_border,
-                    max(1, theme.sc(1)), self.backdrop)
-                for name, (state_fill, state_border, _state_fg)
-                in states.items()
-            }
+            self._compact_images = {}
+            for state_fill, state_border, _state_fg in states.values():
+                self._compact_image(state_fill, state_border)
             self._compact_item = self.canvas.create_image(
-                0, 0, anchor="nw", image=self._compact_images["normal"],
+                0, 0, anchor="nw", image=self._compact_image(fill, border),
                 tags=(self.tag,))
             self._items.append(self._compact_item)
         else:
@@ -1041,7 +992,6 @@ class PillButton(_Control):
             0, 0, text=self.text, font=self.font, fill=_fg,
             tags=(self.tag,))
         self._items.append(self._text_item)
-        self._make_focus_surface(self.height // 2 + theme.sc(2))
         self._bind_clickable()
         if not self.enabled:
             self._apply()
@@ -1065,18 +1015,33 @@ class PillButton(_Control):
         else:
             self.scene._coords(self._compact_item, x, y)
         self.scene._coords(self._text_item, x + w / 2, y + height / 2)
-        self._layout_focus(*geometry)
+
+    def _compact_image(self, fill, border):
+        key = (fill, border)
+        image = self._compact_images.get(key)
+        if image is None:
+            width = self._measured_width or self.measure(10000)[0]
+            image = CAP_CACHE.fixed_pill(
+                width, self.height, fill, border,
+                max(1, theme.sc(1)), self.backdrop)
+            self._compact_images[key] = image
+        return image
 
     def _apply(self):
         state = ("disabled" if not self.enabled else
                  "down" if self._pressed else
                  "hover" if self._hovered else "normal")
         fill, border, fg = self._states()[state]
+        if self._focused:
+            # Keyboard focus rides the pill's own border and persists through
+            # hover/press restyles. Ink-text pills are accent/red filled, so
+            # an accent border would vanish — use TEXT for contrast there.
+            border = theme.TEXT if fg == theme.INK else theme.ACCENT
         if self._surface:
             self._surface.set_style(fill, border)
         else:
             self.canvas.itemconfigure(
-                self._compact_item, image=self._compact_images[state])
+                self._compact_item, image=self._compact_image(fill, border))
         self.canvas.itemconfigure(self._text_item, fill=fg)
 
     def hover(self, state):
@@ -1086,6 +1051,11 @@ class PillButton(_Control):
     def press(self, state):
         super().press(state)
         self._apply()
+
+    def focus(self, state):
+        super().focus(state)
+        if self._surface or self._compact_item:
+            self._apply()
 
     def activate(self):
         if self.enabled and self.on_click:
@@ -1146,7 +1116,6 @@ class Toggle(_Control):
             0, 0, 0, 0, width=0, fill=theme.INK if self.on else theme.TEXT,
             tags=(self.tag,))
         self._items.append(self._knob)
-        self._make_focus_surface(self.height // 2 + theme.sc(2))
         self._bind_clickable()
 
     def measure(self, avail_w):
@@ -1160,7 +1129,13 @@ class Toggle(_Control):
         self._geometry = geometry
         self._surface.layout(*geometry)
         self._layout_knob()
-        self._layout_focus(*geometry)
+
+    def _track_border(self, frame):
+        # Focus border on the toggle's own track. The on-side track is accent
+        # filled, so the border shifts to TEXT for contrast there.
+        if not self._focused:
+            return None
+        return theme.TEXT if frame >= 2 else theme.ACCENT
 
     def _layout_knob(self):
         x, y, _w, h = self._geometry
@@ -1172,7 +1147,18 @@ class Toggle(_Control):
             self._knob, left, y + inset, left + diameter, y + inset + diameter)
         self.scene._itemconfigure(
             self._knob, fill=_blend(theme.TEXT, theme.INK, self._frame / 4))
-        self._surface.set_style(self._fills[self._frame])
+        self._surface.set_style(
+            self._fills[self._frame], self._track_border(self._frame))
+
+    def focus(self, state):
+        super().focus(state)
+        if self._surface and self._geometry:
+            if state:
+                # Warm every frame's focused style so a keyboard toggle's
+                # animation never bakes mid-flight.
+                self._surface.prewarm(
+                    (self._fills[i], self._track_border(i)) for i in range(5))
+            self._layout_knob()
 
     def _animate(self, target):
         if self._after is not None:
@@ -1252,7 +1238,6 @@ class EntryField(_Control):
             0, 0, anchor="nw" if self.multiline else "w",
             font=FONT, fill=theme.TEXT, tags=(self.tag,))
         self._items.append(self._text_item)
-        self._make_focus_surface(self.radius + theme.sc(2))
         self._bind_clickable()
         self.refresh()
 
@@ -1280,7 +1265,6 @@ class EntryField(_Control):
             self._avail = text_width
             self.refresh()
         self.scene._coords(self._text_item, x + theme.sc(10), anchor_y)
-        self._layout_focus(*geometry)
         if self.scene.editing is self:
             self.scene._position_editor()
 
@@ -1320,15 +1304,12 @@ class EntryField(_Control):
         self.scene.begin_edit(self)
 
     def focus(self, state):
-        # Keyboard focus shows the Scene's outer ring (like every control);
-        # the field's own accent border is reserved for the editing state so
-        # only one ring is ever visible at once.
+        # One indication for both keyboard focus and editing: the field's own
+        # accent border (begin_edit focuses the field, so editing implies it).
         super().focus(state)
-
-    def set_editing(self, active):
         if self._surface:
             self._surface.set_style(
-                theme.SURFACE0, theme.ACCENT if active else theme.SURFACE1)
+                theme.SURFACE0, theme.ACCENT if state else theme.SURFACE1)
 
     def destroy(self):
         if self.scene and self.scene.editing is self:
@@ -1378,7 +1359,6 @@ class DropdownButton(_Control):
         self._arrow = self.canvas.create_text(
             0, 0, text="⌄", font=FONT, fill=theme.SUBTEXT, tags=(self.tag,))
         self._items.extend((self._text_item, self._arrow))
-        self._make_focus_surface(self.radius + theme.sc(2))
         self._bind_clickable()
         self.refresh()
 
@@ -1397,7 +1377,6 @@ class DropdownButton(_Control):
             self._text_item, x + theme.sc(11), y + self.height / 2)
         self.scene._coords(
             self._arrow, x + width - theme.sc(13), y + self.height / 2)
-        self._layout_focus(*geometry)
 
     def refresh(self):
         if self._text_item:
@@ -1828,106 +1807,6 @@ class ListView(Widget):
         super().destroy()
 
 
-class _FocusRing:
-    """Accent band that hugs a control's rounded/pill contour.
-
-    Built from the same supersampled-Pillow vocabulary as every other
-    rounded surface so it reads as smooth as the control it rings: four
-    transparent quarter-annulus corner images (cached in CAP_CACHE, keyed
-    by radius/width/colour) plus four solid accent rectangles for the
-    straight edges. The band sits in a uniform gap outside the control —
-    inner-edge radius is the control's own corner radius + gap, so the ring
-    stays concentric with the corner and the gap never widens at corners.
-
-    The predecessor drew native canvas arcs/lines: GDI, unantialiased, so
-    the ring looked jagged next to the smooth control, and a centred stroke
-    left an uneven sub-pixel peek. Repositioning is coords-only; the corner
-    image only changes when the focused control's radius changes, so a
-    resize storm on one focused control touches CAP_CACHE zero times.
-    """
-
-    def __init__(self, scene):
-        self.scene = scene
-        self.canvas = scene.canvas
-        self.width = max(1, theme.sc(2))
-        self.color = theme.ACCENT
-        tag = scene._focus_owner.tag
-        self.edges = [
-            self.canvas.create_rectangle(
-                0, 0, 0, 0, width=0, fill=self.color, state="hidden",
-                tags=(tag,))
-            for _ in range(4)
-        ]
-        self.corners = [
-            self.canvas.create_image(
-                0, 0, anchor="nw", state="hidden", tags=(tag,))
-            for _ in range(4)  # TL, TR, BL, BR
-        ]
-        self.items = self.edges + self.corners
-        self._geometry = None
-        self._radius = None
-        self._visible = False
-
-    def prewarm(self, inner_radius):
-        # Warm the corner cache at focus time so the first resize step of a
-        # storm on this control finds it already cached (zero misses).
-        CAP_CACHE.focus_corners(
-            round(inner_radius) + self.width, self.width, self.color)
-
-    def layout(self, ix, iy, iw, ih, inner_radius):
-        # (ix, iy, iw, ih) is the band's INNER-edge box (control padded by
-        # the gap); inner_radius is that box's corner radius. The band grows
-        # outward by self.width to the outer box below.
-        geometry = (round(ix), round(iy), round(iw), round(ih),
-                    round(inner_radius))
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        ix, iy, iw, ih, r_inner = geometry
-        rw = self.width
-        ox, oy = ix - rw, iy - rw
-        ow, oh = iw + 2 * rw, ih + 2 * rw
-        radius = max(1, min(r_inner + rw, ow // 2, oh // 2))
-        if radius != self._radius:
-            self._radius = radius
-            images = CAP_CACHE.focus_corners(radius, rw, self.color)
-            for item, image in zip(self.corners, images):
-                self.scene._itemconfigure(item, image=image)
-        positions = (
-            (ox, oy),                        # TL
-            (ox + ow - radius, oy),          # TR
-            (ox, oy + oh - radius),          # BL
-            (ox + ow - radius, oy + oh - radius),  # BR
-        )
-        for item, (cx, cy) in zip(self.corners, positions):
-            self.scene._coords(item, cx, cy)
-        edges = (
-            (ox + radius, oy, ox + ow - radius, oy + rw),          # top
-            (ox + radius, oy + oh - rw, ox + ow - radius, oy + oh),  # bottom
-            (ox, oy + radius, ox + rw, oy + oh - radius),          # left
-            (ox + ow - rw, oy + radius, ox + ow, oy + oh - radius),  # right
-        )
-        for item, coords in zip(self.edges, edges):
-            self.scene._coords(item, *coords)
-
-    def set_visible(self, visible):
-        if self._visible == bool(visible):
-            return
-        self._visible = bool(visible)
-        state = "normal" if visible else "hidden"
-        for item in self.items:
-            self.scene._itemconfigure(item, state=state)
-
-    def raise_above(self, tag):
-        for item in self.items:
-            self.canvas.tag_raise(item, tag)
-
-    def destroy(self):
-        for item in self.items:
-            self.canvas.delete(item)
-        self.items = []
-
-
 class Scene:
     """Own one Canvas, its retained widget tree, focus, editing and scrolling."""
 
@@ -1958,12 +1837,6 @@ class Scene:
         self._scrollregion = None
         self._scroll_callback = None
         self._layout_commands = None
-        self._focus_owner = type("_FocusOwner", (), {})()
-        self._focus_owner.canvas = canvas
-        self._focus_owner.tag = "focus_ring"
-        self._focus_owner.scene = self
-        self._focus_ring = None
-        self._shown_focus = None
         self._wheel_widgets = []
         self._scrollbar_drag_offset = 0
         self.canvas.configure(
@@ -2226,40 +2099,6 @@ class Scene:
         if widget:
             widget.focus(True)
 
-    def _show_focus_ring(self, widget):
-        # While a field is being edited its own accent border is the focus
-        # indication; suppressing the outer ring keeps it to a single ring
-        # (and stops relayout/focus paths from re-showing it mid-edit).
-        if self.editing is widget:
-            return
-        if not widget._geometry or widget._focus_radius is None:
-            return
-        if self._focus_ring is None:
-            self._focus_ring = _FocusRing(self)
-        ring = self._focus_ring
-        x, y, w, h = widget._geometry
-        # `_focus_radius` is the band's inner-edge radius (control corner +
-        # gap); `gap` is that same designed offset applied to the box. Warm
-        # the corner cache before laying out so a later resize storm on this
-        # focused control never triggers a cache miss.
-        gap = theme.sc(2)
-        ring.prewarm(widget._focus_radius)
-        ring.layout(x - gap, y - gap, w + gap * 2, h + gap * 2,
-                    widget._focus_radius)
-        ring.set_visible(True)
-        # Draw the ring just above the focused control so its stroke sits on
-        # top of the control edge; only reorder when the target changes.
-        if self._shown_focus is not widget:
-            ring.raise_above(widget.tag)
-        self._shown_focus = widget
-
-    def _hide_focus_ring(self, widget):
-        if self._shown_focus is not widget:
-            return
-        if self._focus_ring is not None:
-            self._focus_ring.set_visible(False)
-        self._shown_focus = None
-
     def _tab(self, _event=None, reverse=False):
         if not self._focusables:
             return "break"
@@ -2297,8 +2136,6 @@ class Scene:
         self.close_popup()
         self.editing = field
         self.focus_widget(field)
-        self._hide_focus_ring(field)
-        field.set_editing(True)
         widget = self._shared_editor(field.multiline)
         value = str(field.getter() or "")
         if field.multiline:
@@ -2400,13 +2237,8 @@ class Scene:
             self.forget_items((self._editor_item,))
             self.canvas.delete(self._editor_item)
             self._editor_item = None
-        field.set_editing(False)
         field.refresh()
         self.canvas.focus_set()
-        # Edit ended but the field keeps keyboard focus: restore the outer ring
-        # (now that self.editing is None, the show guard lets it through).
-        if self.focused is field:
-            self._show_focus_ring(field)
 
     def close_popup(self):
         popup = self.popup
@@ -2423,9 +2255,6 @@ class Scene:
             self._entry.destroy()
         if self._text:
             self._text.destroy()
-        if self._focus_ring is not None:
-            self._focus_ring.destroy()
-            self._focus_ring = None
 
 
 def style_toplevel(win, icon_path=None):
