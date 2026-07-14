@@ -175,6 +175,44 @@ class _CapCache:
         self._items[key] = image
         return image
 
+    def focus_corners(self, radius, ring_width, color):
+        """Four transparent quarter-annulus corners for the focus ring.
+
+        `radius` is the band's OUTER corner radius, `ring_width` its
+        thickness. Antialiasing lives in the alpha channel only (accent RGB
+        everywhere, mask in alpha), so the band composites cleanly over ANY
+        background with no dark fringe — unlike the backdrop-baked opaque
+        caps. At most one control is focused, so the alpha compositing Tk
+        does for these four tiny images has no perf relevance. Returned in
+        TL, TR, BL, BR order.
+        """
+        key = ("focus_corners", radius, ring_width, color)
+        images = self._items.get(key)
+        if images is not None:
+            return images
+        self.misses += 1
+        ss = 4
+        side = max(2, radius * 2)
+        off = ring_width * ss  # inner-circle inset from each edge
+        mask = Image.new("L", (side * ss, side * ss), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, side * ss - 1, side * ss - 1), fill=255)
+        draw.ellipse(
+            (off, off, side * ss - 1 - off, side * ss - 1 - off), fill=0)
+        mask = mask.resize((side, side), Image.LANCZOS)
+        band = Image.new("RGBA", (side, side), _rgb(color) + (0,))
+        band.putalpha(mask)
+        r = side // 2
+        crops = (
+            band.crop((0, 0, r, r)),
+            band.crop((r, 0, side, r)),
+            band.crop((0, r, r, side)),
+            band.crop((r, r, side, side)),
+        )
+        images = tuple(ImageTk.PhotoImage(part) for part in crops)
+        self._items[key] = images
+        return images
+
 
 CAP_CACHE = _CapCache()
 
@@ -1786,60 +1824,85 @@ class ListView(Widget):
 
 
 class _FocusRing:
-    """Vector accent outline that hugs a control's rounded/pill contour.
+    """Accent band that hugs a control's rounded/pill contour.
 
-    Native canvas lines + corner arcs, so the ring follows the requested
-    radius exactly. The old approach lowered a filled accent surface behind
-    the control and let a 2px margin peek out; at rounded corners the peek
-    fell outside the fill's arc and showed the backdrop, so pills got a
-    square-cornered ring. Lines/arcs are thin strokes drawn on top, cheap to
-    reposition (coords only) and image-free — no CAP_CACHE traffic.
+    Built from the same supersampled-Pillow vocabulary as every other
+    rounded surface so it reads as smooth as the control it rings: four
+    transparent quarter-annulus corner images (cached in CAP_CACHE, keyed
+    by radius/width/colour) plus four solid accent rectangles for the
+    straight edges. The band sits in a uniform gap outside the control —
+    inner-edge radius is the control's own corner radius + gap, so the ring
+    stays concentric with the corner and the gap never widens at corners.
+
+    The predecessor drew native canvas arcs/lines: GDI, unantialiased, so
+    the ring looked jagged next to the smooth control, and a centred stroke
+    left an uneven sub-pixel peek. Repositioning is coords-only; the corner
+    image only changes when the focused control's radius changes, so a
+    resize storm on one focused control touches CAP_CACHE zero times.
     """
 
     def __init__(self, scene):
         self.scene = scene
         self.canvas = scene.canvas
         self.width = max(1, theme.sc(2))
+        self.color = theme.ACCENT
         tag = scene._focus_owner.tag
-        self.lines = [
-            self.canvas.create_line(
-                0, 0, 0, 0, fill=theme.ACCENT, width=self.width,
-                state="hidden", tags=(tag,))
+        self.edges = [
+            self.canvas.create_rectangle(
+                0, 0, 0, 0, width=0, fill=self.color, state="hidden",
+                tags=(tag,))
             for _ in range(4)
         ]
-        self.arcs = [
-            self.canvas.create_arc(
-                0, 0, 0, 0, style="arc", outline=theme.ACCENT,
-                width=self.width, start=start, extent=90, state="hidden",
-                tags=(tag,))
-            for start in (90, 0, 270, 180)  # TL, TR, BR, BL
+        self.corners = [
+            self.canvas.create_image(
+                0, 0, anchor="nw", state="hidden", tags=(tag,))
+            for _ in range(4)  # TL, TR, BL, BR
         ]
-        self.items = self.lines + self.arcs
+        self.items = self.edges + self.corners
         self._geometry = None
+        self._radius = None
         self._visible = False
 
-    def layout(self, x, y, w, h, radius):
-        geometry = (round(x), round(y), round(w), round(h), round(radius))
+    def prewarm(self, inner_radius):
+        # Warm the corner cache at focus time so the first resize step of a
+        # storm on this control finds it already cached (zero misses).
+        CAP_CACHE.focus_corners(
+            round(inner_radius) + self.width, self.width, self.color)
+
+    def layout(self, ix, iy, iw, ih, inner_radius):
+        # (ix, iy, iw, ih) is the band's INNER-edge box (control padded by
+        # the gap); inner_radius is that box's corner radius. The band grows
+        # outward by self.width to the outer box below.
+        geometry = (round(ix), round(iy), round(iw), round(ih),
+                    round(inner_radius))
         if geometry == self._geometry:
             return
         self._geometry = geometry
-        x, y, w, h, radius = geometry
-        r = max(0, min(radius, w // 2, h // 2))
-        lines = (
-            (x + r, y, x + w - r, y),
-            (x + r, y + h, x + w - r, y + h),
-            (x, y + r, x, y + h - r),
-            (x + w, y + r, x + w, y + h - r),
+        ix, iy, iw, ih, r_inner = geometry
+        rw = self.width
+        ox, oy = ix - rw, iy - rw
+        ow, oh = iw + 2 * rw, ih + 2 * rw
+        radius = max(1, min(r_inner + rw, ow // 2, oh // 2))
+        if radius != self._radius:
+            self._radius = radius
+            images = CAP_CACHE.focus_corners(radius, rw, self.color)
+            for item, image in zip(self.corners, images):
+                self.scene._itemconfigure(item, image=image)
+        positions = (
+            (ox, oy),                        # TL
+            (ox + ow - radius, oy),          # TR
+            (ox, oy + oh - radius),          # BL
+            (ox + ow - radius, oy + oh - radius),  # BR
         )
-        arcs = (
-            (x, y, x + 2 * r, y + 2 * r),
-            (x + w - 2 * r, y, x + w, y + 2 * r),
-            (x + w - 2 * r, y + h - 2 * r, x + w, y + h),
-            (x, y + h - 2 * r, x + 2 * r, y + h),
+        for item, (cx, cy) in zip(self.corners, positions):
+            self.scene._coords(item, cx, cy)
+        edges = (
+            (ox + radius, oy, ox + ow - radius, oy + rw),          # top
+            (ox + radius, oy + oh - rw, ox + ow - radius, oy + oh),  # bottom
+            (ox, oy + radius, ox + rw, oy + oh - radius),          # left
+            (ox + ow - rw, oy + radius, ox + ow, oy + oh - radius),  # right
         )
-        for item, coords in zip(self.lines, lines):
-            self.scene._coords(item, *coords)
-        for item, coords in zip(self.arcs, arcs):
+        for item, coords in zip(self.edges, edges):
             self.scene._coords(item, *coords)
 
     def set_visible(self, visible):
@@ -2165,8 +2228,13 @@ class Scene:
             self._focus_ring = _FocusRing(self)
         ring = self._focus_ring
         x, y, w, h = widget._geometry
-        pad = theme.sc(2)
-        ring.layout(x - pad, y - pad, w + pad * 2, h + pad * 2,
+        # `_focus_radius` is the band's inner-edge radius (control corner +
+        # gap); `gap` is that same designed offset applied to the box. Warm
+        # the corner cache before laying out so a later resize storm on this
+        # focused control never triggers a cache miss.
+        gap = theme.sc(2)
+        ring.prewarm(widget._focus_radius)
+        ring.layout(x - gap, y - gap, w + gap * 2, h + gap * 2,
                     widget._focus_radius)
         ring.set_visible(True)
         # Draw the ring just above the focused control so its stroke sits on

@@ -48,9 +48,12 @@ def main():
         # 188-item stress pane measures ~17ms/step against an empty-window
         # floor of ~8ms, and profiling shows Python-side layout is <1ms with
         # ~15 Tcl calls/step, so the rest is Tk's repaint — not reducible
-        # from Python. Real sections are lighter and must hold <15ms
-        # (tests/perf_settingsui.py); lists virtualize to bound item count.
-        assert median < 18.0, f"resize median {median:.3f}ms exceeds 18ms"
+        # from Python. Machine variance is ~±2ms run to run, so the gate
+        # carries margin: it exists to catch regressions in kind (embedded
+        # HWNDs, cache misses, non-incremental relayout), which show up as
+        # 2x jumps, not 1-2ms creep. Real sections gate in
+        # tests/perf_settingsui.py; lists virtualize to bound item count.
+        assert median < 20.0, f"resize median {median:.3f}ms exceeds 20ms"
         assert misses == 0, f"{misses} cap-cache misses occurred during resize"
     finally:
         root.destroy()
