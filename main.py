@@ -115,7 +115,6 @@ class App:
             on_capture_start=self._pause_hotkey,
             on_capture_end=self._resume_hotkey,
             history_getter=self._history_snapshot,
-            on_repaste=self._paste_from_history,
             on_retry=self._retry_failed,
             config_getter=lambda: self.cfg,
         )
@@ -260,9 +259,8 @@ class App:
                     # the paste goes to whatever is focused now.
                     self.overlay.show_transcribing()
                     self._transcribe_and_paste(payload, target=None)
-                else:  # "paste" / "repaste"
-                    if kind == "repaste":
-                        self._wait_modifiers_lifted()
+                else:  # "repaste"
+                    self._wait_modifiers_lifted()
                     self._paste_now(payload)
             except Exception:
                 logging.exception("Pipeline step failed")
@@ -445,11 +443,6 @@ class App:
             else:
                 return  # already retried (stale UI click)
         self._pipeline_q.put(("retry", wav))
-
-    def _paste_from_history(self, text: str):
-        """Paste a history entry (settings History pane; focus already
-        returned to the target app by the caller)."""
-        self._pipeline_q.put(("paste", text))
 
     def _paste_now(self, text: str):
         paste_text(text, self.cfg.get("restore_clipboard", True))

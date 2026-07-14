@@ -397,9 +397,6 @@ class _HistoryRow(canvasui.Widget):
                 canvasui.PillButton(
                     "Copy", "neutral", lambda value=text: owner._copy(value),
                     small=True, compact=True),
-                canvasui.PillButton(
-                    "Paste", "neutral", lambda value=text: owner._repaste(value),
-                    small=True, compact=True),
             ]
             if self.expanded:
                 self._full = canvasui.TextBlock(text, ("Segoe UI", 10))
@@ -744,7 +741,6 @@ class SettingsWindow:
         on_capture_start: Optional[Callable[[], None]] = None,
         on_capture_end: Optional[Callable[[], None]] = None,
         history_getter: Optional[Callable[[], List[dict]]] = None,
-        on_repaste: Optional[Callable[[str], None]] = None,
         on_retry: Optional[Callable[[bytes], None]] = None,
         config_getter: Optional[Callable[[], dict]] = None,
     ):
@@ -754,7 +750,6 @@ class SettingsWindow:
         self._on_capture_start = on_capture_start
         self._on_capture_end = on_capture_end
         self._history_getter = history_getter
-        self._on_repaste = on_repaste
         self._on_retry = on_retry
         self._config_getter = config_getter
         self._win = None
@@ -1632,13 +1627,6 @@ class SettingsWindow:
         except Exception:
             pass
         self._flash_saved()
-
-    def _repaste(self, text):
-        if self._on_repaste is None:
-            return
-        if self._win is not None and self._win.winfo_exists():
-            self._win.iconify()
-        self._root.after(600, lambda: self._on_repaste(text))
 
     def _retry(self, wav):
         if self._on_retry is None:
