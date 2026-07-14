@@ -5,6 +5,7 @@ limited to Canvas coordinate and configuration changes; it never calls Pillow.
 """
 
 import ctypes
+import logging
 import math
 import time
 import tkinter as tk
@@ -14,6 +15,9 @@ from ctypes import wintypes
 from PIL import Image, ImageDraw, ImageTk
 
 import theme
+
+
+_log = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -1313,7 +1317,7 @@ class EntryField(_Control):
 
     def destroy(self):
         if self.scene and self.scene.editing is self:
-            self.scene.end_edit(commit=True)
+            self.scene.end_edit(commit=True, reason="field-destroyed")
         if self._surface:
             self._surface.destroy()
         super().destroy()
@@ -1404,7 +1408,7 @@ class DropdownButton(_Control):
         if (self._popup is not None or not self._geometry
                 or time.monotonic() - self._menu_closed_at < 0.35):
             return
-        self.scene.end_edit(commit=True)
+        self.scene.end_edit(commit=True, reason="popup-open")
         popup = tk.Toplevel(self.canvas)
         self._popup = popup
         self.scene.popup = self
@@ -1867,7 +1871,7 @@ class Scene:
                 if command[1] not in items]
 
     def set_root(self, root):
-        self.end_edit(commit=True)
+        self.end_edit(commit=True, reason="section-switch")
         self.close_popup()
         if self.root is not None:
             self.root.destroy()
@@ -1985,7 +1989,7 @@ class Scene:
         self._update_scrollbar(canvas_width=width)
 
     def _on_wheel(self, event):
-        self.end_edit(commit=True)
+        self.end_edit(commit=True, reason="wheel")
         self.close_popup()
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
@@ -1999,7 +2003,7 @@ class Scene:
         return "break"
 
     def scroll_to(self, fraction):
-        self.end_edit(commit=True)
+        self.end_edit(commit=True, reason="scroll")
         self.close_popup()
         self.canvas.yview_moveto(max(0.0, min(1.0, float(fraction))))
 
@@ -2015,7 +2019,7 @@ class Scene:
             current = self.canvas.find_withtag("current")
             if not (current and self.editing.tag
                     in self.canvas.gettags(current[0])):
-                self.end_edit(commit=True)
+                self.end_edit(commit=True, reason="click-away")
         if self.popup is not None:
             self.close_popup()
 
@@ -2118,39 +2122,84 @@ class Scene:
             if self.popup:
                 self.close_popup()
             elif self.editing:
-                self.end_edit(commit=False)
+                self.end_edit(commit=False, reason="esc")
             return "break"
         if self.focused and self.focused.key(event.keysym):
             return "break"
         return None
 
+    def _focus_now(self):
+        # focus_get can raise for widget names tkinter can't map (foreign Tk
+        # widgets, popup internals) — treat any of those as "not our editor".
+        try:
+            return self.canvas.focus_get()
+        except (KeyError, tk.TclError):
+            return None
+
+    def _edit_broken(self, field, widget):
+        """Why the supposedly-active edit has no working caret, or None."""
+        if widget is None or not widget.winfo_exists():
+            return "editor widget dead"
+        if self._editor_item is None:
+            return "no overlay item"
+        coords = self.canvas.coords(self._editor_item)
+        if not coords:
+            return "overlay item deleted"
+        if not widget.winfo_ismapped():
+            return "overlay unmapped"
+        x, y, w, h = field._geometry
+        if abs(coords[0] - x) > w or abs(coords[1] - y) > h:
+            return "overlay mispositioned"
+        return None
+
     def begin_edit(self, field):
         if self.editing is field:
-            # Re-click on the field already being edited: just restore focus to
-            # the shared editor (a press on the field's exposed corner strip
-            # moves focus to the canvas — grab it back so no caret is lost).
+            # Re-click on the field already being edited: restore focus to the
+            # shared editor — but VERIFY the overlay is alive and focus really
+            # lands. A click must never be a no-op on a field that looks
+            # focused but has no caret (field report 2026-07: stuck edit state
+            # with a broken overlay was unrecoverable by clicking).
             widget = self._text if field.multiline else self._entry
-            widget.focus_set()
-            return
-        self.end_edit(commit=True)
+            problem = self._edit_broken(field, widget)
+            if problem is None:
+                widget.focus_set()
+                if self._focus_now() is widget:
+                    _log.debug("begin_edit: refocused live editor field=%s",
+                               field.tag)
+                    return
+                problem = "focus not acquired"
+            _log.debug("begin_edit: self-heal field=%s (%s)", field.tag,
+                       problem)
+            self.end_edit(commit=True, reason="self-heal")
+        self.end_edit(commit=True, reason="switch")
         self.close_popup()
         self.editing = field
         self.focus_widget(field)
-        widget = self._shared_editor(field.multiline)
-        value = str(field.getter() or "")
-        if field.multiline:
-            widget.delete("1.0", "end")
-            widget.insert("1.0", value)
-            widget.tag_add("sel", "1.0", "end-1c")
-        else:
-            widget.configure(show="•" if field.secret else "")
-            widget.delete(0, "end")
-            widget.insert(0, value)
-            widget.select_range(0, "end")
-        self._editor_item = self.canvas.create_window(
-            0, 0, anchor="nw", window=widget, tags=("edit_overlay",))
-        self._position_editor()
+        try:
+            widget = self._shared_editor(field.multiline)
+            value = str(field.getter() or "")
+            if field.multiline:
+                widget.delete("1.0", "end")
+                widget.insert("1.0", value)
+                widget.tag_add("sel", "1.0", "end-1c")
+            else:
+                widget.configure(show="•" if field.secret else "")
+                widget.delete(0, "end")
+                widget.insert(0, value)
+                widget.select_range(0, "end")
+            self._editor_item = self.canvas.create_window(
+                0, 0, anchor="nw", window=widget, tags=("edit_overlay",))
+            self._position_editor()
+        except Exception:
+            # Never leave 'editing' pointing at a field with no overlay —
+            # that state is a caretless trap (clicks would early-return).
+            _log.exception("begin_edit failed field=%s; resetting edit state",
+                           field.tag)
+            self.end_edit(commit=False, reason="begin-failed")
+            return
         widget.focus_set()
+        _log.debug("begin_edit: field=%s len=%d focus_acquired=%s",
+                   field.tag, len(value), self._focus_now() is widget)
 
     def _shared_editor(self, multiline):
         if multiline:
@@ -2181,13 +2230,13 @@ class Scene:
 
     def _finish_editor(self, commit):
         field = self.editing
-        self.end_edit(commit=commit)
+        self.end_edit(commit=commit, reason="enter" if commit else "esc")
         if commit and field is not None and field.on_enter is not None:
             field.on_enter()
         return "break"
 
     def _finish_editor_tab(self, reverse):
-        self.end_edit(commit=True)
+        self.end_edit(commit=True, reason="tab")
         self._tab(reverse=reverse)
         return "break"
 
@@ -2200,13 +2249,14 @@ class Scene:
         if self.editing is None:
             return
         editor = self._text if self.editing.multiline else self._entry
-        try:
-            focused = self.canvas.focus_get()
-        except KeyError:
-            focused = None
+        focused = self._focus_now()
         if focused is editor:
+            _log.debug("focusout: skip commit, editor holds focus field=%s",
+                       self.editing.tag)
             return
-        self.end_edit(commit=True)
+        _log.debug("focusout: focus now %s",
+                   focused.winfo_class() if focused is not None else "None")
+        self.end_edit(commit=True, reason="focus-lost")
 
     def _position_editor(self):
         if not self.editing or self._editor_item is None:
@@ -2224,19 +2274,30 @@ class Scene:
             self._editor_item, width=max(1, w - h_inset * 2),
             height=max(1, h - v_inset * 2))
 
-    def end_edit(self, commit=True):
+    def end_edit(self, commit=True, reason="commit"):
         field = self.editing
         if field is None:
             return
         widget = self._text if field.multiline else self._entry
         self.editing = None
-        if commit:
-            value = widget.get("1.0", "end-1c") if field.multiline else widget.get()
-            field.setter(value)
+        # Tear the overlay down before committing so a raising setter can
+        # never leave a stale overlay item behind.
         if self._editor_item is not None:
             self.forget_items((self._editor_item,))
             self.canvas.delete(self._editor_item)
             self._editor_item = None
+        value_len = -1
+        if commit and widget is not None:
+            try:
+                value = (widget.get("1.0", "end-1c") if field.multiline
+                         else widget.get())
+            except tk.TclError:
+                value = None  # editor destroyed under us; nothing to save
+            if value is not None:
+                value_len = len(value)
+                field.setter(value)
+        _log.debug("end_edit: field=%s reason=%s commit=%s len=%d",
+                   field.tag, reason, commit, value_len)
         field.refresh()
         self.canvas.focus_set()
 
@@ -2246,7 +2307,7 @@ class Scene:
             popup.close_popup()
 
     def destroy(self):
-        self.end_edit(commit=True)
+        self.end_edit(commit=True, reason="scene-destroy")
         self.close_popup()
         if self.root:
             self.root.destroy()
