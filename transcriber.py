@@ -9,6 +9,8 @@ PROVIDERS; an empty model means the provider's default.
 
 import base64
 import json
+import logging
+import re
 
 import requests
 
@@ -33,21 +35,28 @@ def _vocab_prompt(vocabulary: list) -> "str | None":
     return ("Vocabulary: " + ", ".join(terms[:100])) if terms else None
 
 
-def _looks_like_prompt_echo(text: str, vocabulary: list) -> bool:
-    """True when the model returned our vocabulary prompt instead of speech.
+def _strip_prompt_echo(text: str, vocabulary: list) -> "str | None":
+    """Remove an echoed vocabulary prompt from a transcript.
 
-    Whisper-family models handed near-silence tend to continue the biasing
-    prompt ("Context: Vocabulary: term1, term2, ..."). Dictating a single
-    vocabulary term must NOT match — the scaffold word plus at least two
-    configured terms are required.
+    STT models handed silence sometimes leak the biasing prompt verbatim,
+    wrapped in OpenAI's server-side template ("context: ###\\nVocabulary:
+    term1, term2, ...\\n###"). Detection requires the EXACT comma-joined
+    term sequence — dictating ABOUT the vocabulary feature ("add Claude
+    and Codex to the vocabulary") must never match. Returns the transcript
+    with the echo and its scaffolding removed (may be empty), or None when
+    no echo is present.
     """
-    lowered = " ".join(text.lower().split())
-    if "vocabulary" not in lowered:
-        return False
-    terms = [str(t).strip().lower() for t in (vocabulary or [])
-             if str(t).strip()]
-    hits = sum(1 for t in terms if t in lowered)
-    return hits >= 2
+    prompt = _vocab_prompt(vocabulary)
+    if not prompt or not text:
+        return None
+    pattern = re.sub(r"\\\s", r"\\s+", re.escape(prompt))
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match is None:
+        return None
+    cleaned = text[:match.start()] + text[match.end():]
+    cleaned = re.sub(r"context:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("#", " ")
+    return " ".join(cleaned.split())
 
 
 def _check_response(resp, provider: str) -> None:
@@ -189,11 +198,17 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
             "Settings → Providers and enter one.")
     fn = PROVIDERS.get(provider, transcribe_xai)
     text = fn(wav_bytes, api_key, language, vocabulary, model)
-    if text and _looks_like_prompt_echo(text, vocabulary):
-        # Loud on purpose: an echo means the STT model returned our
-        # vocabulary hint instead of speech — a prompt/model-handling
-        # problem worth investigating, not a silent no-op. Raising also
-        # keeps the WAV in history (retry against another model).
+    stripped = _strip_prompt_echo(text, vocabulary)
+    if stripped is not None:
+        if stripped:
+            # Real speech survived alongside the echo: keep it, note it.
+            logging.warning("STT leaked the vocabulary prompt into a "
+                            "transcript; echo stripped (%d chars kept)",
+                            len(stripped))
+            return stripped
+        # Loud on purpose: a pure echo means the model returned our
+        # vocabulary hint instead of speech — worth investigating, not a
+        # silent no-op. Raising keeps the WAV in history for retries.
         raise TranscriptionError(
             "STT echoed the vocabulary hint instead of transcribing — "
             "likely silence + a model without no-speech rejection.")

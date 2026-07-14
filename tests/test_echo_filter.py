@@ -1,9 +1,10 @@
-"""Vocabulary-prompt-echo filter (offline, no keys).
+"""Vocabulary-prompt-echo stripping (offline, no keys).
 
-Whisper-family STT handed near-silence tends to continue the biasing
-prompt. The server-side fix is choosing default models with no-speech
-rejection (see DEFAULT_STT_MODELS); this filter is the client-side
-backstop for the prompt-echo case specifically.
+STT models handed silence can leak the biasing prompt verbatim, wrapped in
+OpenAI's server-side template. Detection requires the EXACT comma-joined
+term sequence — keyword matching false-positived on the owner dictating
+ABOUT the vocabulary feature. Echo shapes here were captured live from the
+OpenAI and OpenRouter APIs on 2026-07-13.
 """
 import os
 import sys
@@ -11,46 +12,51 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import transcriber
-from transcriber import (TranscriptionError, _looks_like_prompt_echo,
-                         transcribe)
+from transcriber import (TranscriptionError, _strip_prompt_echo, transcribe)
 
 VOCAB = ["Claude", "Claude.md", "Codex", "subagent", "sol", "5.6-sol"]
 
-# the exact failure the owner reported (OpenAI, silent recording)
-assert _looks_like_prompt_echo(
+# the exact echo both providers returned for pure silence (live capture)
+LIVE_ECHO = ("context: ###\nVocabulary: Claude, Claude.md, Codex, subagent, "
+             "sol, 5.6-sol\n###")
+assert _strip_prompt_echo(LIVE_ECHO, VOCAB) == ""
+
+# the owner's original OpenAI report (echo with punctuation drift)
+assert _strip_prompt_echo(
     "Context: Vocabulary: Claude, Claude.md, Codex, subagent, sol, 5.6-sol.",
-    VOCAB)
-assert _looks_like_prompt_echo("Vocabulary: Claude, Codex", VOCAB)
+    VOCAB) == "."
 
-# dictating a single vocabulary term must pass through
-assert not _looks_like_prompt_echo("Claude", VOCAB)
-assert not _looks_like_prompt_echo("Open Claude.md in Codex please", VOCAB)
-# the word vocabulary alone, without configured terms, is legit dictation
-assert not _looks_like_prompt_echo("expand your vocabulary daily", VOCAB)
-assert not _looks_like_prompt_echo("my vocabulary includes Claude", VOCAB)
-# hallucinated fragments are NOT filtered (indistinguishable from speech;
-# model choice is the defense for those — see DEFAULT_STT_MODELS)
-assert not _looks_like_prompt_echo("Of the", VOCAB)
-assert not _looks_like_prompt_echo(".", VOCAB)
-# no vocabulary configured -> nothing to echo
-assert not _looks_like_prompt_echo("Vocabulary: whatever", [])
+# echo leaked alongside real speech -> speech survives
+assert _strip_prompt_echo(
+    LIVE_ECHO + " Hello world, testing.", VOCAB) == "Hello world, testing."
 
-# an echo surfaces as a LOUD TranscriptionError (red pill + history entry
-# with the WAV), never silently as an empty transcript
-transcriber.PROVIDERS["_echo_test"] = (
-    lambda wav, key, lang, vocab, model: "Vocabulary: Claude, Codex")
+# dictating ABOUT the vocabulary feature is NOT an echo (the live false
+# positive that threw errors on the owner's real dictations)
+assert _strip_prompt_echo(
+    "Add Claude and Codex to the vocabulary list in the dictionary.",
+    VOCAB) is None
+assert _strip_prompt_echo("Claude", VOCAB) is None
+assert _strip_prompt_echo("expand your vocabulary daily", VOCAB) is None
+assert _strip_prompt_echo("Vocabulary: Claude, Codex", VOCAB) is None  # partial
+assert _strip_prompt_echo("Of the", VOCAB) is None
+assert _strip_prompt_echo("", VOCAB) is None
+assert _strip_prompt_echo("Vocabulary: whatever", []) is None
+
+# through transcribe(): pure echo raises loudly, echo+speech returns the
+# speech, normal transcripts pass untouched
+transcriber.PROVIDERS["_t"] = lambda *a: LIVE_ECHO
 try:
     try:
-        transcribe(b"RIFF", "key", "en", VOCAB, "_echo_test")
+        transcribe(b"RIFF", "key", "en", VOCAB, "_t")
     except TranscriptionError as e:
         assert "echoed the vocabulary hint" in str(e)
     else:
-        raise AssertionError("prompt echo did not raise")
-    transcriber.PROVIDERS["_ok_test"] = (
-        lambda wav, key, lang, vocab, model: "normal speech")
-    assert transcribe(b"RIFF", "key", "en", VOCAB, "_ok_test") == "normal speech"
+        raise AssertionError("pure echo did not raise")
+    transcriber.PROVIDERS["_t"] = lambda *a: LIVE_ECHO + " real words here"
+    assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "real words here"
+    transcriber.PROVIDERS["_t"] = lambda *a: "normal speech"
+    assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "normal speech"
 finally:
-    transcriber.PROVIDERS.pop("_echo_test", None)
-    transcriber.PROVIDERS.pop("_ok_test", None)
+    transcriber.PROVIDERS.pop("_t", None)
 
 print("ALL TESTS PASSED")
