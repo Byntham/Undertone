@@ -10,7 +10,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcriber import _looks_like_prompt_echo
+import transcriber
+from transcriber import (TranscriptionError, _looks_like_prompt_echo,
+                         transcribe)
 
 VOCAB = ["Claude", "Claude.md", "Codex", "subagent", "sol", "5.6-sol"]
 
@@ -32,5 +34,23 @@ assert not _looks_like_prompt_echo("Of the", VOCAB)
 assert not _looks_like_prompt_echo(".", VOCAB)
 # no vocabulary configured -> nothing to echo
 assert not _looks_like_prompt_echo("Vocabulary: whatever", [])
+
+# an echo surfaces as a LOUD TranscriptionError (red pill + history entry
+# with the WAV), never silently as an empty transcript
+transcriber.PROVIDERS["_echo_test"] = (
+    lambda wav, key, lang, vocab, model: "Vocabulary: Claude, Codex")
+try:
+    try:
+        transcribe(b"RIFF", "key", "en", VOCAB, "_echo_test")
+    except TranscriptionError as e:
+        assert "echoed the vocabulary hint" in str(e)
+    else:
+        raise AssertionError("prompt echo did not raise")
+    transcriber.PROVIDERS["_ok_test"] = (
+        lambda wav, key, lang, vocab, model: "normal speech")
+    assert transcribe(b"RIFF", "key", "en", VOCAB, "_ok_test") == "normal speech"
+finally:
+    transcriber.PROVIDERS.pop("_echo_test", None)
+    transcriber.PROVIDERS.pop("_ok_test", None)
 
 print("ALL TESTS PASSED")

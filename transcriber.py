@@ -190,5 +190,11 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
     fn = PROVIDERS.get(provider, transcribe_xai)
     text = fn(wav_bytes, api_key, language, vocabulary, model)
     if text and _looks_like_prompt_echo(text, vocabulary):
-        return ""   # main treats empty text as "no speech detected"
+        # Loud on purpose: an echo means the STT model returned our
+        # vocabulary hint instead of speech — a prompt/model-handling
+        # problem worth investigating, not a silent no-op. Raising also
+        # keeps the WAV in history (retry against another model).
+        raise TranscriptionError(
+            "STT echoed the vocabulary hint instead of transcribing — "
+            "likely silence + a model without no-speech rejection.")
     return text
