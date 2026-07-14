@@ -1492,12 +1492,26 @@ class SettingsWindow:
         items = self._hist_snapshot()
         self._hist_fp = self._hist_fingerprint(items)
         rows = items or [None]
+        heading = self._heading("History")
+        hint_block = canvasui.TextBlock(hint, HINT_FONT, theme.MUTED)
+        gap = theme.sc(9)
+
+        def reserve(avail_w):
+            # The hint re-flows with width, so the list must reserve the
+            # measured content above it, or the page grows past the viewport
+            # at narrow widths. The default 150 stays as the floor so wide
+            # windows keep their usual bottom margin.
+            return max(theme.sc(150),
+                       self._scene.padding * 2 + gap * 3 + theme.sc(3)
+                       + heading._measure(avail_w)[1]
+                       + hint_block._measure(avail_w)[1])
+
         self._hist_list = canvasui.ListView(
-            rows, self._history_row, height=None, gap=1)
+            rows, self._history_row, height=None, gap=1, reserve=reserve)
         self._hist_poll_id = self._root.after(2000, self._hist_poll)
         return canvasui.VStack([
-            self._heading("History"),
-            canvasui.TextBlock(hint, HINT_FONT, theme.MUTED),
+            heading,
+            hint_block,
             canvasui.Spacer(3),
             self._hist_list,
         ], gap=9)

@@ -1374,6 +1374,8 @@ class DropdownButton(_Control):
         popup.bind("<Escape>", lambda _e: self.close_popup())
         popup.bind("<FocusOut>", self._popup_focus_out)
         popup.deiconify()
+        popup.lift()
+        popup.attributes("-topmost", True)
         popup.focus_set()
 
     def _popup_focus_out(self, _event):
@@ -1483,7 +1485,10 @@ class ListView(Widget):
         self.row_factory = row_factory or (lambda row, _index: row)
         self.height = theme.sc(height) if height is not None else None
         self.max_height = theme.sc(max_height) if max_height else None
-        self.reserve = theme.sc(reserve)
+        # reserve may be a callable(avail_w) -> already-scaled pixels for
+        # sections whose content above the list re-flows with width.
+        self.reserve = reserve if callable(reserve) else theme.sc(reserve)
+        self._reserve_avail_w = None
         self.gap = theme.sc(gap)
         self.padding = theme.sc(6)
         self._surface = None
@@ -1494,6 +1499,8 @@ class ListView(Widget):
         self._scrollbar = None
         self._scrollbar_geometry = None
         self._drag_offset = 0
+        self._masks = None
+        self._mask_geometry = None
 
     def _attach(self, scene, parent=None):
         super()._attach(scene, parent)
@@ -1512,13 +1519,22 @@ class ListView(Widget):
     def measure(self, avail_w):
         return avail_w, self._resolved_height()
 
+    def _reserve(self):
+        if not callable(self.reserve):
+            return self.reserve
+        width = self._reserve_avail_w
+        if width is None:
+            width = self._geometry[2] if self._geometry else theme.sc(108)
+        return self.reserve(max(1, width))
+
     def _resolved_height(self):
         if self.height is not None:
             return self.height
-        available = max(theme.sc(108), self.scene._viewport_height - self.reserve)
+        available = max(theme.sc(108), self.scene._viewport_height - self._reserve())
         return min(available, self.max_height or available)
 
     def _measure(self, avail_w):
+        self._reserve_avail_w = avail_w
         if (self.height is None and self._measure_result is not None
                 and self._measure_result[1] != self._resolved_height()):
             self._measure_width = None
@@ -1591,17 +1607,67 @@ class ListView(Widget):
         if self.scene:
             self.scene._focusables = [widget for widget in self.scene._focusables
                                       if widget.scene is self.scene]
+        interior_top = inner_y
+        interior_bottom = inner_y + viewport_h
+        top_overflow = bottom_overflow = 0
+        created = False
         for index in sorted(visible):
             row = self._row(index)
             if index not in self._attached:
                 row._attach(self.scene, self)
                 self._attached.add(index)
-            row.layout(
-                inner_x, inner_y + offsets[index] - self._scroll_y, inner_w)
+                created = True
+            row_top = inner_y + offsets[index] - self._scroll_y
+            row.layout(inner_x, row_top, inner_w)
+            top_overflow = max(top_overflow, interior_top - row_top)
+            bottom_overflow = max(
+                bottom_overflow, row_top + heights[index] - interior_bottom)
             tags = row.list_tags() if hasattr(row, "list_tags") else (row.tag,)
             for tag in tags:
                 self.canvas.addtag_withtag(self.tag, tag)
+        self._layout_masks(x, w, interior_top, interior_bottom,
+                           max(0, top_overflow), max(0, bottom_overflow),
+                           created)
         self._layout_scrollbar(x, y, w, height, total, viewport_h)
+
+    def _ensure_masks(self):
+        if self._masks:
+            return
+        tag = self.tag + "_mask"
+        self._masks = (
+            self.canvas.create_rectangle(
+                0, 0, 0, 0, width=0, fill=self.backdrop, tags=(self.tag, tag)),
+            self.canvas.create_rectangle(
+                0, 0, 0, 0, width=0, fill=self.backdrop, tags=(self.tag, tag)),
+        )
+        self._items.extend(self._masks)
+
+    def _layout_masks(self, x, w, interior_top, interior_bottom,
+                      top_overflow, bottom_overflow, rows_created=False):
+        first = self._masks is None
+        self._ensure_masks()
+        top_mask, bottom_mask = self._masks
+        if top_overflow > 0:
+            self.scene._itemconfigure(top_mask, state="normal")
+            self.scene._coords(top_mask, x, interior_top - top_overflow,
+                               x + w, interior_top)
+        else:
+            self.scene._itemconfigure(top_mask, state="hidden")
+        if bottom_overflow > 0:
+            self.scene._itemconfigure(bottom_mask, state="normal")
+            self.scene._coords(bottom_mask, x, interior_bottom,
+                               x + w, interior_bottom + bottom_overflow)
+        else:
+            self.scene._itemconfigure(bottom_mask, state="hidden")
+        # Newly created row items stack on top; re-establish z-order only then.
+        # Masks hide the strips where partially-scrolled rows spill past the
+        # rounded surface: above the rows but below the rounded corner caps
+        # (so corners stay round) and below the scrollbar.
+        if first or rows_created:
+            for mask in self._masks:
+                self.canvas.tag_raise(mask)
+            for cap in self._surface.items[self._surface._rect_count:]:
+                self.canvas.tag_raise(cap)
 
     def _layout_scrollbar(self, x, y, w, height, total, viewport_h):
         self._ensure_scrollbar()
@@ -1725,6 +1791,7 @@ class Scene:
         self._focus_surfaces = {}
         self._shown_focus = None
         self._wheel_widgets = []
+        self._scrollbar_drag_offset = 0
         self.canvas.configure(
             bg=theme.BASE, highlightthickness=0, bd=0,
             yscrollcommand=self._on_yview, takefocus=1)
@@ -1733,6 +1800,7 @@ class Scene:
         self.canvas.bind("<Tab>", self._tab, add="+")
         self.canvas.bind("<Shift-Tab>", self._shift_tab, add="+")
         self.canvas.bind("<Key>", self._key, add="+")
+        self.canvas.bind("<Button-1>", self._on_canvas_click, add="+")
         if root is not None:
             self.set_root(root)
 
@@ -1893,6 +1961,17 @@ class Scene:
             self._scroll_callback(first, last)
         self._update_scrollbar(float(first), float(last))
 
+    def _on_canvas_click(self, event):
+        # A press on bare canvas (not on the embedded editor, which swallows
+        # its own clicks) commits the active edit and closes any popup.
+        if self.editing is not None:
+            current = self.canvas.find_withtag("current")
+            if not (current and self.editing.tag
+                    in self.canvas.gettags(current[0])):
+                self.end_edit(commit=True)
+        if self.popup is not None:
+            self.close_popup()
+
     def _ensure_scrollbar(self):
         if self._scrollbar:
             return
@@ -1901,6 +1980,31 @@ class Scene:
             self.canvas.create_rectangle(0, 0, 0, 0, width=0, fill=theme.SURFACE1, tags=("scrollbar",)),
             self.canvas.create_oval(0, 0, 0, 0, width=0, fill=theme.SURFACE1, tags=("scrollbar",)),
         )
+        self.canvas.tag_bind("scrollbar", "<Button-1>", self._scrollbar_press)
+        self.canvas.tag_bind("scrollbar", "<B1-Motion>", self._scrollbar_drag)
+
+    def _scrollbar_press(self, event):
+        if not self._scrollbar_geometry:
+            return "break"
+        thumb_top_vp = self._scrollbar_geometry[1] - self.canvas.canvasy(0)
+        self._scrollbar_drag_offset = event.y - thumb_top_vp
+        return "break"
+
+    def _scrollbar_drag(self, event):
+        if not self._scrollbar_geometry:
+            return "break"
+        first, last = self.canvas.yview()
+        span = float(last) - float(first)
+        if span <= 0 or span >= 1:
+            return "break"
+        inset = theme.sc(5)
+        track = max(1, self._viewport_height - inset * 2)
+        thumb_h = self._scrollbar_geometry[3]
+        travel = max(1, track - thumb_h)
+        target_top_vp = event.y - self._scrollbar_drag_offset
+        fraction = ((target_top_vp - inset) / travel) * (1 - span)
+        self.canvas.yview_moveto(max(0.0, min(1.0, fraction)))
+        return "break"
 
     def _update_scrollbar(self, first=None, last=None, canvas_width=None):
         self._ensure_scrollbar()
