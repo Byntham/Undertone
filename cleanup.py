@@ -123,8 +123,21 @@ def _drop_echoed_context(text: str, ctx: "str | None") -> "str | None":
         return text
     tail = ctx.rstrip()
     low = text.lower()
+
+    def _word(c):
+        return c.isalnum() or c == "_"
+
     for k in range(len(tail), 3, -1):
-        if low.startswith(tail[-k:].lower()):
+        if not low.startswith(tail[-k:].lower()):
+            continue
+        # Only a real echo: the overlap must be whole words on both sides —
+        # start at a word boundary within ctx (or ctx's very start) and end
+        # at one in the reply. Otherwise a suffix that merely happens to be a
+        # substring ("...notable" tail matching a reply-starting "table") is
+        # cut, deleting legitimately dictated text.
+        starts_clean = k == len(tail) or not _word(tail[len(tail) - k - 1])
+        ends_clean = k == len(text) or not _word(text[k])
+        if starts_clean and ends_clean:
             text = text[k:].lstrip()
             break
     return text or None

@@ -1,5 +1,6 @@
 sounddevice
 keyboard
+mouse
 requests
 pyperclip
 pystray

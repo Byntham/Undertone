@@ -38,6 +38,21 @@ assert cleanup._drop_echoed_context("and then some", "I looked and") == \
     "and then some"
 assert cleanup._drop_echoed_context("done", "unrelated context") == "done"
 
+# Word-boundary guard: a ctx suffix that's only a substring of the last
+# word ("...notable") must not be cut from a reply that legitimately starts
+# with that string as its own word ("table stakes..."). Regression: the
+# unguarded loop matched "table" and deleted the dictated word.
+assert cleanup._drop_echoed_context(
+    "table stakes still matter", "the product is notable") == \
+    "table stakes still matter"
+# But a genuine whole-word echo of the ctx tail still strips.
+assert cleanup._drop_echoed_context(
+    "review this is the fix", "please review") == "this is the fix"
+# Reply word extends past the ctx tail ("...review" vs "reviewing"): the
+# overlap doesn't end on a word boundary, so it's left alone.
+assert cleanup._drop_echoed_context(
+    "reviewing the change", "please review") == "reviewing the change"
+
 # Long echo: the model may repeat a whole line of context (seen in the
 # wild in Notepad); the guard must strip echoes of ANY length, not just
 # short tails.

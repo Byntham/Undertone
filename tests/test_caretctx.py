@@ -43,6 +43,17 @@ $win.Add_ContentRendered({ $win.Activate() | Out-Null; $tb.Focus() | Out-Null })
 [void]$win.ShowDialog()
 """
 
+PWBOX_SCRIPT = r"""
+Add-Type -AssemblyName PresentationFramework
+$win = New-Object System.Windows.Window
+$win.Title = "CaretCtxPassword"
+$win.Width = 400; $win.Height = 200; $win.Topmost = $true
+$pb = New-Object System.Windows.Controls.PasswordBox
+$win.Content = $pb
+$win.Add_ContentRendered({ $win.Activate() | Out-Null; $pb.Focus() | Out-Null })
+[void]$win.ShowDialog()
+"""
+
 
 def force_foreground(title: str) -> int:
     """Find a top-level window by title and drag it to the foreground."""
@@ -116,6 +127,36 @@ def test_wpf_caret(script_path):
         time.sleep(0.6)
 
 
+def test_wpf_password(script_path):
+    """A focused UIA password field must never leak context (IsPassword)."""
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+         "-ExecutionPolicy", "Bypass", "-File", script_path]
+    )
+    time.sleep(3.0)
+    try:
+        hwnd = force_foreground("CaretCtxPassword")
+        assert hwnd, "WPF password window never appeared"
+        time.sleep(0.8)
+        keyboard.send("esc")
+        keyboard.write(TYPED, delay=0.03)
+        time.sleep(0.5)
+
+        got = caretctx.text_before_caret(50)
+        print("text_before_caret over WPF PasswordBox:", repr(got))
+        assert got is None, f"password field leaked context: {got!r}"
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "powershell.exe"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.6)
+
+
 def test_none_cases():
     # No text pattern under focus (desktop) -> None, not an exception.
     keyboard.send("windows+d")
@@ -142,15 +183,22 @@ def main():
     with open(script_path, "w", encoding="utf-8") as fh:
         fh.write(WPF_SCRIPT)
 
+    fd2, pw_script_path = tempfile.mkstemp(suffix=".ps1", text=True)
+    os.close(fd2)
+    with open(pw_script_path, "w", encoding="utf-8") as fh:
+        fh.write(PWBOX_SCRIPT)
+
     try:
         test_notepad_foreground_and_report()
         test_wpf_caret(script_path)
+        test_wpf_password(pw_script_path)
         test_none_cases()
     finally:
-        try:
-            os.remove(script_path)
-        except OSError:
-            pass
+        for p in (script_path, pw_script_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     print("ALL TESTS PASSED")
 

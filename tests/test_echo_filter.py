@@ -21,10 +21,12 @@ LIVE_ECHO = ("context: ###\nVocabulary: Claude, Claude.md, Codex, subagent, "
              "sol, 5.6-sol\n###")
 assert _strip_prompt_echo(LIVE_ECHO, VOCAB) == ""
 
-# the owner's original OpenAI report (echo with punctuation drift)
+# the owner's original OpenAI report (echo with punctuation drift): the
+# leftover "." is punctuation-only residue, so it's a pure echo (""), not
+# a stray period to paste.
 assert _strip_prompt_echo(
     "Context: Vocabulary: Claude, Claude.md, Codex, subagent, sol, 5.6-sol.",
-    VOCAB) == "."
+    VOCAB) == ""
 
 # echo leaked alongside real speech -> speech survives
 assert _strip_prompt_echo(
@@ -54,6 +56,16 @@ try:
         raise AssertionError("pure echo did not raise")
     transcriber.PROVIDERS["_t"] = lambda *a: LIVE_ECHO + " real words here"
     assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "real words here"
+    # punctuation-only residue is a pure echo -> raises, doesn't paste "."
+    transcriber.PROVIDERS["_t"] = lambda *a: (
+        "Context: Vocabulary: Claude, Claude.md, Codex, subagent, "
+        "sol, 5.6-sol.")
+    try:
+        transcribe(b"RIFF", "key", "en", VOCAB, "_t")
+    except TranscriptionError as e:
+        assert "echoed the vocabulary hint" in str(e)
+    else:
+        raise AssertionError("punctuation-residue echo did not raise")
     transcriber.PROVIDERS["_t"] = lambda *a: "normal speech"
     assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "normal speech"
 finally:

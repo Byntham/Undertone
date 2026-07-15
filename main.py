@@ -14,6 +14,7 @@ import tkinter as tk
 from collections import deque
 
 import keyboard
+import mouse
 import pyperclip
 
 import theme
@@ -160,6 +161,13 @@ class App:
         except Exception:
             self._esc_scancodes = frozenset()
 
+        # Clicks reposition the caret without a keystroke; a small mouse hook
+        # keeps insertion memory honest. Never fatal if it can't install.
+        try:
+            mouse.on_button(self._on_mouse_down, types=("down",))
+        except Exception:
+            logging.exception("Mouse hook unavailable")
+
         caretctx.warm()
 
     # ---- thread marshaling -------------------------------------------------
@@ -246,6 +254,11 @@ class App:
         if scan_code not in self._extra_hotkey_scancodes:
             self._typed_since_paste = True
 
+    def _on_mouse_down(self):
+        """Any click has likely moved the caret (the keyboard hook can't see
+        that), so insertion memory is stale."""
+        self._typed_since_paste = True
+
     # ---- transcription pipeline (single worker thread) -----------------------
 
     def _pipeline_loop(self):
@@ -301,6 +314,11 @@ class App:
         refocused = self._return_to_target(target)
         raw = textproc.apply_corrections(text, self.cfg.get("corrections", {}))
         final = self._prepare_text(text)
+        # The cleanup HTTP round-trip inside _prepare_text can take seconds;
+        # re-check the target so the paste can't land in a window the user
+        # switched to meanwhile.
+        if refocused:
+            refocused = self._return_to_target(target)
         if raw == final:
             raw = None   # cleanup/format changed nothing worth showing
         if not refocused:
@@ -326,7 +344,7 @@ class App:
     def _clipboard_fallback(self, final: str, raw=None):
         """Never lose dictated text: clipboard + history instead of a paste."""
         pyperclip.copy(final)
-        self._register_paste(final, raw)
+        self._register_paste(final, raw, pasted=False)
         combo = self.cfg.get("repaste_hotkey", "")
         msg = (f"Couldn't paste — press {pretty_combo(combo)} where you want it"
                if combo else "Couldn't paste — the text is on your clipboard")
@@ -375,11 +393,12 @@ class App:
                 cprov,
             )
             if cleaned is not None:
-                # The model handled the transcript body; rules handle the seam.
-                final = textproc.seam(cleaned, ctx) if smart else cleaned
+                # The model handled the transcript body; rules re-apply the
+                # exact dictionary and decide the seam.
+                final = textproc.finalize(cleaned, ctx, corrections,
+                                          smart=smart, model_cased=True)
         if final is None:
-            final = textproc.format_transcript(text, ctx, corrections,
-                                               smart=smart)
+            final = textproc.finalize(text, ctx, corrections, smart=smart)
         if smart and exe in textproc.CHAT_APPS:
             final = textproc.strip_chat_period(final)
         return final
@@ -397,14 +416,18 @@ class App:
                 ctx = textproc.tail_context(lp[1], 300)
         return ctx
 
-    def _register_paste(self, text: str, raw=None):
-        """Record a successful dictation. raw is the pre-cleanup transcript
-        (None when it matches the final text)."""
+    def _register_paste(self, text: str, raw=None, pasted=True):
+        """Record a successful dictation. raw is the corrected transcript
+        before cleanup/formatting (None when it matches the final text).
+        Only a real paste updates insertion memory — clipboard-fallback text
+        is not in the window, so remembering it would format the next
+        dictation against phantom context."""
         with self._history_lock:
             self._history.append(
                 {"ts": time.time(), "text": text, "raw": raw, "ok": True})
-        self._last_paste = (_foreground_hwnd(), text, time.monotonic())
-        self._typed_since_paste = False
+        if pasted:
+            self._last_paste = (_foreground_hwnd(), text, time.monotonic())
+            self._typed_since_paste = False
 
     def _register_failure(self, error: str, wav: bytes):
         """Record a failed dictation, keeping its audio for a retry.

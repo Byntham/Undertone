@@ -70,6 +70,15 @@ def _query_before_caret(UIA, automation, n: int):
     if not element:
         return None
 
+    # Never read a masked field: this context is sent to a cleanup API, so a
+    # password must not leak. A property failure falls through to the normal
+    # path rather than aborting the read.
+    try:
+        if element.CurrentIsPassword:
+            return None
+    except Exception:
+        pass
+
     caret = None
 
     # Preferred: TextPattern2 -> GetCaretRange (a degenerate range at caret).
@@ -236,7 +245,10 @@ class _GUITHREADINFO(ctypes.Structure):
     ]
 
 
-_SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
+# Private user32 instance: setting a prototype on ctypes.windll.user32 would
+# poison the process-wide function cache other modules share (AGENTS.md rule).
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_SendMessageTimeoutW = _user32.SendMessageTimeoutW
 _SendMessageTimeoutW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
     wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),

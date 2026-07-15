@@ -25,9 +25,22 @@ def test_spacing():
     assert fmt("keep this", None) == "keep this"       # None ctx -> unchanged
     assert fmt("line", "para\n") == "Line"             # after newline -> no space
     assert fmt(", yes", "hello") == ", yes"            # leading closing punct
-    assert fmt("4 apples", "I have 3") == "4 apples"   # digit + digit -> none
-    # URL tail: no space and no capitalization change (mid-token).
+    # A digit after a digit is a NEW number, not a continuation.
+    assert fmt("4 apples", "I have 3") == " 4 apples"
+
+
+def test_url_detection():
+    # Real URLs/emails/paths: no space and no capitalization (mid-token).
     assert fmt("mple.com", "check https://exa") == "mple.com"
+    assert fmt("cache", "see src/main") == "cache"
+    assert fmt("cache", "in C:\\Users\\g") == "cache"
+    assert fmt("com", "mail me@site.") == "com"
+    assert fmt("/api", "hit localhost:8080") == "/api"
+    # Times, ratios, dates, and trailing colons are prose, not URLs.
+    assert fmt("in the afternoon", "the time is 12:30") == " in the afternoon"
+    assert fmt("overall", "the ratio is 3:1") == " overall"
+    assert fmt("happened", "on 9/11") == " happened"
+    assert fmt("next step", "Agenda:") == " next step"
 
 
 def test_caps():
@@ -38,8 +51,34 @@ def test_caps():
     # Abbreviations do not start a new sentence.
     assert fmt("things", "for e.g.") == " things"
     assert fmt("smith", "spoke to Dr.") == " smith"
+    # Dotted abbreviations do not either.
+    assert fmt("economy is strong", "in the U.S.") == " economy is strong"
+    assert fmt("tomorrow", "at 9 a.m.") == " tomorrow"
     # A real full stop does start a sentence.
     assert fmt("hello", "Done.") == " Hello"
+    # A name initial is an abbreviation; a lone letter/number ending is not.
+    assert fmt("kennedy spoke", "ask John F.") == " kennedy spoke"
+    assert fmt("it was great", "I got an A.") == " It was great"
+    assert fmt("then we left", "there are 3.") == " Then we left"
+    # An ellipsis trails off: the thought continues, no capital.
+    assert fmt("and then", "please wait...") == " and then"
+    # Unicode first letters capitalize too.
+    assert fmt("élan matters", "") == "Élan matters"
+    # Deliberately-cased words are left alone at sentence starts.
+    assert fmt("iPhone works", "") == "iPhone works"
+
+
+def test_quotes():
+    # An opening quote after a word needs a space before it.
+    assert fmt('"hello" she said', "he said") == ' "hello" she said'
+    # ...and the first word inside it still gets the sentence capital.
+    assert fmt('"hello" she said', "Done.") == ' "Hello" she said'
+    # A possessive apostrophe at the end of ctx is closing punctuation.
+    assert fmt("car arrived", "James'") == " car arrived"
+    # A quote opened in ctx hugs (and is not a sentence start).
+    assert fmt("hello", 'he said "') == "hello"
+    # A closed quote in ctx still shows the terminator through it.
+    assert fmt("next", 'he said "stop."') == " Next"
 
 
 def test_corrections():
@@ -51,6 +90,14 @@ def test_corrections():
     assert textproc.apply_corrections("thunderstorm", {"under": "over"}) == "thunderstorm"
     # Case-insensitive multi-word phrase.
     assert textproc.apply_corrections("Under Tone", corr) == "Undertone"
+    # Symbol-bearing keys match despite \b having no anchor there.
+    assert textproc.apply_corrections("i like c++", {"c++": "C++"}) == "i like C++"
+    # One pass: a replacement is never re-matched by another entry.
+    assert textproc.apply_corrections(
+        "under tone", {"under tone": "Undertone", "undertone": "Product"}
+    ) == "Undertone"
+    # Authored casing is authoritative; a Capitalized match must not mangle it.
+    assert textproc.apply_corrections("Iphone", {"iphone": "iPhone"}) == "iPhone"
 
 
 def test_strip_chat_period():
@@ -61,7 +108,10 @@ def test_strip_chat_period():
     assert textproc.strip_chat_period("I need milk, eggs, etc.") == \
         "I need milk, eggs, etc."
     assert textproc.strip_chat_period("Ask Dr.") == "Ask Dr."
-    assert textproc.strip_chat_period("Pi is 3.") == "Pi is 3."
+    # A sentence ending in a number is a normal sentence.
+    assert textproc.strip_chat_period("See you at 3.") == "See you at 3"
+    # An interior decimal is not a sentence boundary.
+    assert textproc.strip_chat_period("It is 3.5 now.") == "It is 3.5 now"
 
 
 def test_seam():
@@ -72,16 +122,34 @@ def test_seam():
     assert textproc.seam("  padded", "word") == " padded"   # model whitespace
     assert textproc.seam("anything", None) == "anything"
     assert textproc.seam("Kept As Is", "I saw") == " Kept As Is"
+    # The seam capitalizes through a leading quote too.
+    assert textproc.seam('"hello"', "Done.") == ' "Hello"'
+
+
+def test_finalize():
+    # The dictionary stays authoritative after AI cleanup: if the model
+    # reverts a term, finalize re-corrects it.
+    corr = {"under tone": "Undertone"}
+    assert textproc.finalize("the under tone app", "Done.", corr,
+                             model_cased=True) == " The Undertone app"
+    # model_cased never lowercases the model's body casing.
+    assert textproc.finalize("Kept As Is", "I saw", {},
+                             model_cased=True) == " Kept As Is"
 
 
 def main():
     test_spacing()
+    test_url_detection()
     test_caps()
+    test_quotes()
     test_corrections()
     test_strip_chat_period()
     test_seam()
+    test_finalize()
     print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":
     main()
+
+

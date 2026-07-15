@@ -6,16 +6,22 @@ adjust the first word's capitalization, so dictation reads as if it were typed
 in place. It is deliberately conservative: when the context is unknown (None)
 nothing risky is done, and mid-sentence casing is only lowered for a closed set
 of English function words.
+
+Both pipeline branches (AI cleanup and the deterministic fallback) funnel
+through finalize(), so the dictionary and the boundary rules behave the same
+regardless of whether the cleanup call succeeded.
 """
 
 import re
 
 # --- Character classes ------------------------------------------------------
 
-# After one of these at the end of ctx, new text hugs the delimiter.
+# After one of these at the end of ctx, new text hugs the delimiter. Straight
+# quotes are ambiguous and get direction checks (_quote_is_closing/_opening).
 _OPENING_DELIMS = set("([{\"'“‘")  # ( [ { " ' “ ‘
 # When text starts with one of these it hugs the preceding word.
-_CLOSING_PUNCT = set(",.!?;:)]}…'\"")  # , . ! ? ; : ) ] } … ' "
+_CLOSING_PUNCT = set(",.!?;:)]}…'\"”’")  # , . ! ? ; : ) ] } … ' " ” ’
+_STRAIGHT_QUOTES = "\"'"
 
 # Abbreviations whose trailing period does not end a sentence.
 _ABBREVIATIONS = {
@@ -44,55 +50,87 @@ CHAT_APPS: frozenset = frozenset({
     "teams.exe", "signal.exe", "messenger.exe",
 })
 
-# A trailing run that contains a : / or @ (URL, email, or path fragment).
-_URL_TAIL = re.compile(r"[\w.:/@#~-]*[:/@][\w.:/@#~-]*$")
 # The word (letters/dots) ending at a trailing period, for abbreviation checks.
 _TRAILING_WORD = re.compile(r"([A-Za-z][A-Za-z.]*)\.$")
+# First word of the new text, seen through any leading punctuation. The letter
+# class is unicode-aware so accented first words still get capitalized.
+_FIRST_WORD = re.compile(r"[^\w]*([^\W\d_][\w']*)")
 
 
 def apply_corrections(text: str, corrections: dict) -> str:
     """Replace each `wrong` key with its `right` value at word boundaries.
 
-    Matching is case-insensitive; keys may be multi-word phrases. The casing of
-    the matched text is carried onto the replacement: an ALL-CAPS match yields
-    an upper-cased replacement, a Capitalized match a capitalized one, and any
-    other match the replacement exactly as authored.
+    All keys are matched in ONE pass (longest key first), so one entry's
+    replacement can never be re-matched by another entry. Matching is
+    case-insensitive; keys may be multi-word phrases or carry symbols (c++).
+    An ALL-CAPS match upper-cases the replacement; a Capitalized match
+    capitalizes it only when the replacement was authored in lowercase —
+    deliberate casing like "iPhone" is authoritative.
     """
-    for wrong, right in corrections.items():
-        if not wrong:
-            continue
-        pattern = re.compile(r"\b" + re.escape(wrong) + r"\b", re.IGNORECASE)
-        text = pattern.sub(lambda m, r=right: _match_case(m.group(0), r), text)
-    return text
+    entries = [(w, r) for w, r in corrections.items() if w]
+    if not entries:
+        return text
+    entries.sort(key=lambda e: len(e[0]), reverse=True)
+    lookup = {w.lower(): r for w, r in entries}
+    parts = []
+    for wrong, _ in entries:
+        # \b breaks down when the key starts/ends with a symbol (.net, c++);
+        # guard only the ends that are word characters.
+        head = r"(?<!\w)" if wrong[0].isalnum() or wrong[0] == "_" else ""
+        tail = r"(?!\w)" if wrong[-1].isalnum() or wrong[-1] == "_" else ""
+        parts.append(head + re.escape(wrong) + tail)
+    pattern = re.compile("|".join(parts), re.IGNORECASE)
+    return pattern.sub(
+        lambda m: _match_case(m.group(0), lookup[m.group(0).lower()]), text)
 
 
 def _match_case(matched: str, right: str) -> str:
-    if matched.isupper():
+    if matched.isupper() and len(matched) > 1:
         return right.upper()
-    if matched[:1].isupper():
+    if matched[:1].isupper() and right == right.lower():
         return right[:1].upper() + right[1:]
     return right
+
+
+def finalize(text: str, ctx: "str | None", corrections: dict,
+             smart: bool = True, model_cased: bool = False) -> str:
+    """The one dictionary + boundary pass both pipeline branches share.
+
+    Corrections are (re-)applied here so the dictionary stays authoritative
+    even when the cleanup model rewrote a term. model_cased=True means an AI
+    cleanup pass owns the body casing: the first word may still be capitalized
+    at a sentence start, but is never lowercased. Unknown context (None) means
+    do nothing risky: no leading space and no capitalization change.
+    """
+    text = apply_corrections(text, corrections)
+    if model_cased:
+        text = text.lstrip()
+    if not smart or ctx is None or not text:
+        return text
+
+    mid_token = _in_url_like(ctx)
+    if not mid_token:
+        text = _adjust_capitalization(ctx, text, allow_lower=not model_cased)
+    space = _needs_leading_space(ctx, text, mid_token)
+    return (" " if space else "") + text
 
 
 def format_transcript(
     text: str, ctx: "str | None", corrections: dict, smart: bool = True
 ) -> str:
-    """Return the final string to paste, including any leading space.
+    """Deterministic-path formatting (no AI cleanup): the full pass."""
+    return finalize(text, ctx, corrections, smart=smart)
 
-    Corrections are always applied first. When `smart` is False that is all;
-    otherwise spacing and capitalization are adjusted against `ctx` (the text
-    just before the caret, or None when unknown). Unknown context means do
-    nothing risky: no leading space and no capitalization change.
+
+def seam(text: str, ctx: "str | None") -> str:
+    """Boundary-only pass for AI-cleaned text.
+
+    The cleanup model handles the transcript body (including mid-sentence
+    lowercasing, which needs proper-noun judgment); this fixes only the
+    mechanical seam against ctx, which rules get right more reliably than
+    the model does.
     """
-    text = apply_corrections(text, corrections)
-    if not smart or ctx is None or not text:
-        return text
-
-    mid_token = _in_url_like(ctx)
-    space = _needs_leading_space(ctx, text, mid_token)
-    if not mid_token:
-        text = _adjust_capitalization(ctx, text)
-    return (" " if space else "") + text
+    return finalize(text, ctx, {}, model_cased=True)
 
 
 def _needs_leading_space(ctx: str, text: str, mid_token: bool) -> bool:
@@ -100,29 +138,52 @@ def _needs_leading_space(ctx: str, text: str, mid_token: bool) -> bool:
         return False
     if ctx[-1].isspace():
         return False
-    if ctx[-1] in _OPENING_DELIMS:
+    if ctx[-1] in _OPENING_DELIMS and not _quote_is_closing(ctx):
         return False
-    if text[:1] in _CLOSING_PUNCT:
+    if text[:1] in _CLOSING_PUNCT and not _quote_is_opening(text):
         return False
     if mid_token:
         return False
-    if ctx[-1].isdigit() and text[:1].isdigit():
-        return False
     return True
+
+
+def _quote_is_closing(ctx: str) -> bool:
+    """ctx ends with a straight quote: closing (possessive or end-quote) when
+    it hugs a word or terminator on its left ("James'", 'said "hi."'), opening
+    when it follows a space or another opener."""
+    if ctx[-1] not in _STRAIGHT_QUOTES:
+        return False
+    return (len(ctx) > 1 and not ctx[-2].isspace()
+            and ctx[-2] not in _OPENING_DELIMS)
+
+
+def _quote_is_opening(text: str) -> bool:
+    """text starts with a quote glued to a letter: an opening quote, which
+    still needs a space before it ('he said' + '"hello"')."""
+    return (text[0] in _STRAIGHT_QUOTES and len(text) > 1
+            and (text[1].isalnum() or text[1] in "\"'“‘"))
 
 
 def _in_url_like(ctx: str) -> bool:
     """True when ctx's trailing token looks like a URL, email, or path.
 
     In that case the new text continues the same token, so we neither add a
-    space nor touch capitalization.
+    space nor touch capitalization. Requires real evidence — a scheme, www.,
+    an @-domain, a lettered path, or host:port — so that times (12:30),
+    ratios (3:1), dates (9/11), and trailing colons ("Agenda:") stay prose.
     """
     if not ctx or ctx[-1].isspace():
         return False
-    if _URL_TAIL.search(ctx):
+    tail = ctx.rsplit(None, 1)[-1]
+    if "://" in tail or tail.lower().startswith("www."):
         return True
-    tail = ctx.rsplit(None, 1)[-1].lower()
-    return tail.startswith(("www.", "http://", "https://"))
+    if re.search(r"\S@\S+\.", tail):                 # email
+        return True
+    if re.search(r"[A-Za-z][\w.+-]*:\d", tail):      # host:port
+        return True
+    if re.search(r"[/\\]", tail) and re.search(r"[A-Za-z]", tail):  # path
+        return True
+    return False
 
 
 def _is_sentence_start(ctx: "str | None") -> bool:
@@ -136,6 +197,8 @@ def _is_sentence_start(ctx: "str | None") -> bool:
     trimmed = ctx.rstrip().rstrip("\"'”’)]}").rstrip()
     if not trimmed:
         return True
+    if trimmed.endswith(("...", "…")):
+        return False  # an ellipsis trails off; the thought continues
     last = trimmed[-1]
     if last in "!?":
         return True
@@ -145,31 +208,42 @@ def _is_sentence_start(ctx: "str | None") -> bool:
 
 
 def _abbrev_period(trimmed: str) -> bool:
-    """Whether the trailing period of `trimmed` is an abbreviation/decimal.
+    """Whether the trailing period of `trimmed` is an abbreviation, not a
+    sentence end.
 
-    True for known abbreviations (etc., Dr., ...) and for a period following a
-    single letter or a digit ("e.g" -> the "g.", "3.") -- none of which ends a
-    sentence.
+    True for known abbreviations (etc., Dr.), dotted forms (U.S., a.m.,
+    Ph.D.), and a single capital following a capitalized word (a name
+    initial: "John F."). A trailing digit or any other lone letter ends the
+    sentence ("There are 3.", "I got an A.").
     """
     m = _TRAILING_WORD.search(trimmed)
     if not m:
-        # Period follows a non-letter: treat a preceding digit as a decimal.
-        return len(trimmed) >= 2 and trimmed[-2].isdigit()
-    word = m.group(1).rstrip(".").lower()
-    return len(word) == 1 or word in _ABBREVIATIONS
+        return False
+    word = m.group(1)
+    if "." in word:
+        return True
+    if word.lower() in _ABBREVIATIONS:
+        return True
+    if len(word) == 1 and word.isupper():
+        prev = trimmed[: m.start(1)].rstrip()
+        prev_word = prev.rsplit(None, 1)[-1] if prev else ""
+        return prev_word[:1].isupper()
+    return False
 
 
-def _adjust_capitalization(ctx: "str | None", text: str) -> str:
-    m = re.match(r"[^\w]*([A-Za-z']+)", text)
+def _adjust_capitalization(ctx: "str | None", text: str,
+                           allow_lower: bool = True) -> str:
+    m = _FIRST_WORD.match(text)
     if not m:
         return text
     word = m.group(1)
     start = m.start(1)
     rest = text[start + len(word):]
     if _is_sentence_start(ctx):
-        if word[:1].islower():
+        # Leave deliberately-cased words (iPhone, camelCase) alone.
+        if word[:1].islower() and not any(c.isupper() for c in word[1:]):
             word = word[0].upper() + word[1:]
-    elif word[:1].isupper() and _should_lowercase(word):
+    elif allow_lower and word[:1].isupper() and _should_lowercase(word):
         word = word[0].lower() + word[1:]
     return text[:start] + word + rest
 
@@ -192,7 +266,7 @@ def strip_chat_period(text: str) -> str:
     if len(stripped) >= 2 and stripped[-2] in "!?":
         return text
     if _abbrev_period(stripped):
-        return text  # the period belongs to "etc.", "Dr.", a decimal, ...
+        return text  # the period belongs to "etc.", "Dr.", an initial, ...
     if _count_sentences(stripped) > 2:
         return text
     return stripped[:-1]
@@ -202,31 +276,13 @@ def _count_sentences(text: str) -> int:
     n = 0
     for m in re.finditer(r"[.!?]+", text):
         run = m.group(0)
-        # A run of only periods might be an abbreviation/decimal, not an end.
-        if set(run) <= {"."} and _abbrev_period(text[: m.end()]):
-            continue
+        if set(run) <= {"."}:
+            if text[m.end(): m.end() + 1].isdigit():
+                continue  # a decimal point (3.5), not an end
+            if _abbrev_period(text[: m.end()]):
+                continue
         n += 1
     return n
-
-
-def seam(text: str, ctx: "str | None") -> str:
-    """Boundary-only pass for AI-cleaned text: leading space + sentence cap.
-
-    The cleanup model handles the transcript body (including mid-sentence
-    lowercasing, which needs proper-noun judgment); this fixes only the
-    mechanical seam against ctx, which rules get right more reliably than
-    the model does.
-    """
-    if not text:
-        return text
-    text = text.lstrip()
-    if not text or ctx is None:
-        return text
-    mid_token = _in_url_like(ctx)
-    if not mid_token and _is_sentence_start(ctx) and text[:1].islower():
-        text = text[0].upper() + text[1:]
-    space = _needs_leading_space(ctx, text, mid_token)
-    return (" " if space else "") + text
 
 
 def tail_context(last_paste: str, n: int = 120) -> str:

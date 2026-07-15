@@ -56,7 +56,11 @@ def _strip_prompt_echo(text: str, vocabulary: list) -> "str | None":
     cleaned = text[:match.start()] + text[match.end():]
     cleaned = re.sub(r"context:\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.replace("#", " ")
-    return " ".join(cleaned.split())
+    cleaned = " ".join(cleaned.split())
+    # Punctuation/whitespace-only residue (e.g. a trailing "." from the
+    # template) is not surviving speech — collapse it to a pure echo so
+    # transcribe() raises loudly instead of pasting a stray period.
+    return cleaned if re.search(r"\w", cleaned) else ""
 
 
 def _check_response(resp, provider: str) -> None:
