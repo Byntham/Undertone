@@ -35,7 +35,11 @@ def test_url_detection():
     assert fmt("cache", "see src/main") == "cache"
     assert fmt("cache", "in C:\\Users\\g") == "cache"
     assert fmt("com", "mail me@site.") == "com"
+    assert fmt("mple.com", "email me@exa") == "mple.com"   # mid-domain
     assert fmt("/api", "hit localhost:8080") == "/api"
+    assert fmt("\\Users", "C:") == "\\Users"                # drive letter
+    # A bare @mention is prose, not an email being continued.
+    assert fmt("about this", "ping @graham") == " about this"
     # Times, ratios, dates, and trailing colons are prose, not URLs.
     assert fmt("in the afternoon", "the time is 12:30") == " in the afternoon"
     assert fmt("overall", "the ratio is 3:1") == " overall"
@@ -77,6 +81,8 @@ def test_quotes():
     assert fmt("car arrived", "James'") == " car arrived"
     # A quote opened in ctx hugs (and is not a sentence start).
     assert fmt("hello", 'he said "') == "hello"
+    # A leading contraction is not an opening quote: it hugs.
+    assert fmt("'s ready", "it") == "'s ready"
     # A closed quote in ctx still shows the terminator through it.
     assert fmt("next", 'he said "stop."') == " Next"
 
@@ -90,8 +96,14 @@ def test_corrections():
     assert textproc.apply_corrections("thunderstorm", {"under": "over"}) == "thunderstorm"
     # Case-insensitive multi-word phrase.
     assert textproc.apply_corrections("Under Tone", corr) == "Undertone"
-    # Symbol-bearing keys match despite \b having no anchor there.
+    # Symbol-bearing keys match despite \b having no anchor there...
     assert textproc.apply_corrections("i like c++", {"c++": "C++"}) == "i like C++"
+    # ...but never as a prefix of a larger token.
+    assert textproc.apply_corrections(
+        "C++17 is current", {"c++": "C Plus Plus"}) == "C++17 is current"
+    # Unicode text survives case-insensitive matching (no lookup by .lower()).
+    assert textproc.apply_corrections("İstanbul is big", {"i": "I"}) == \
+        "İstanbul is big"
     # One pass: a replacement is never re-matched by another entry.
     assert textproc.apply_corrections(
         "under tone", {"under tone": "Undertone", "undertone": "Product"}

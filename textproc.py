@@ -71,17 +71,15 @@ def apply_corrections(text: str, corrections: dict) -> str:
     if not entries:
         return text
     entries.sort(key=lambda e: len(e[0]), reverse=True)
-    lookup = {w.lower(): r for w, r in entries}
-    parts = []
-    for wrong, _ in entries:
-        # \b breaks down when the key starts/ends with a symbol (.net, c++);
-        # guard only the ends that are word characters.
-        head = r"(?<!\w)" if wrong[0].isalnum() or wrong[0] == "_" else ""
-        tail = r"(?!\w)" if wrong[-1].isalnum() or wrong[-1] == "_" else ""
-        parts.append(head + re.escape(wrong) + tail)
+    # One capturing group per key: the winning entry is identified by
+    # m.lastindex, never by re-lowercasing the matched text (case-insensitive
+    # matching and str.lower() disagree on characters like Turkish İ).
+    # (?<!\w)/(?!\w) instead of \b: \b has no anchor next to a symbol, so a
+    # key like "c++" would otherwise also match inside "C++17".
+    parts = [r"((?<!\w)" + re.escape(w) + r"(?!\w))" for w, _ in entries]
     pattern = re.compile("|".join(parts), re.IGNORECASE)
     return pattern.sub(
-        lambda m: _match_case(m.group(0), lookup[m.group(0).lower()]), text)
+        lambda m: _match_case(m.group(0), entries[m.lastindex - 1][1]), text)
 
 
 def _match_case(matched: str, right: str) -> str:
@@ -158,9 +156,10 @@ def _quote_is_closing(ctx: str) -> bool:
 
 
 def _quote_is_opening(text: str) -> bool:
-    """text starts with a quote glued to a letter: an opening quote, which
-    still needs a space before it ('he said' + '"hello"')."""
-    return (text[0] in _STRAIGHT_QUOTES and len(text) > 1
+    """text starts with a double quote glued to a letter: an opening quote,
+    which still needs a space before it ('he said' + '"hello"'). Apostrophes
+    are exempt — a leading '...'s/'re/'ll is a contraction that must hug."""
+    return (text[0] in "\"“" and len(text) > 1
             and (text[1].isalnum() or text[1] in "\"'“‘"))
 
 
@@ -177,7 +176,11 @@ def _in_url_like(ctx: str) -> bool:
     tail = ctx.rsplit(None, 1)[-1]
     if "://" in tail or tail.lower().startswith("www."):
         return True
-    if re.search(r"\S@\S+\.", tail):                 # email
+    # An email even mid-domain ("me@exa" + "mple.com"), but not a bare
+    # @mention ("ping @graham" reads as prose).
+    if re.search(r"\S@\S", tail):
+        return True
+    if re.fullmatch(r"[A-Za-z]:", tail):             # drive letter (C:)
         return True
     if re.search(r"[A-Za-z][\w.+-]*:\d", tail):      # host:port
         return True
