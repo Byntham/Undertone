@@ -774,6 +774,7 @@ class SettingsWindow:
         self._local_busy = None      # "install"/"load"/"eject" while working
         self._local_progress = ""
         self._local_error = ""
+        self._local_poll_id = None
         self._shortcut_rows = {}
         self._root.after(50, self._drain)
 
@@ -1742,6 +1743,9 @@ class SettingsWindow:
         self._local_btn = canvasui.PillButton(
             "", "accent", self._on_local_action, small=True)
         self._refresh_local_card()
+        # Dictating while ejected auto-loads the model on the pipeline
+        # thread; poll so an open card flips to "Eject model" by itself.
+        self._local_poll_id = self._root.after(1000, self._local_poll)
         return canvasui.Card(canvasui.VStack([
             canvasui.Row(
                 "Local engine",
@@ -1751,6 +1755,15 @@ class SettingsWindow:
             canvasui.Spacer(7),
             self._local_status,
         ], gap=0))
+
+    def _local_poll(self):
+        self._local_poll_id = None
+        if (self._active_section != "Providers" or self._win is None
+                or not self._win.winfo_exists()):
+            return
+        if not self._local_busy:  # busy updates arrive via _drain
+            self._refresh_local_card()
+        self._local_poll_id = self._root.after(1000, self._local_poll)
 
     def _local_model_name(self):
         return (self._model_override_for("stt", "local")
@@ -2084,6 +2097,12 @@ class SettingsWindow:
             except tk.TclError:
                 pass
             self._hist_poll_id = None
+        if self._local_poll_id is not None:
+            try:
+                self._root.after_cancel(self._local_poll_id)
+            except tk.TclError:
+                pass
+            self._local_poll_id = None
         if self._practice_after_id is not None:
             try:
                 self._root.after_cancel(self._practice_after_id)

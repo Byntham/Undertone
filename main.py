@@ -291,6 +291,12 @@ class App:
         vocabulary += [v for v in self.cfg.get("corrections", {}).values()
                        if v not in vocabulary]
         provider = self.cfg.get("provider", "xai")
+        cold_local = provider == "local" and not localstt.is_loaded()
+        if cold_local:
+            # Dictating while ejected auto-loads the model; say so instead
+            # of leaving a misleading "Transcribing…" pill up.
+            self.overlay.show_message("Loading the local model…",
+                                      duration_ms=30000)
         try:
             text = transcribe(
                 wav, config_mod.provider_key(self.cfg, provider),
@@ -307,6 +313,9 @@ class App:
             self._register_failure(f"Unexpected error: {e}", wav)
             self.overlay.show_message(f"Unexpected error: {e}", 5000, error=True)
             return
+
+        if cold_local:
+            self.overlay.show_message("Local model loaded")
 
         if not text:
             self.overlay.show_message("No speech detected", error=True)
@@ -577,6 +586,8 @@ class App:
             localstt.load(config_mod.model_override(self.cfg, "stt", "local"))
         except localstt.LocalSTTError as e:
             logging.warning("Local STT warm load failed: %s", e)
+            return
+        self.overlay.show_message("Local model loaded")
 
     def _quit(self):
         try:

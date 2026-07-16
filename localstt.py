@@ -1,7 +1,7 @@
 """On-device STT: a whisper.cpp server child process, installed on demand.
 
 Everything lives under %LOCALAPPDATA%\\Undertone (never roaming APPDATA —
-the runtime + model total ~1.7 GB on GPU machines): a pinned whisper.cpp
+the runtime + model total ~2.8 GB on GPU machines): a pinned whisper.cpp
 release (the CUDA build when an NVIDIA driver is present, the tiny CPU
 build always, as the fallback), the ggml Whisper model, and a Silero VAD
 model. VAD is what makes local Whisper safe here: without it the model
@@ -42,7 +42,9 @@ MODELS_DIR = ROOT / "models"
 _STATE_PATH = RUNTIME_DIR / "runtime.json"
 _SERVER_LOG = RUNTIME_DIR / "server.log"
 
-MODEL_FILENAME = "ggml-large-v3-turbo-q5_0.bin"
+# Full-precision ggml conversion of OpenAI's official whisper-large-v3-turbo
+# (the safetensors on huggingface.co/openai can't be loaded by whisper.cpp).
+MODEL_FILENAME = "ggml-large-v3-turbo.bin"
 VAD_FILENAME = "ggml-silero-v5.1.2.bin"
 
 _RELEASE = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1"
@@ -62,8 +64,8 @@ MANIFEST = {
     },
     "model": {
         "url": f"{_HF}/ggerganov/whisper.cpp/resolve/main/{MODEL_FILENAME}",
-        "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-        "size": 574_041_195,
+        "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        "size": 1_624_555_275,
     },
     "vad_model": {
         "url": f"{_HF}/ggml-org/whisper-vad/resolve/main/{VAD_FILENAME}",
