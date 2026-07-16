@@ -50,8 +50,9 @@ KEY_FIELDS = {
 
 
 def provider_key(cfg: dict, provider: str) -> str:
-    """The stored API key for a provider ("" if none)."""
-    return cfg.get(KEY_FIELDS.get(provider, "api_key"), "")
+    """The stored API key for a provider ("" if none or keyless)."""
+    field = KEY_FIELDS.get(provider)
+    return cfg.get(field, "") if field else ""
 
 
 def model_override(cfg: dict, kind: str, provider: str) -> str:
@@ -125,7 +126,12 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    """Write cfg as pretty-printed JSON, creating the directory if needed."""
+    """Write cfg as pretty-printed JSON, creating the directory if needed.
+
+    The JSON lands in a temp file and is swapped in with os.replace, so an
+    interrupted save can't destroy the existing config."""
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, sort_keys=True)
+    os.replace(tmp, CONFIG_PATH)

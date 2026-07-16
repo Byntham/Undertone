@@ -70,6 +70,9 @@ _RESPONSE_FORMAT = {
 def cleanup(transcript, ctx, app, corrections, api_key, model,
             provider: str = "xai", timeout: float = 2.5) -> "str | None":
     """Return the polished transcript, or None on any failure/timeout."""
+    if provider not in API_URLS:
+        logging.warning("cleanup pass: unknown provider %r — skipped", provider)
+        return None
     try:
         # Transcript goes LAST: the model's continuation instinct then works
         # on the dictation, not on completing the document context.
@@ -80,7 +83,7 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
             "transcript": transcript,
         }, ensure_ascii=False)
         resp = requests.post(
-            API_URLS.get(provider, API_URLS["xai"]),
+            API_URLS[provider],
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model or DEFAULT_CLEANUP_MODELS.get(provider, ""),

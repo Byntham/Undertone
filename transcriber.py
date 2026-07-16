@@ -235,13 +235,19 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
     each provider translates it into its own biasing mechanism.
     Raises TranscriptionError with a friendly message on any failure.
     """
+    fn = PROVIDERS.get(provider)
+    if fn is None:
+        # A corrupted/hand-edited config must fail loudly, not silently
+        # send audio to a provider the user never chose.
+        raise TranscriptionError(
+            f"Unknown transcription provider {provider!r} in the config. "
+            "Pick a provider in Settings → Providers.")
     if provider != "local":  # local runs on this machine, keyless
         api_key = (api_key or "").strip()
         if not api_key:
             raise TranscriptionError(
                 "No API key configured for the transcription provider. "
                 "Open Settings → Providers and enter one.")
-    fn = PROVIDERS.get(provider, transcribe_xai)
     text = fn(wav_bytes, api_key, language, vocabulary, model)
     stripped = _strip_prompt_echo(text, vocabulary)
     if stripped is not None:

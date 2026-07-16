@@ -128,7 +128,21 @@ def test_provider_key_mapping():
     assert config.provider_key(cfg, "xai") == "X"
     assert config.provider_key(cfg, "openai") == "O"
     assert config.provider_key(cfg, "openrouter") == "R"
-    assert config.provider_key(cfg, "unknown") == "X"  # safe fallback
+    assert config.provider_key(cfg, "local") == ""    # keyless
+    assert config.provider_key(cfg, "unknown") == ""  # no silent xAI fallback
+
+
+def test_unknown_provider_fails_loudly():
+    # STT: a corrupted provider id must raise, not silently call xAI.
+    try:
+        transcriber.transcribe(WAV, "k", "en", None, "grok9000")
+        raise AssertionError("should have raised")
+    except transcriber.TranscriptionError as e:
+        assert "grok9000" in str(e)
+    # Cleanup keeps its silent-fallback contract: skip without calling out.
+    calls = capture(cleanup, {})
+    assert cleanup.cleanup("words", None, "", {}, "k", "", "grok9000") is None
+    assert not calls
 
 
 def test_legacy_model_fold():
@@ -160,6 +174,7 @@ def main():
     test_missing_key_message()
     test_cleanup_endpoints()
     test_provider_key_mapping()
+    test_unknown_provider_fails_loudly()
     test_legacy_model_fold()
     print("ALL TESTS PASSED")
 

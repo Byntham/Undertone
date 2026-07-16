@@ -265,17 +265,20 @@ class App:
     def _pipeline_loop(self):
         while True:
             kind, payload = self._pipeline_q.get()
+            # One settings snapshot per job: a save mid-dictation must not
+            # mix old and new policies within one transcribe→paste run.
+            cfg = dict(self.cfg)
             try:
                 if kind == "dictate":
-                    self._transcribe_and_paste(*payload)
+                    self._transcribe_and_paste(*payload, cfg=cfg)
                 elif kind == "retry":
                     # Re-run a failed dictation's audio; target=None means
                     # the paste goes to whatever is focused now.
                     self.overlay.show_transcribing()
-                    self._transcribe_and_paste(payload, target=None)
+                    self._transcribe_and_paste(payload, None, cfg)
                 else:  # "repaste"
                     self._wait_modifiers_lifted()
-                    self._paste_now(payload)
+                    self._paste_now(payload, cfg)
             except Exception:
                 logging.exception("Pipeline step failed")
 
@@ -286,11 +289,11 @@ class App:
                 keyboard.is_pressed(k) for k in ("ctrl", "alt", "shift")):
             time.sleep(0.02)
 
-    def _transcribe_and_paste(self, wav: bytes, target=None):
-        vocabulary = list(self.cfg.get("vocabulary", []))
-        vocabulary += [v for v in self.cfg.get("corrections", {}).values()
+    def _transcribe_and_paste(self, wav: bytes, target, cfg: dict):
+        vocabulary = list(cfg.get("vocabulary", []))
+        vocabulary += [v for v in cfg.get("corrections", {}).values()
                        if v not in vocabulary]
-        provider = self.cfg.get("provider", "xai")
+        provider = cfg.get("provider", "xai")
         cold_local = provider == "local" and not localstt.is_loaded()
         if cold_local:
             # Dictating while ejected auto-loads the model; say so instead
@@ -299,9 +302,9 @@ class App:
                                       duration_ms=30000)
         try:
             text = transcribe(
-                wav, config_mod.provider_key(self.cfg, provider),
-                self.cfg.get("language", "en"), vocabulary,
-                provider, config_mod.model_override(self.cfg, "stt", provider),
+                wav, config_mod.provider_key(cfg, provider),
+                cfg.get("language", "en"), vocabulary,
+                provider, config_mod.model_override(cfg, "stt", provider),
             )
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
@@ -322,8 +325,8 @@ class App:
             return
 
         refocused = self._return_to_target(target)
-        raw = textproc.apply_corrections(text, self.cfg.get("corrections", {}))
-        final = self._prepare_text(text)
+        raw = textproc.apply_corrections(text, cfg.get("corrections", {}))
+        final = self._prepare_text(text, cfg)
         # The cleanup HTTP round-trip inside _prepare_text can take seconds;
         # re-check the target so the paste can't land in a window the user
         # switched to meanwhile.
@@ -334,13 +337,13 @@ class App:
         if not refocused:
             # The target window is gone/unreachable: pasting would land the
             # text in the wrong app. Park it on the clipboard instead.
-            self._clipboard_fallback(final, raw)
+            self._clipboard_fallback(final, raw, cfg)
             return
         try:
-            paste_text(final, self.cfg.get("restore_clipboard", True))
+            paste_text(final, cfg.get("restore_clipboard", True))
         except Exception:
             logging.exception("Paste failed")
-            self._clipboard_fallback(final, raw)
+            self._clipboard_fallback(final, raw, cfg)
             return
         self._register_paste(final, raw)
         self._confirm_paste(final, 1600)
@@ -351,11 +354,11 @@ class App:
             preview = preview[:47].rstrip() + "…"
         self.overlay.show_message(f"Pasted · {preview}", duration_ms)
 
-    def _clipboard_fallback(self, final: str, raw=None):
+    def _clipboard_fallback(self, final: str, raw, cfg: dict):
         """Never lose dictated text: clipboard + history instead of a paste."""
         pyperclip.copy(final)
         self._register_paste(final, raw, pasted=False)
-        combo = self.cfg.get("repaste_hotkey", "")
+        combo = cfg.get("repaste_hotkey", "")
         msg = (f"Couldn't paste — press {pretty_combo(combo)} where you want it"
                if combo else "Couldn't paste — the text is on your clipboard")
         self.overlay.show_message(msg, 5000, warn=True)
@@ -380,26 +383,26 @@ class App:
         )
         return bool(restored)
 
-    def _prepare_text(self, text: str) -> str:
+    def _prepare_text(self, text: str, cfg: dict) -> str:
         """Apply corrections, the optional AI cleanup pass, and
         context-aware spacing/capitalization."""
-        smart = self.cfg.get("smart_formatting", True)
-        corrections = self.cfg.get("corrections", {})
+        smart = cfg.get("smart_formatting", True)
+        corrections = cfg.get("corrections", {})
         ctx = self._acquire_context() if smart else None
         exe = caretctx.get_foreground_exe()
 
         final = None
-        if self.cfg.get("ai_cleanup", True):
+        if cfg.get("ai_cleanup", True):
             app = exe or ""
             title = caretctx.get_window_title()
             if title:
                 app = f"{app} ({title})" if app else title
-            cprov = self.cfg.get("cleanup_provider", "xai")
+            cprov = cfg.get("cleanup_provider", "xai")
             cleaned = cleanup_mod.cleanup(
                 textproc.apply_corrections(text, corrections),
                 ctx, app, corrections,
-                config_mod.provider_key(self.cfg, cprov),
-                config_mod.model_override(self.cfg, "cleanup", cprov),
+                config_mod.provider_key(cfg, cprov),
+                config_mod.model_override(cfg, "cleanup", cprov),
                 cprov,
             )
             if cleaned is not None:
@@ -477,8 +480,8 @@ class App:
                 return  # already retried (stale UI click)
         self._pipeline_q.put(("retry", wav))
 
-    def _paste_now(self, text: str):
-        paste_text(text, self.cfg.get("restore_clipboard", True))
+    def _paste_now(self, text: str, cfg: dict):
+        paste_text(text, cfg.get("restore_clipboard", True))
         self._register_paste(text)
         self._confirm_paste(text, 1200)
 
