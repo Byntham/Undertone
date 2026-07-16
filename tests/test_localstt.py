@@ -5,6 +5,7 @@ import hashlib
 import os
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -20,6 +21,11 @@ def test_manifest_shape():
         assert len(spec["sha256"]) == 64
         assert spec["size"] > 0
     assert localstt.MANIFEST["model"]["url"].endswith(localstt.MODEL_FILENAME)
+    assert localstt.MANIFEST["vad_model"]["url"].endswith(
+        localstt.VAD_FILENAME)
+    # The VAD must come from whisper.cpp's own artifact repo (what the
+    # project's models/download-vad-model.sh uses).
+    assert "/ggml-org/whisper-vad/" in localstt.MANIFEST["vad_model"]["url"]
 
 
 def test_extract_subset(tmp: Path):
@@ -106,7 +112,62 @@ def test_not_installed_guard(tmp: Path):
 
 def test_nvidia_probe_is_safe():
     assert localstt.have_nvidia_gpu() in (True, False)
-    assert localstt.install_size() > localstt.MANIFEST["model"]["size"]
+
+
+def test_install_size_counts_missing_only(tmp: Path):
+    old_models, old_runtime = localstt.MODELS_DIR, localstt.RUNTIME_DIR
+    localstt.MODELS_DIR = tmp / "models"
+    localstt.RUNTIME_DIR = tmp / "runtime"
+    try:
+        full = localstt.install_size()
+        assert full > localstt.MANIFEST["model"]["size"]
+        localstt.MODELS_DIR.mkdir(parents=True)
+        localstt.model_path().write_bytes(b"x")
+        assert (localstt.install_size()
+                == full - localstt.MANIFEST["model"]["size"])
+        localstt.model_path(localstt.VAD_FILENAME).write_bytes(b"x")
+        assert (localstt.install_size()
+                == full - localstt.MANIFEST["model"]["size"]
+                - localstt.MANIFEST["vad_model"]["size"])
+    finally:
+        localstt.MODELS_DIR, localstt.RUNTIME_DIR = old_models, old_runtime
+
+
+class _FakeProc:
+    def poll(self):
+        return None
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        pass
+
+
+def test_idle_autoeject():
+    # A fresh timer must not fire early…
+    localstt._proc = _FakeProc()
+    localstt._last_used = time.monotonic()
+    localstt.set_idle_timeout(60)
+    time.sleep(0.3)
+    assert localstt.is_loaded(), "ejected before the idle timeout"
+    # …and once the idle window has truly elapsed, it ejects.
+    with localstt._LOCK:
+        localstt._last_used = time.monotonic() - 61
+        localstt.set_idle_timeout(60)  # re-arms with ~0.05s remaining
+    for _ in range(100):
+        if not localstt.is_loaded():
+            break
+        time.sleep(0.05)
+    assert not localstt.is_loaded(), "idle eject never fired"
+    assert localstt._idle_timer is None
+    # 0 = never: cancels any pending timer.
+    localstt._proc = _FakeProc()
+    localstt.set_idle_timeout(60)
+    assert localstt._idle_timer is not None
+    localstt.set_idle_timeout(0)
+    assert localstt._idle_timer is None
+    localstt._proc = None
 
 
 def main():
@@ -116,6 +177,8 @@ def main():
         test_download_verifies_sha256(Path(tmp) / "b")
         test_not_installed_guard(Path(tmp) / "c")
         test_nvidia_probe_is_safe()
+        test_install_size_counts_missing_only(Path(tmp) / "d")
+        test_idle_autoeject()
     print("ALL TESTS PASSED")
 
 

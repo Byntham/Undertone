@@ -36,8 +36,8 @@ DEFAULT_CONFIG = {
     "corrections": {},      # {"heard": "replacement"} applied after transcription
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
-    "local_stt_loaded": False,  # Load/Eject intent for the local model —
-                                # only the Settings buttons flip this
+    "local_stt_loaded": False,        # load the local model on startup
+    "local_stt_idle_minutes": 0,      # auto-eject after idle; 0 = never
 }
 
 

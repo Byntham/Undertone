@@ -1687,6 +1687,11 @@ class SettingsWindow:
             self._providers_status,
             self._group("On-device"),
             self._local_card(),
+            self._toggle_card(
+                "Load model on startup", "local_stt_loaded",
+                "Load the local model when Undertone starts, so the first "
+                "dictation is instant."),
+            self._local_idle_card(),
             self._group("API keys"),
         ]
         for provider, field in KEY_FIELDS.items():
@@ -1764,6 +1769,18 @@ class SettingsWindow:
         if not self._local_busy:  # busy updates arrive via _drain
             self._refresh_local_card()
         self._local_poll_id = self._root.after(1000, self._local_poll)
+
+    def _local_idle_card(self):
+        dropdown = canvasui.DropdownButton(
+            [("Never", 0), ("After 5 min", 5), ("After 15 min", 15),
+             ("After 30 min", 30), ("After 1 hour", 60)],
+            lambda: int(self._config.get("local_stt_idle_minutes") or 0),
+            lambda value: self._apply(local_stt_idle_minutes=value),
+            width=130)
+        return self._card(
+            "Auto-eject when idle",
+            "Frees memory after inactivity; reloads on the next dictation.",
+            dropdown)
 
     def _local_model_name(self):
         return (self._model_override_for("stt", "local")
@@ -1851,9 +1868,8 @@ class SettingsWindow:
         self._local_busy = None
         self._local_progress = ""
         self._local_error = "" if ok else message
-        if ok and action in ("load", "eject"):
-            # Residency intent persists; only these buttons flip it.
-            self._apply(local_stt_loaded=(action == "load"))
+        # Load/Eject is a pure runtime action; startup behavior is owned
+        # by the "Load model on startup" toggle alone.
         self._refresh_local_card()
 
     def _refresh_key_status(self, field):

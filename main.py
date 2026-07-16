@@ -580,6 +580,10 @@ class App:
             if combo != old_cfg.get("repaste_hotkey"):
                 self.overlay.show_message(
                     f"Re-paste shortcut set to {pretty_combo(combo)}")
+        if (new_cfg.get("local_stt_idle_minutes")
+                != old_cfg.get("local_stt_idle_minutes")):
+            localstt.set_idle_timeout(
+                int(new_cfg.get("local_stt_idle_minutes") or 0) * 60)
 
     def _warm_local_stt(self):
         try:
@@ -661,9 +665,11 @@ class App:
                 f"Ready — hold {pretty_combo(self.cfg['hotkey'])} to dictate",
                 duration_ms=2500,
             )
+        localstt.set_idle_timeout(
+            int(self.cfg.get("local_stt_idle_minutes") or 0) * 60)
         if provider == "local" and self.cfg.get("local_stt_loaded"):
-            # Honor the persisted Load choice: warm the local server
-            # off-thread so the first dictation is instant.
+            # "Load on startup" is on: warm the local server off-thread
+            # so the first dictation is instant.
             threading.Thread(
                 target=self._warm_local_stt, daemon=True).start()
         self.root.mainloop()
