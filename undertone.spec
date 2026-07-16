@@ -52,8 +52,6 @@ a = Analysis(
     # Path(__file__).parent / "assets", which lands in _MEIPASS when frozen.
     datas=[("assets", "assets")],
     hiddenimports=[
-        # pystray picks its backend via a dynamic import.
-        "pystray._win32",
         # comtypes.client.GetModule() imports generated modules from
         # comtypes.gen at runtime; the package must exist in the bundle.
         "comtypes.gen",
@@ -61,7 +59,23 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    # Only QtCore/QtGui/QtWidgets are used; PyInstaller's PySide6 hooks
+    # would otherwise drag in the whole Qt module zoo. tkinter is gone
+    # since the Qt port.
+    excludes=[
+        "tkinter",
+        "PySide6.QtNetwork", "PySide6.QtQml", "PySide6.QtQuick",
+        "PySide6.QtQuickWidgets", "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
+        "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtSql",
+        "PySide6.QtTest", "PySide6.QtXml", "PySide6.QtSvg",
+        "PySide6.QtSvgWidgets", "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets", "PySide6.QtOpenGL",
+        "PySide6.QtOpenGLWidgets", "PySide6.QtPositioning",
+        "PySide6.QtLocation", "PySide6.QtBluetooth",
+        "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtUiTools",
+        "PySide6.Qt3DCore", "PySide6.Qt3DRender",
+    ],
     noarchive=False,
 )
 

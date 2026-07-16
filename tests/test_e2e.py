@@ -170,7 +170,7 @@ def scenario(app):
         main_mod.caretctx.text_before_caret = lambda *a, **k: None
         phase(app, EXPECTED_B, "phase B (insertion memory)")
     finally:
-        app._post(app.root.destroy)
+        app._post(app._quit)
 
 
 def run():
@@ -180,7 +180,7 @@ def run():
     app = main_mod.App()
     app.ptt.start()
     threading.Thread(target=scenario, args=(app,), daemon=True).start()
-    app.root.mainloop()
+    app.qapp.exec()
 
     if failures:
         print("FAILED:", *failures, sep="\n  ")

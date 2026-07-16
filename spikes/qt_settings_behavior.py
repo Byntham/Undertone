@@ -23,7 +23,7 @@ cfg = dict(config.DEFAULT_CONFIG)
 cfg.update({"api_key": "sk-test-1234", "onboarded": True,
             "vocabulary": ["Undertone"], "corrections": {"grok": "Grok"}})
 
-from settingsqt import SettingsWindow
+from settingsui import SettingsWindow
 
 window = SettingsWindow(
     cfg, saves.append,

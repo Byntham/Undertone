@@ -42,7 +42,7 @@ HISTORY = [
 def main():
     os.makedirs(OUT, exist_ok=True)
     app = QApplication(sys.argv); app.setStyle("Fusion")
-    from settingsqt import SettingsWindow
+    from settingsui import SettingsWindow
     window = SettingsWindow(
         cfg, lambda _cfg: None,
         on_capture_start=lambda: None, on_capture_end=lambda: None,

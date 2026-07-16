@@ -1,25 +1,33 @@
-"""Canvas-rendered settings window for Undertone."""
+"""Qt settings window for Undertone.
 
-import ctypes
+Replaces the canvas-rendered settingsui.py: real widgets, QSS theming
+from theme.py, live resize for free. Behavior contract is unchanged —
+every field change autosaves through on_save (with the "✓ Saved" toast),
+shortcut capture pauses the app's hooks via on_capture_start/end, and
+worker threads (capture, key tests, local-STT actions) post back to the
+main thread through signals.
+"""
+
 import io
 import os
-import queue
 import re
 import threading
 import time
-import tkinter as tk
-import tkinter.font as tkfont
 import wave
 import webbrowser
-from ctypes import wintypes
-from typing import Callable, List, Optional
 
 import keyboard
 import pyperclip
-from PIL import ImageTk
+
+from PySide6.QtCore import QObject, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFontMetrics, QIcon, QPainter, QPixmap,
+                           QGuiApplication)
+from PySide6.QtWidgets import (
+    QAbstractButton, QApplication, QComboBox, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QVBoxLayout, QWidget)
 
 import autostart
-import canvasui
 import localstt
 import theme
 from config import APP_VERSION, CONFIG_PATH, KEY_FIELDS
@@ -27,725 +35,385 @@ from ui import (ICON_ICO, LANGUAGES, PROVIDER_LINKS, PROVIDERS_UI,
                 PROVIDER_BY_ID, SECTIONS, STT_PROVIDERS_UI, _nav_glyph,
                 load_app_image, pretty_combo)
 
-
 WIN_W, WIN_H = 780, 724
+MIN_W, MIN_H = 660, 560
 SIDEBAR_W = 200
-HEADER_FONT = ("Segoe UI Semibold", 15)
-CARD_TITLE_FONT = ("Segoe UI Semibold", 10)
-HINT_FONT = ("Segoe UI", 9)
-GROUP_FONT = ("Segoe UI Semibold", 9)
-NAV_FONT = ("Segoe UI", 10)
-NAV_ACTIVE_FONT = ("Segoe UI Semibold", 10)
-TITLE_FONT = ("Segoe UI Semibold", 12)
+
+QSS = f"""
+QWidget {{ font-family: "Segoe UI"; font-size: 10pt; color: {theme.TEXT};
+           background: {theme.BASE}; }}
+QLabel {{ background: transparent; }}
+QLabel#heading {{ font-family: "Segoe UI Semibold"; font-size: 15pt; }}
+QLabel#group {{ font-family: "Segoe UI Semibold"; font-size: 9pt;
+                color: {theme.SUBTEXT}; }}
+QLabel.cardTitle {{ font-family: "Segoe UI Semibold"; font-size: 10pt; }}
+QLabel.hint {{ font-size: 9pt; color: {theme.MUTED}; }}
+QFrame#card, QFrame#banner {{
+    background: {theme.CARD}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 10px;
+}}
+QFrame#banner {{ background: {theme.BANNER_BG};
+                 border-color: {theme.BANNER_BORDER}; }}
+QFrame#card QLabel, QFrame#banner QLabel {{ background: transparent; }}
+QFrame#listPanel {{ background: {theme.MANTLE};
+                    border: 1px solid {theme.CARD_BORDER};
+                    border-radius: 8px; }}
+QWidget#listRow {{ background: {theme.MANTLE}; }}
+QWidget#listRow[hover="true"] {{ background: {theme.ROW_HOVER}; }}
+QLineEdit {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 6px; padding: 4px 8px;
+    selection-background-color: {theme.ACCENT};
+    selection-color: {theme.INK};
+}}
+QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
+QComboBox {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 6px; padding: 4px 10px;
+}}
+QComboBox:focus {{ border-color: {theme.ACCENT}; }}
+QComboBox::drop-down {{ border: none; width: 24px; }}
+QComboBox::down-arrow {{ image: url(__CHEVRON__); width: 10px;
+                         height: 6px; }}
+QComboBox QAbstractItemView {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    selection-background-color: {theme.ACCENT};
+    selection-color: {theme.INK}; outline: 0;
+}}
+QPushButton {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 13px; padding: 4px 14px; font-size: 9pt;
+}}
+QPushButton:hover {{ background: {theme.SURFACE1}; }}
+QPushButton:disabled {{ color: {theme.MUTED}; }}
+QPushButton[variant="accent"] {{
+    background: {theme.ACCENT}; color: {theme.INK}; border: none;
+    font-family: "Segoe UI Semibold";
+}}
+QPushButton[variant="accent"]:hover {{ background: {theme.ACCENT_HOVER}; }}
+QPushButton[variant="accent"]:pressed {{ background: {theme.ACCENT_DOWN}; }}
+QPushButton[variant="accent"]:disabled {{
+    background: {theme.SURFACE1}; color: {theme.MUTED}; }}
+QLabel#chip {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 12px; padding: 3px 12px; font-size: 9pt;
+}}
+QScrollArea {{ border: none; background: {theme.BASE}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
+QScrollBar::handle:vertical {{
+    background: {theme.SURFACE1}; border-radius: 5px; min-height: 30px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent; }}
+"""
+
+
+def _chevron_url():
+    """A theme-colored dropdown chevron QSS can point at (QSS image: needs
+    a file; drawn once into %TEMP%)."""
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "undertone_chevron.png")
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QImage, QPen
+    img = QImage(20, 12, QImage.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(theme.SUBTEXT), 2))
+    p.drawPolyline([QPoint(3, 3), QPoint(10, 9), QPoint(17, 3)])
+    p.end()
+    img.save(path)
+    return path.replace("\\", "/")
+
+
+def _pil_pixmap(pil_img) -> QPixmap:
+    buf = io.BytesIO()
+    pil_img.save(buf, "PNG")
+    pixmap = QPixmap()
+    pixmap.loadFromData(buf.getvalue(), "PNG")
+    return pixmap
+
+
+def _dark_titlebar(widget):
+    import ctypes
+    dwm = ctypes.WinDLL("dwmapi")
+    value = ctypes.c_int(1)
+    dwm.DwmSetWindowAttribute(int(widget.winId()), 20,
+                              ctypes.byref(value), ctypes.sizeof(value))
 
 
 def _ellipsize(text, limit=24):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-class _Inline(canvasui.Widget):
-    """Natural-width horizontal controls without HStack's equal sharing."""
+# --- Small building blocks ---------------------------------------------------
 
-    def __init__(self, children, gap=6):
+class Toggle(QAbstractButton):
+    """Painted on/off switch (accent track when on)."""
+
+    def __init__(self, on=False, on_change=None):
         super().__init__()
-        self.children = list(children)
-        self.gap = theme.sc(gap)
+        self.setCheckable(True)
+        self.setChecked(bool(on))
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(40, 22)
+        self.on_change = on_change
+        self.toggled.connect(self._changed)
+        self._block = False
+
+    def set(self, on):
+        self._block = True
+        self.setChecked(bool(on))
+        self._block = False
+
+    def _changed(self, on):
+        if not self._block and self.on_change is not None:
+            self.on_change(bool(on))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        track = QColor(theme.ACCENT if self.isChecked() else theme.SURFACE1)
+        p.setPen(Qt.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(0, 0, 40, 22, 11, 11)
+        p.setBrush(QColor(theme.INK if self.isChecked() else theme.TEXT))
+        x = 20 if self.isChecked() else 2
+        p.drawEllipse(x, 2, 18, 18)
+
+
+def pill_button(text, variant="neutral", on_click=None):
+    button = QPushButton(text)
+    button.setProperty("variant", variant)
+    button.setCursor(Qt.PointingHandCursor)
+    if on_click is not None:
+        button.clicked.connect(lambda _=False: on_click())
+    return button
+
+
+def hint_label(text, color=None, wrap=True):
+    label = QLabel(text)
+    label.setProperty("class", "hint")
+    label.setWordWrap(wrap)
+    if color:
+        label.setStyleSheet(f"color: {color}; font-size: 9pt;")
+    return label
+
+
+def link_label(text, on_click):
+    label = QLabel(f'<a href="#" style="color:{theme.ACCENT};'
+                   f'text-decoration:none">{text}</a>')
+    label.setProperty("class", "hint")
+    label.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+    label.linkActivated.connect(lambda _href: on_click())
+    return label
+
+
+def card(inner_margins=(16, 12, 16, 12), object_name="card"):
+    frame = QFrame(objectName=object_name)
+    lay = QVBoxLayout(frame)
+    lay.setContentsMargins(*inner_margins)
+    lay.setSpacing(2)
+    return frame, lay
+
+
+def row_card(title, hint, control=None, object_name="card"):
+    """Card with title+hint on the left, a control on the right."""
+    frame = QFrame(objectName=object_name)
+    outer = QHBoxLayout(frame)
+    outer.setContentsMargins(16, 12, 16, 12)
+    text_col = QVBoxLayout()
+    text_col.setSpacing(2)
+    title_label = QLabel(title)
+    title_label.setProperty("class", "cardTitle")
+    text_col.addWidget(title_label)
+    if hint:
+        text_col.addWidget(hint_label(hint))
+    outer.addLayout(text_col, 1)
+    if control is not None:
+        outer.addWidget(control, 0, Qt.AlignVCenter)
+    return frame
+
+
+class Meter(QWidget):
+    """Rounded level meter (accent fill over a SURFACE0 track)."""
 
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        for child in self.children:
-            child._attach(scene, self)
-
-    def measure(self, avail_w):
-        sizes = [child._measure(avail_w) for child in self.children]
-        width = sum(size[0] for size in sizes) + self.gap * max(0, len(sizes) - 1)
-        return min(avail_w, width), max((size[1] for size in sizes), default=0)
-
-    def layout(self, x, y, w):
-        sizes = [child._measure(w) for child in self.children]
-        height = max((size[1] for size in sizes), default=0)
-        geometry = (x, y, w, height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        left = x
-        for child, (child_w, child_h) in zip(self.children, sizes):
-            child.layout(left, y + (height - child_h) // 2, child_w)
-            left += child_w + self.gap
-
-    def destroy(self):
-        for child in self.children:
-            child.destroy()
-        super().destroy()
-
-
-class _ActionRow(canvasui.Widget):
-    """One flexible field followed by natural-width actions."""
-
-    def __init__(self, field, actions, gap=6):
-        super().__init__()
-        self.field = field
-        self.actions = list(actions)
-        self.gap = theme.sc(gap)
-
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        self.field._attach(scene, self)
-        for action in self.actions:
-            action._attach(scene, self)
-
-    def measure(self, avail_w):
-        sizes = [action._measure(avail_w) for action in self.actions]
-        reserved = sum(width for width, _height in sizes)
-        reserved += self.gap * len(self.actions)
-        field_size = self.field._measure(max(1, avail_w - reserved))
-        return avail_w, max([field_size[1]] + [height for _width, height in sizes])
-
-    def layout(self, x, y, w):
-        sizes = [action._measure(w) for action in self.actions]
-        reserved = sum(width for width, _height in sizes)
-        reserved += self.gap * len(self.actions)
-        field_w = max(1, w - reserved)
-        field_h = self.field._measure(field_w)[1]
-        height = max([field_h] + [item[1] for item in sizes])
-        geometry = (x, y, w, height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self.field.layout(x, y + (height - field_h) // 2, field_w)
-        left = x + field_w + self.gap
-        for action, (action_w, action_h) in zip(self.actions, sizes):
-            action.layout(left, y + (height - action_h) // 2, action_w)
-            left += action_w + self.gap
-
-    def destroy(self):
-        self.field.destroy()
-        for action in self.actions:
-            action.destroy()
-        super().destroy()
-
-
-class _CorrectionRow(canvasui.Widget):
-    def __init__(self, heard, arrow, right, add, gap=8):
-        super().__init__()
-        self.heard = heard
-        self.arrow = arrow
-        self.right = right
-        self.add = add
-        self.gap = theme.sc(gap)
-
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        for child in (self.heard, self.arrow, self.right, self.add):
-            child._attach(scene, self)
-
-    def measure(self, avail_w):
-        return avail_w, max(
-            child._measure(avail_w)[1]
-            for child in (self.heard, self.arrow, self.right, self.add))
-
-    def layout(self, x, y, w):
-        arrow_w, arrow_h = self.arrow._measure(w)
-        add_w, add_h = self.add._measure(w)
-        field_w = max(1, (w - arrow_w - add_w - self.gap * 3) // 2)
-        heard_h = self.heard._measure(field_w)[1]
-        right_h = self.right._measure(field_w)[1]
-        height = max(arrow_h, add_h, heard_h, right_h)
-        geometry = (x, y, w, height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        left = x
-        self.heard.layout(left, y + (height - heard_h) // 2, field_w)
-        left += field_w + self.gap
-        self.arrow.layout(left, y + (height - arrow_h) // 2, arrow_w)
-        left += arrow_w + self.gap
-        self.right.layout(left, y + (height - right_h) // 2, field_w)
-        left += field_w + self.gap
-        self.add.layout(left, y + (height - add_h) // 2, add_w)
-
-    def destroy(self):
-        for child in (self.heard, self.arrow, self.right, self.add):
-            child.destroy()
-        super().destroy()
-
-
-_PREVIEW_FONT = None
-
-
-def _fit_line(text, avail):
-    """Largest prefix of text (+ellipsis) that fits avail px, single line."""
-    global _PREVIEW_FONT
-    if _PREVIEW_FONT is None:
-        _PREVIEW_FONT = tkfont.Font(font=("Segoe UI", 10))
-    font = _PREVIEW_FONT
-    if font.measure(text) <= avail:
-        return text
-    lo, hi = 0, len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if font.measure(text[:mid].rstrip() + "…") <= avail:
-            lo = mid
-        else:
-            hi = mid - 1
-    return text[:lo].rstrip() + "…"
-
-
-class _Centered(canvasui.Widget):
-    def __init__(self, child, max_width=None):
-        super().__init__()
-        self.child = child
-        self.max_width = theme.sc(max_width) if max_width else None
-
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        self.child._attach(scene, self)
-
-    def measure(self, avail_w):
-        child_w = min(avail_w, self.max_width or avail_w)
-        return avail_w, self.child._measure(child_w)[1]
-
-    def layout(self, x, y, w):
-        limit = min(w, self.max_width or w)
-        child_w, child_h = self.child._measure(limit)
-        geometry = (x, y, w, child_h)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self.child.layout(x + (w - child_w) // 2, y, child_w)
-
-    def destroy(self):
-        self.child.destroy()
-
-
-class _VCenter(canvasui.Widget):
-    """Centers its child in the scroll viewport (the old About pack(expand))."""
-
-    def __init__(self, child):
-        super().__init__()
-        self.child = child
-
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        self.child._attach(scene, self)
-
-    def _height(self, avail_w):
-        child_h = self.child._measure(avail_w)[1]
-        pad = self.scene.padding * 2 if self.scene else 0
-        return max(child_h, self.scene._viewport_height - pad)
-
-    def measure(self, avail_w):
-        return avail_w, self._height(avail_w)
-
-    def _measure(self, avail_w):
-        # Viewport height changes must invalidate the cached measurement
-        # (same pattern as ListView's responsive height).
-        if (self._measure_result is not None
-                and self._measure_result[1] != self._height(avail_w)):
-            self._measure_width = None
-            self._measure_result = None
-        return super()._measure(avail_w)
-
-    def layout(self, x, y, w):
-        child_h = self.child._measure(w)[1]
-        height = self._height(w)
-        geometry = (x, y, w, height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self.child.layout(x, y + max(0, (height - child_h) // 2), w)
-
-    def destroy(self):
-        self.child.destroy()
-        super().destroy()
-
-
-class _ClickableText(canvasui.TextBlock):
-    focusable = True
-
-    def __init__(self, text, on_click, font=HINT_FONT, fill=None):
-        super().__init__(text, font, fill or theme.ACCENT, wrap=False)
-        self.on_click = on_click
-
-    def layout(self, x, y, w):
-        super().layout(x, y, w)
-        self._bind_clickable()
-
-    def hover(self, state):
-        super().hover(state)
-        if self._item is not None:
-            self.canvas.itemconfigure(
-                self._item, fill=theme.ACCENT_HOVER if state else self.fill)
-
-    def activate(self):
-        self.on_click()
-
-
-class _DictionaryListRow(canvasui.Widget):
-    def __init__(self, text, on_remove):
-        super().__init__()
-        self.text = text
-        self.on_remove = on_remove
-        self.height = theme.sc(32)
-        self._background = None
-        self._label = None
-        self._remove = None
-
-    def measure(self, avail_w):
-        return avail_w, self.height
-
-    def _ensure(self):
-        if self._background is not None:
-            return
-        remove_tag = self.tag + "_remove"
-        self._background = self.canvas.create_rectangle(
-            0, 0, 0, 0, width=0, fill=theme.MANTLE, tags=(self.tag,))
-        self._label = self.canvas.create_text(
-            0, 0, anchor="w", text=self.text, fill=theme.TEXT,
-            font=("Segoe UI", 10), tags=(self.tag,))
-        self._remove = self.canvas.create_text(
-            0, 0, text="✕", fill=theme.MUTED, font=("Segoe UI", 10),
-            tags=(self.tag, remove_tag))
-        self._items.extend((self._background, self._label, self._remove))
-        self.canvas.tag_bind(self.tag, "<Enter>", lambda _e: self._hover(True))
-        self.canvas.tag_bind(self.tag, "<Leave>", lambda _e: self._hover(False))
-        self.canvas.tag_bind(remove_tag, "<Button-1>",
-                             lambda _e: self.on_remove())
-        self.canvas.tag_bind(remove_tag, "<Enter>", lambda _e: self.canvas.itemconfigure(
-            self._remove, fill=theme.RED))
-        self.canvas.tag_bind(remove_tag, "<Leave>", lambda _e: self.canvas.itemconfigure(
-            self._remove, fill=theme.MUTED))
-
-    def _hover(self, inside):
-        self.canvas.itemconfigure(
-            self._background, fill=theme.ROW_HOVER if inside else theme.MANTLE)
-
-    def layout(self, x, y, w):
-        self._ensure()
-        geometry = (round(x), round(y), round(w), self.height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self.scene._coords(self._background, x, y, x + w, y + self.height)
-        self.scene._coords(self._label, x + theme.sc(10), y + self.height / 2)
-        self.scene._coords(self._remove, x + w - theme.sc(14), y + self.height / 2)
-
-    def clip(self, top, bottom):
-        # Keep the row inside the list surface: clamp the background band and
-        # drop the text once its centre nears the edge (a half-line would spill
-        # otherwise). See ListView._layout_rows.
-        if self._geometry is None:
-            return
-        x, y, w, _h = self._geometry
-        lo, hi = max(top, y), min(bottom, y + self.height)
-        if hi <= lo:
-            for item in (self._background, self._label, self._remove):
-                self.scene._itemconfigure(item, state="hidden")
-            return
-        self.scene._itemconfigure(self._background, state="normal")
-        self.scene._coords(self._background, x, lo, x + w, hi)
-        center = y + self.height / 2
-        margin = theme.sc(9)
-        shown = "normal" if top + margin <= center <= bottom - margin else "hidden"
-        self.scene._itemconfigure(self._label, state=shown)
-        self.scene._itemconfigure(self._remove, state=shown)
-
-
-class _EmptyListRow(canvasui.TextBlock):
-    def __init__(self, text):
-        super().__init__(text, HINT_FONT, theme.MUTED)
-        self.pad = theme.sc(10)
-
-    def measure(self, avail_w):
-        width, height = super().measure(max(1, avail_w - self.pad * 2))
-        return avail_w, height + theme.sc(16)
-
-    def layout(self, x, y, w):
-        height = self._measure(w)[1]
-        # TextBlock.layout overwrites self._geometry with its own 3-tuple, so
-        # remember this row's band separately for clip().
-        self._band = (y, height)
-        canvasui.TextBlock.layout(
-            self, x + self.pad, y + theme.sc(8), max(1, w - self.pad * 2))
-
-    def clip(self, top, bottom):
-        band = getattr(self, "_band", None)
-        if self._item is None or band is None:
-            return
-        y, h = band
-        inside = top <= y and y + h <= bottom
-        self.scene._itemconfigure(
-            self._item, state="normal" if inside else "hidden")
-
-
-class _HistoryRow(canvasui.Widget):
-    BASE_H = theme.sc(34)
-
-    def __init__(self, owner, entry):
-        super().__init__()
-        self.owner = owner
-        self.entry = entry
-        self.ok = entry.get("ok", True)
-        self.expanded = self.ok and owner._hist_expanded_ts == entry.get("ts")
-        self._background = None
-        self._time_item = None
-        self._preview_item = None
-        self._detail = []
-        self._buttons = []
-        if self.ok:
-            text = entry.get("text", "")
-            self._buttons = [
-                canvasui.PillButton(
-                    "Copy", "neutral", lambda value=text: owner._copy(value),
-                    small=True, compact=True),
-            ]
-            if self.expanded:
-                self._full = canvasui.TextBlock(text, ("Segoe UI", 10))
-                raw = entry.get("raw")
-                self._raw = (canvasui.TextBlock(
-                    f"Heard: {raw}", HINT_FONT, theme.MUTED)
-                    if raw and raw != text else None)
-                self._detail = [self._full]
-                if self._raw:
-                    self._detail.append(self._raw)
-                self._raw_button = (canvasui.PillButton(
-                    "Copy raw", "neutral", lambda value=raw: owner._copy(value),
-                    small=True, compact=True) if raw else None)
-                self._correction_button = canvasui.PillButton(
-                    "Add correction…", "neutral",
-                    lambda value=raw or text: owner._hist_add_correction(value),
-                    small=True, compact=True)
-                if self._raw_button:
-                    self._detail.append(self._raw_button)
-                self._detail.append(self._correction_button)
-        else:
-            wav = entry.get("wav")
-            if wav is not None:
-                self._buttons = [canvasui.PillButton(
-                    "Retry", "accent", lambda value=wav: owner._retry(value),
-                    small=True, compact=True)]
-
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        for child in self._buttons + self._detail:
-            child._attach(scene, self)
-
-    def _backdrop_for_child(self, _child):
-        return theme.MANTLE
-
-    def _detail_metrics(self, avail_w):
-        if not self.expanded:
-            return 0, None
-        detail_w = max(1, avail_w - theme.sc(76))
-        full_h = self._full._measure(detail_w)[1]
-        raw_h = self._raw._measure(detail_w)[1] if self._raw else 0
-        button_h = self._correction_button._measure(detail_w)[1]
-        height = full_h + theme.sc(7) + button_h + theme.sc(10)
-        if self._raw:
-            height += theme.sc(4) + raw_h
-        return height, (detail_w, full_h, raw_h, button_h)
-
-    def measure(self, avail_w):
-        detail_h, _metrics = self._detail_metrics(avail_w)
-        return avail_w, self.BASE_H + detail_h
-
-    def _ensure(self):
-        if self._background is not None:
-            return
-        self._background = self.canvas.create_rectangle(
-            0, 0, 0, 0, width=0, fill=theme.MANTLE, tags=(self.tag,))
-        when = time.strftime("%H:%M", time.localtime(self.entry.get("ts", 0)))
-        if self.ok:
-            shown_when = when
-            color = theme.MUTED
-            preview = self.entry.get("text", "").replace("\n", " ").strip()
-            if len(preview) > 46:
-                preview = preview[:45] + "…"
-        else:
-            shown_when = f"✕ {when}"
-            color = theme.AMBER
-            preview = " ".join(self.entry.get("error", "").split())
-            if len(preview) > 60:
-                preview = preview[:59].rstrip() + "…"
-        self._time_item = self.canvas.create_text(
-            0, 0, anchor="w", text=shown_when, fill=color,
-            font=HINT_FONT, tags=(self.tag,))
-        self._preview_text = preview
-        self._preview_avail = None
-        self._preview_item = self.canvas.create_text(
-            0, 0, anchor="w", text=preview,
-            fill=theme.TEXT if self.ok else theme.SUBTEXT,
-            font=("Segoe UI", 10), tags=(self.tag,))
-        self._items.extend(
-            (self._background, self._time_item, self._preview_item))
-        self.canvas.tag_bind(self.tag, "<Enter>", lambda _e: self.canvas.itemconfigure(
-            self._background, fill=theme.ROW_HOVER))
-        self.canvas.tag_bind(self.tag, "<Leave>", lambda _e: self.canvas.itemconfigure(
-            self._background, fill=theme.MANTLE))
-        if self.ok:
-            self.canvas.tag_bind(
-                self.tag, "<Button-1>",
-                lambda _e: self.owner._hist_toggle(self.entry.get("ts")))
-
-    def layout(self, x, y, w):
-        self._ensure()
-        height = self._measure(w)[1]
-        geometry = (round(x), round(y), round(w), height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self.scene._coords(self._background, x, y, x + w, y + self.BASE_H)
-        self.scene._coords(
-            self._time_item, x + theme.sc(10), y + self.BASE_H / 2)
-        right = x + w - theme.sc(8)
-        for button in reversed(self._buttons):
-            button_w, button_h = button._measure(w)
-            right -= button_w
-            button.layout(right, y + (self.BASE_H - button_h) // 2, button_w)
-            right -= theme.sc(6)
-        self.scene._coords(
-            self._preview_item, x + theme.sc(66), y + self.BASE_H / 2)
-        # Single line with pixel-fit ellipsis — the old window truncated
-        # previews rather than wrapping them (row height stays uniform).
-        avail = max(1, int(right - x - theme.sc(70)))
-        if avail != self._preview_avail:
-            self._preview_avail = avail
-            self.scene._itemconfigure(
-                self._preview_item, text=_fit_line(self._preview_text, avail))
-        if not self.expanded:
-            return
-        _detail_h, metrics = self._detail_metrics(w)
-        detail_w, full_h, raw_h, button_h = metrics
-        left = x + theme.sc(66)
-        top = y + self.BASE_H
-        self._full.layout(left, top, detail_w)
-        top += full_h
-        if self._raw:
-            top += theme.sc(4)
-            self._raw.layout(left, top, detail_w)
-            top += raw_h
-        top += theme.sc(7)
-        action_left = left
-        if self._raw_button:
-            raw_w, _raw_button_h = self._raw_button._measure(detail_w)
-            self._raw_button.layout(action_left, top, raw_w)
-            action_left += raw_w + theme.sc(6)
-        correction_w, _correction_h = self._correction_button._measure(detail_w)
-        self._correction_button.layout(action_left, top, correction_w)
-
-    def clip(self, top, bottom):
-        # Contain the row within the list surface. The header band is clamped;
-        # its text and every button/detail sub-widget hide once they fall
-        # (partly) outside the viewport, so nothing spills past the surface.
-        if self._geometry is None:
-            return
-        x, y, w, _h = self._geometry
-        lo, hi = max(top, y), min(bottom, y + self.BASE_H)
-        if hi <= lo:
-            for item in (self._background, self._time_item, self._preview_item):
-                self.scene._itemconfigure(item, state="hidden")
-        else:
-            self.scene._itemconfigure(self._background, state="normal")
-            self.scene._coords(self._background, x, lo, x + w, hi)
-            center = y + self.BASE_H / 2
-            margin = theme.sc(9)
-            shown = ("normal" if top + margin <= center <= bottom - margin
-                     else "hidden")
-            self.scene._itemconfigure(self._time_item, state=shown)
-            self.scene._itemconfigure(self._preview_item, state=shown)
-        for widget in self._buttons + self._detail:
-            geo = widget._geometry
-            if geo is None:
-                continue
-            wy = geo[1]
-            wh = geo[3] if len(geo) >= 4 else widget._measure(geo[2])[1]
-            state = "normal" if top <= wy and wy + wh <= bottom else "hidden"
-            for item in widget._items:
-                self.scene._itemconfigure(item, state=state)
-
-    def list_tags(self):
-        return [self.tag] + [child.tag for child in self._buttons + self._detail]
-
-    def destroy(self):
-        for child in self._buttons + self._detail:
-            child.destroy()
-        super().destroy()
-
-
-class _StaticPill(canvasui.PillButton):
-    focusable = False
-
-    def hover(self, _state):
-        pass
-
-    def press(self, _state):
-        pass
-
-    def activate(self):
-        pass
-
-
-class _DynamicDropdown(canvasui.DropdownButton):
-    def __init__(self, options_getter, get, set, width=180):
-        self.options_getter = options_getter
-        super().__init__(options_getter(), get, set, width)
-
-    def open_popup(self):
-        self.options = list(self.options_getter())
-        super().open_popup()
-
-
-class _Meter(canvasui.Widget):
     def __init__(self, width=200):
         super().__init__()
-        self.width = theme.sc(width)
-        self.height = theme.sc(10)
+        self.setFixedSize(width, 10)
         self.level = 0.0
-        self._track = []
-        self._fill = []
-
-    def measure(self, avail_w):
-        return min(avail_w, self.width), self.height
-
-    def _ensure(self):
-        if self._track:
-            return
-        for color, target in ((theme.SURFACE0, self._track),
-                              (theme.ACCENT, self._fill)):
-            target.extend((
-                self.canvas.create_oval(0, 0, 0, 0, width=0, fill=color,
-                                        tags=(self.tag,)),
-                self.canvas.create_rectangle(0, 0, 0, 0, width=0, fill=color,
-                                             tags=(self.tag,)),
-                self.canvas.create_oval(0, 0, 0, 0, width=0, fill=color,
-                                        tags=(self.tag,)),
-            ))
-        self._items.extend(self._track + self._fill)
-
-    def layout(self, x, y, w):
-        self._ensure()
-        width = min(w, self.width)
-        geometry = (round(x), round(y), round(width), self.height)
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        self._draw()
 
     def set_level(self, level):
         level = max(0.0, min(1.0, float(level)))
-        if level == self.level:
-            return
-        self.level = level
-        if self._geometry:
-            self._draw()
+        if level != self.level:
+            self.level = level
+            self.update()
 
-    def _draw(self):
-        x, y, width, height = self._geometry
-        radius = height / 2
-        track = (
-            (x, y, x + height, y + height),
-            (x + radius, y, x + width - radius, y + height),
-            (x + width - height, y, x + width, y + height),
-        )
-        for item, coords in zip(self._track, track):
-            self.scene._coords(item, *coords)
-        filled = round(width * self.level)
-        if filled <= 0:
-            for item in self._fill:
-                self.scene._itemconfigure(item, state="hidden")
-            return
-        for item in self._fill:
-            self.scene._itemconfigure(item, state="normal")
-        cap = min(height, filled)
-        fill = (
-            (x, y, x + cap, y + height),
-            (x + radius, y, x + max(radius, filled), y + height),
-            (x + max(0, filled - height), y, x + filled, y + height),
-        )
-        for item, coords in zip(self._fill, fill):
-            self.scene._coords(item, *coords)
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.SURFACE0))
+        p.drawRoundedRect(0, 0, self.width(), 10, 5, 5)
+        filled = round(self.width() * self.level)
+        if filled > 2:
+            p.setBrush(QColor(theme.ACCENT))
+            p.drawRoundedRect(0, 0, filled, 10, 5, 5)
 
 
-class _Reveal(canvasui.Widget):
-    def __init__(self, child, visible=False):
+class NavItem(QAbstractButton):
+    """Sidebar entry: accent bar + glyph + label, hover/active states."""
+
+    def __init__(self, section, on_select):
         super().__init__()
-        self.child = child
-        self.visible = bool(visible)
+        self.section = section
+        self.setFixedHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self.active = False
+        self._hover = False
+        self._pixmaps = {
+            color: _pil_pixmap(_nav_glyph(section, color, 17))
+            for color in (theme.SUBTEXT, theme.ACCENT)}
+        self.clicked.connect(lambda _=False: on_select(section))
 
-    def _attach(self, scene, parent=None):
-        super()._attach(scene, parent)
-        if self.visible:
-            self.child._attach(scene, self)
+    def set_active(self, active):
+        if self.active != active:
+            self.active = active
+            self.update()
 
-    def measure(self, avail_w):
-        return self.child._measure(avail_w) if self.visible else (avail_w, 0)
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
 
-    def layout(self, x, y, w):
-        geometry = (x, y, w, self._measure(w)[1])
-        if geometry == self._geometry:
-            return
-        self._geometry = geometry
-        if self.visible:
-            self.child.layout(x, y, w)
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
 
-    def show(self):
-        self.set_visible(True)
-
-    def set_visible(self, visible):
-        visible = bool(visible)
-        if self.visible == visible:
-            return
-        self.visible = visible
-        if visible and self.child.scene is None:
-            self.child._attach(self.scene, self)
-        state = "normal" if visible else "hidden"
-        self._set_tree_state(self.child, state)
-        if not visible:
-            self.scene._focusables = [
-                widget for widget in self.scene._focusables
-                if not self._contains(widget)]
-        self._invalidate_measure()
-        self.scene.relayout()
-
-    def _contains(self, target):
-        node = target
-        while node is not None:
-            if node is self.child:
-                return True
-            node = node.parent
-        return False
-
-    @staticmethod
-    def _set_tree_state(widget, state):
-        if widget.canvas is None:
-            return
-        widget.canvas.itemconfigure(widget.tag, state=state)
-        for child in getattr(widget, "children", ()):
-            _Reveal._set_tree_state(child, state)
-        child = getattr(widget, "child", None)
-        if child is not None:
-            _Reveal._set_tree_state(child, state)
-
-    def destroy(self):
-        self.child.destroy()
-        super().destroy()
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        if self.active:
+            p.fillRect(self.rect(), QColor(theme.SURFACE0))
+            p.fillRect(0, 0, 3, self.height(), QColor(theme.ACCENT))
+        elif self._hover:
+            p.fillRect(self.rect(), QColor(theme.NAV_HOVER))
+        else:
+            p.fillRect(self.rect(), QColor(theme.MANTLE))
+        pixmap = self._pixmaps[theme.ACCENT if self.active else theme.SUBTEXT]
+        p.drawPixmap(18, (self.height() - 17) // 2, pixmap)
+        font = self.font()
+        font.setPointSize(10)
+        font.setFamily("Segoe UI Semibold" if self.active else "Segoe UI")
+        p.setFont(font)
+        p.setPen(QColor(theme.TEXT if self.active else theme.SUBTEXT))
+        p.drawText(self.rect().adjusted(46, 0, -4, 0),
+                   Qt.AlignVCenter | Qt.AlignLeft, self.section)
 
 
-class SettingsWindow:
-    """A single reusable canvas settings Toplevel, callable from any thread."""
+class ListRow(QWidget):
+    """Hoverable MANTLE row used by dictionary/history list panels."""
 
-    def __init__(
-        self,
-        root: tk.Tk,
-        cfg: dict,
-        on_save: Callable[[dict], None],
-        on_capture_start: Optional[Callable[[], None]] = None,
-        on_capture_end: Optional[Callable[[], None]] = None,
-        history_getter: Optional[Callable[[], List[dict]]] = None,
-        on_retry: Optional[Callable[[bytes], None]] = None,
-        config_getter: Optional[Callable[[], dict]] = None,
-    ):
-        self._root = root
+    def __init__(self):
+        super().__init__(objectName="listRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
+    def _set_hover(self, on):
+        self.setProperty("hover", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def enterEvent(self, event):
+        self._set_hover(True)
+
+    def leaveEvent(self, event):
+        self._set_hover(False)
+
+
+ROW_H = 32
+
+
+def list_panel(rows_visible=None):
+    """MANTLE-backed rounded panel holding a scrollable column of rows.
+
+    rows_visible fixes the height to that many whole rows, so the panel
+    never cuts a row in half at rest (the old ListView clipped partial
+    rows for the same reason)."""
+    panel = QFrame(objectName="listPanel")
+    outer = QVBoxLayout(panel)
+    outer.setContentsMargins(1, 2, 1, 2)
+    scroll = QScrollArea(widgetResizable=True)
+    scroll.setStyleSheet(
+        f"QScrollArea {{ background: {theme.MANTLE}; border: none; }}"
+        "QScrollBar:vertical { background: transparent; width: 10px;"
+        "margin: 0; border: none; }"
+        f"QScrollBar::handle:vertical {{ background: {theme.SURFACE1};"
+        "border-radius: 5px; min-height: 24px; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
+        "{ height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
+        "{ background: transparent; }")
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    inner = QWidget()
+    inner.setStyleSheet(f"background: {theme.MANTLE};")
+    column = QVBoxLayout(inner)
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(0)
+    column.addStretch(1)
+    scroll.setWidget(inner)
+    outer.addWidget(scroll)
+    if rows_visible:
+        panel.setFixedHeight(ROW_H * rows_visible + 6)
+    return panel, column
+
+
+def clear_rows(column):
+    while column.count() > 1:  # keep the trailing stretch
+        item = column.takeAt(0)
+        if item.widget() is not None:
+            item.widget().deleteLater()
+
+
+def empty_row(text):
+    row = ListRow()
+    lay = QHBoxLayout(row)
+    lay.setContentsMargins(10, 8, 10, 8)
+    lay.addWidget(hint_label(text))
+    return row
+
+
+class ElideLabel(QLabel):
+    """Single-line label elided at paint time — never demands width, so
+    it can't push its row's trailing buttons out of the panel."""
+
+    def __init__(self, text, color):
+        super().__init__()
+        self._full = " ".join(text.split())
+        self._color = QColor(color)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumHeight(self.fontMetrics().height())
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setPen(self._color)
+        p.setFont(self.font())
+        p.drawText(self.rect(), Qt.AlignVCenter | Qt.AlignLeft,
+                   self.fontMetrics().elidedText(
+                       self._full, Qt.ElideRight, self.width()))
+
+
+# --- The window ----------------------------------------------------------------
+
+class SettingsWindow(QObject):
+    """The Qt settings window; construct once, open() to show."""
+
+    _captured = Signal(object)
+    _tested = Signal(object)
+    _local_progress_sig = Signal(str)
+    _local_done_sig = Signal(object)
+
+    def __init__(self, cfg, on_save, on_capture_start=None,
+                 on_capture_end=None, history_getter=None, on_retry=None,
+                 config_getter=None):
+        super().__init__()
         self._config = dict(cfg)
         self._on_save = on_save
         self._on_capture_start = on_capture_start
@@ -753,194 +421,162 @@ class SettingsWindow:
         self._history_getter = history_getter
         self._on_retry = on_retry
         self._config_getter = config_getter
+
         self._win = None
-        self._scene = None
         self._active_section = None
-        self._queue = queue.Queue()
         self._capturing = False
+        self._capture_target = None
         self._testing = False
-        self._mic_testing = False
         self._mic_recorder = None
-        self._mic_after_id = None
-        self._mic_generation = 0
-        self._window_generation = 0
-        self._test_window_generation = None
-        self._saved_after_id = None
-        self._practice_after_id = None
-        self._hist_poll_id = None
         self._hist_expanded_ts = None
         self._hist_fp = None
         self._providers_advanced = False
         self._local_busy = None      # "install"/"load"/"eject" while working
         self._local_progress = ""
         self._local_error = ""
-        self._local_poll_id = None
-        self._shortcut_rows = {}
-        self._root.after(50, self._drain)
+
+        self._captured.connect(self._on_captured)
+        self._tested.connect(self._on_tested)
+        self._local_progress_sig.connect(self._on_local_progress)
+        self._local_done_sig.connect(self._on_local_done)
+
+    # --- Window lifecycle -------------------------------------------------
 
     def open(self):
-        self._queue.put(("open", None))
-
-    def _drain(self):
-        try:
-            while True:
-                command, payload = self._queue.get_nowait()
-                if command == "open":
-                    self._open()
-                elif command == "captured":
-                    self._on_captured(payload)
-                elif command == "tested":
-                    self._on_tested(payload)
-                elif command == "local_progress":
-                    self._local_progress = payload
-                    self._refresh_local_card()
-                elif command == "local_done":
-                    self._on_local_done(payload)
-        except queue.Empty:
-            pass
-        finally:
-            self._root.after(50, self._drain)
-
-    def _open(self):
         if self._config_getter is not None:
             self._config = dict(self._config_getter())
-        if self._win is not None and self._win.winfo_exists():
+        if self._win is not None:
             self._raise()
             return
-
-        win = tk.Toplevel(self._root)
+        win = QWidget(None, Qt.Window)
         self._win = win
-        self._window_generation += 1
-        win.withdraw()
-        win.title("Undertone")
-        win.configure(bg=theme.BASE)
-        win.resizable(True, True)
-        win.minsize(theme.sc(660), theme.sc(560))
-        win.protocol("WM_DELETE_WINDOW", self._close)
-        win.bind("<Escape>", self._on_escape)
-        try:
-            win.iconbitmap(str(ICON_ICO))
-        except tk.TclError:
-            pass
+        win.setWindowTitle("Undertone")
+        win.setWindowIcon(QIcon(str(ICON_ICO)))
+        win.setMinimumSize(MIN_W, MIN_H)
+        win.setStyleSheet(QSS.replace("__CHEVRON__", _chevron_url()))
+        win.closeEvent = self._close_event
+        win.keyPressEvent = self._key_press
 
-        self._sidebar = tk.Canvas(
-            win, width=theme.sc(SIDEBAR_W), bg=theme.MANTLE,
-            highlightthickness=0, bd=0)
-        self._sidebar.pack(side="left", fill="y")
-        self._sidebar.bind("<Configure>", self._layout_sidebar, add="+")
-        self._content = tk.Canvas(
-            win, bg=theme.BASE, highlightthickness=0, bd=0)
-        self._content.pack(side="left", fill="both", expand=True)
-        self._scene = canvasui.Scene(self._content, padding=28)
-        self._scene._scroll_callback = lambda _first, _last: self._position_saved()
-        self._saved_item = self._content.create_text(
-            0, 0, anchor="se", text="", fill=theme.GREEN,
-            font=HINT_FONT, tags=("saved_toast",))
-        self._content.bind("<Configure>", self._position_saved, add="+")
+        outer = QHBoxLayout(win)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_sidebar())
 
-        self._build_sidebar()
+        content_holder = QWidget()
+        holder_lay = QVBoxLayout(content_holder)
+        holder_lay.setContentsMargins(0, 0, 0, 0)
+        self._stack = QStackedWidget()
+        holder_lay.addWidget(self._stack)
+        outer.addWidget(content_holder, 1)
+
+        # "✓ Saved" toast pinned to the content's bottom-right corner.
+        self._saved_label = QLabel("", content_holder)
+        self._saved_label.setStyleSheet(
+            f"color: {theme.GREEN}; font-size: 9pt; background: transparent;")
+        self._saved_label.adjustSize()
+        self._saved_timer = QTimer(win)
+        self._saved_timer.setSingleShot(True)
+        self._saved_timer.timeout.connect(
+            lambda: self._saved_label.setText(""))
+        content_holder.resizeEvent = self._position_saved
+        self._content_holder = content_holder
+
         first = "Get started" if self._setup_incomplete() else "General"
         self._select_section(first)
         self._restore_geometry()
-        canvasui.style_toplevel(win, ICON_ICO)
+        win.show()
+        _dark_titlebar(win)
         self._raise()
 
-    def _build_sidebar(self, hide_get_started=False):
-        canvas = self._sidebar
-        canvas.delete("all")
-        self._version_item = None
-        self._brand_photo = ImageTk.PhotoImage(
-            load_app_image(theme.sc(30)))
-        canvas.create_image(theme.sc(18), theme.sc(20), anchor="nw",
-                            image=self._brand_photo)
-        canvas.create_text(theme.sc(57), theme.sc(35), anchor="w",
-                           text="Undertone", fill=theme.TEXT, font=TITLE_FONT)
-        sections = [name for name in SECTIONS
-                    if name != "Get started"
-                    or (self._setup_incomplete() and not hide_get_started)]
-        self._nav_items = {}
-        self._nav_photos = {}
-        top = theme.sc(76)
-        row_h = theme.sc(40)
-        width = theme.sc(SIDEBAR_W)
-        for index, section in enumerate(sections):
-            y = top + index * row_h
-            tag = "nav_" + section.replace(" ", "_")
-            background = canvas.create_rectangle(
-                0, y, width, y + row_h, width=0, fill=theme.MANTLE,
-                tags=(tag,))
-            bar = canvas.create_rectangle(
-                0, y, theme.sc(3), y + row_h, width=0, fill=theme.MANTLE,
-                tags=(tag,))
-            photos = {}
-            for color in (theme.SUBTEXT, theme.ACCENT):
-                photos[color] = ImageTk.PhotoImage(
-                    _nav_glyph(section, color, theme.sc(17)))
-            self._nav_photos[section] = photos
-            icon = canvas.create_image(
-                theme.sc(18), y + row_h / 2, anchor="w",
-                image=photos[theme.SUBTEXT], tags=(tag,))
-            label = canvas.create_text(
-                theme.sc(46), y + row_h / 2, anchor="w", text=section,
-                fill=theme.SUBTEXT, font=NAV_FONT, tags=(tag,))
-            self._nav_items[section] = {
-                "tag": tag, "background": background, "bar": bar,
-                "icon": icon, "label": label,
-            }
-            canvas.tag_bind(tag, "<Enter>",
-                            lambda _e, name=section: self._nav_hover(name, True))
-            canvas.tag_bind(tag, "<Leave>",
-                            lambda _e, name=section: self._nav_hover(name, False))
-            canvas.tag_bind(tag, "<Button-1>",
-                            lambda _e, name=section: self._select_section(name))
-        self._layout_sidebar()
-        self._paint_nav()
+    def _raise(self):
+        win = self._win
+        win.show()
+        win.setWindowState(win.windowState() & ~Qt.WindowMinimized)
+        win.raise_()
+        win.activateWindow()
 
-    def _layout_sidebar(self, _event=None):
-        if self._win is None or not hasattr(self, "_sidebar"):
-            return
-        height = max(1, self._sidebar.winfo_height())
-        version = getattr(self, "_version_item", None)
-        if version is None:
-            from config import APP_VERSION
-            self._version_item = self._sidebar.create_text(
-                theme.sc(18), height - theme.sc(14), anchor="sw",
-                text=f"Version {APP_VERSION}", fill=theme.MUTED,
-                font=("Segoe UI", 8))
+    def _key_press(self, event):
+        if event.key() == Qt.Key_Escape and not self._capturing:
+            self._win.close()
         else:
-            self._sidebar.coords(version, theme.sc(18), height - theme.sc(14))
+            QWidget.keyPressEvent(self._win, event)
 
-    def _nav_hover(self, section, inside):
-        if section == self._active_section:
+    def _close_event(self, event):
+        if self._capturing:
+            row = self._shortcut_rows.get(self._capture_target)
+            if row:
+                row["error"].setText(
+                    "Finish the shortcut, or press Esc to cancel capture.")
+                row["error"].show()
+                row["chip"].setText("Press keys…")
+            self._raise()
+            event.ignore()
             return
-        item = self._nav_items.get(section)
-        if item:
-            self._sidebar.itemconfigure(
-                item["background"], fill=theme.NAV_HOVER if inside else theme.MANTLE)
+        self._stop_mic_test()
+        geo = self._win.geometry()
+        self._config = {**self._config, "window_geometry":
+                        f"{geo.width()}x{geo.height()}"
+                        f"{geo.x():+d}{geo.y():+d}"}
+        self._on_save(self._config)
+        event.accept()
+        self._win.deleteLater()
+        self._win = None
+        self._active_section = None
 
-    def _paint_nav(self):
-        if not hasattr(self, "_nav_items"):
-            return
-        for name, item in self._nav_items.items():
-            active = name == self._active_section
-            bg = theme.SURFACE0 if active else theme.MANTLE
-            self._sidebar.itemconfigure(item["background"], fill=bg)
-            self._sidebar.itemconfigure(
-                item["bar"], fill=theme.ACCENT if active else bg)
-            self._sidebar.itemconfigure(
-                item["icon"], image=self._nav_photos[name][
-                    theme.ACCENT if active else theme.SUBTEXT])
-            self._sidebar.itemconfigure(
-                item["label"], fill=theme.TEXT if active else theme.SUBTEXT,
-                font=NAV_ACTIVE_FONT if active else NAV_FONT)
+    # --- Sidebar / sections -------------------------------------------------
+
+    def _build_sidebar(self):
+        bar = QFrame()
+        bar.setFixedWidth(SIDEBAR_W)
+        bar.setStyleSheet(f"background: {theme.MANTLE};")
+        lay = QVBoxLayout(bar)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        brand = QWidget()
+        brand.setStyleSheet("background: transparent;")
+        brand_lay = QHBoxLayout(brand)
+        brand_lay.setContentsMargins(18, 16, 8, 16)
+        icon = QLabel()
+        icon.setPixmap(_pil_pixmap(load_app_image(30)))
+        brand_lay.addWidget(icon)
+        name = QLabel("Undertone")
+        name.setStyleSheet('font-family: "Segoe UI Semibold";'
+                           'font-size: 12pt; background: transparent;')
+        brand_lay.addWidget(name, 1)
+        lay.addWidget(brand)
+
+        self._nav_items = {}
+        for section in self._visible_sections():
+            item = NavItem(section, self._select_section)
+            self._nav_items[section] = item
+            lay.addWidget(item)
+        lay.addStretch(1)
+        version = QLabel(f"Version {APP_VERSION}")
+        version.setStyleSheet(f"color: {theme.MUTED}; font-size: 8pt;"
+                              "background: transparent;")
+        version.setContentsMargins(18, 0, 0, 12)
+        lay.addWidget(version)
+        self._sidebar = bar
+        self._sidebar_lay = lay
+        return bar
+
+    def _visible_sections(self, hide_get_started=False):
+        return [name for name in SECTIONS
+                if name != "Get started"
+                or (self._setup_incomplete() and not hide_get_started)]
+
+    def _remove_get_started_nav(self):
+        item = self._nav_items.pop("Get started", None)
+        if item is not None:
+            item.deleteLater()
 
     def _select_section(self, section):
-        if self._scene is None:
+        if self._win is None:
             return
-        self._cancel_section_tasks()
         self._active_section = section
-        self._paint_nav()
-        self._content.yview_moveto(0)
+        for name, item in self._nav_items.items():
+            item.set_active(name == section)
         builders = {
             "Get started": self._build_get_started,
             "General": self._build_general,
@@ -949,120 +585,196 @@ class SettingsWindow:
             "Providers": self._build_providers,
             "About": self._build_about,
         }
-        root = builders[section]()
-        self._scene.set_root(root)
-        self._content.yview_moveto(0)
-        self._position_saved()
+        old = self._stack.currentWidget()
+        page = self._wrap_scroll(builders[section]())
+        self._stack.addWidget(page)
+        self._stack.setCurrentWidget(page)
+        if old is not None:
+            self._stack.removeWidget(old)
+            old.deleteLater()   # kills the old section's QTimers with it
+        self._saved_label.raise_()
 
-    def _heading(self, text):
-        return canvasui.TextBlock(text, HEADER_FONT, wrap=False)
+    def _wrap_scroll(self, inner):
+        scroll = QScrollArea(widgetResizable=True)
+        holder = QWidget()
+        lay = QVBoxLayout(holder)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(9)
+        lay.addWidget(inner)
+        lay.addStretch(1)
+        scroll.setWidget(holder)
+        return scroll
 
-    def _group(self, text):
-        return canvasui.TextBlock(text, GROUP_FONT, theme.SUBTEXT, wrap=False)
+    def _section_column(self, heading):
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(9)
+        label = QLabel(heading, objectName="heading")
+        col.addWidget(label)
+        return box, col
 
-    def _card(self, title, hint, control=None):
-        return canvasui.Card(canvasui.Row(title, hint, control))
+    def _group_label(self, text):
+        return QLabel(text, objectName="group")
+
+    # --- General -----------------------------------------------------------
 
     def _build_general(self):
-        children = [self._heading("General")]
+        box, col = self._section_column("General")
         if not self._stt_configured():
-            target = "Get started" if "Get started" in self._nav_items else "Providers"
-            children.append(canvasui.Card(canvasui.Row(
+            target = ("Get started" if "Get started" in self._nav_items
+                      else "Providers")
+            col.addWidget(row_card(
                 "Finish setting up Undertone",
-                "Add an API key for your transcription provider to start dictating.",
-                canvasui.PillButton(
-                    f"Open {target}", "accent",
-                    lambda name=target: self._select_section(name), small=True)),
-                fill=theme.BANNER_BG, border=theme.BANNER_BORDER))
+                "Add an API key for your transcription provider to start "
+                "dictating.",
+                pill_button(f"Open {target}", "accent",
+                            lambda name=target: self._select_section(name)),
+                object_name="banner"))
 
         self._shortcut_rows = {}
-        children.extend((self._group("Shortcuts"), self._shortcut_card(
+        col.addWidget(self._group_label("Shortcuts"))
+        col.addWidget(self._shortcut_card(
             "Push-to-talk", "hotkey",
             "Hold to dictate, release to transcribe. Double-tap to lock "
-            "hands-free; tap again to finish."), self._shortcut_card(
+            "hands-free; tap again to finish."))
+        col.addWidget(self._shortcut_card(
             "Re-paste last dictation", "repaste_hotkey",
-            "Pastes your most recent dictation again, wherever your cursor is now.")))
+            "Pastes your most recent dictation again, wherever your cursor "
+            "is now."))
 
-        children.append(self._group("Dictation"))
-        language = canvasui.DropdownButton(
-            LANGUAGES, lambda: self._config.get("language", "en"),
-            lambda value: self._apply(language=value), width=170)
-        children.append(self._card(
-            "Spoken language", "The language you dictate in.", language))
+        col.addWidget(self._group_label("Dictation"))
+        language = QComboBox()
+        for label, code in LANGUAGES:
+            language.addItem(label, code)
+        language.setCurrentIndex(max(0, [code for _l, code in LANGUAGES]
+                                     .index(self._config.get("language",
+                                                             "en"))))
+        language.currentIndexChanged.connect(
+            lambda _i: self._apply(language=language.currentData()))
+        language.setFixedWidth(170)
+        col.addWidget(row_card("Spoken language",
+                               "The language you dictate in.", language))
 
-        microphone = _DynamicDropdown(
-            self._input_devices, lambda: self._config.get("input_device", ""),
-            lambda value: self._apply(input_device=value), width=190)
-        children.append(self._card(
-            "Microphone", "Where Undertone listens.", microphone))
-        children.append(self._toggle_card(
+        mic = self._mic_combo()
+        mic.setFixedWidth(190)
+        col.addWidget(row_card("Microphone", "Where Undertone listens.", mic))
+        col.addWidget(self._toggle_card(
             "Smart formatting", "smart_formatting",
             "Match spacing and capitalization to where you're typing."))
-
-        cleanup_hint = (
-            "Clean up fillers and false starts with a fast grok model. Sends "
-            "the text near your cursor to your cleanup provider.")
-        warning_text = self._cleanup_warning()
-        warning = canvasui.TextBlock(warning_text, HINT_FONT, theme.AMBER)
-        warning_reveal = _Reveal(warning, visible=bool(warning_text))
-        title = canvasui.VStack([
-            canvasui.TextBlock("AI cleanup", CARD_TITLE_FONT, wrap=False),
-            canvasui.TextBlock(cleanup_hint, HINT_FONT, theme.MUTED),
-            warning_reveal,
-        ], gap=2)
-
-        def toggle_cleanup(on):
-            self._apply(ai_cleanup=on)
-            text = self._cleanup_warning()
-            warning.set_text(text)
-            warning_reveal.set_visible(bool(text))
-
-        toggle = canvasui.Toggle(
-            self._config.get("ai_cleanup", True), toggle_cleanup)
-        children.append(canvasui.Card(canvasui.Row(title, control=toggle)))
-        children.append(self._toggle_card(
+        col.addWidget(self._cleanup_card())
+        col.addWidget(self._toggle_card(
             "Sound cues", "sound_cues",
             "Play a soft tick when recording starts and stops."))
 
-        children.extend((self._group("System"), self._autostart_card()))
-        return canvasui.VStack(children, gap=9)
+        col.addWidget(self._group_label("System"))
+        col.addWidget(self._autostart_card())
+        return box
+
+    def _mic_combo(self):
+        window = self
+
+        class MicCombo(QComboBox):
+            def showPopup(self):
+                window._fill_mic_options(self)
+                super().showPopup()
+
+        combo = MicCombo()
+        self._fill_mic_options(combo)
+        combo.currentIndexChanged.connect(
+            lambda _i: self._apply(input_device=combo.currentData()))
+        return combo
+
+    def _fill_mic_options(self, combo):
+        current = self._config.get("input_device", "")
+        combo.blockSignals(True)
+        combo.clear()
+        options = [("System default", "")]
+        try:
+            from recorder import list_input_devices
+            options.extend((_ellipsize(name), name)
+                           for _index, name in list_input_devices())
+        except Exception:
+            pass
+        if current and all(value != current for _label, value in options):
+            options.append((_ellipsize(current), current))
+        for label, value in options:
+            combo.addItem(label, value)
+        combo.setCurrentIndex(
+            max(0, [v for _l, v in options].index(current)
+                if current in [v for _l, v in options] else 0))
+        combo.blockSignals(False)
 
     def _shortcut_card(self, title, config_key, hint):
         combo = self._config.get(config_key, "")
-        hint_block = canvasui.TextBlock(hint, HINT_FONT, theme.MUTED)
-        error = canvasui.TextBlock("", HINT_FONT, theme.RED)
-        error_reveal = _Reveal(error)
-        info = canvasui.VStack([
-            canvasui.TextBlock(title, CARD_TITLE_FONT, wrap=False),
-            hint_block,
-            error_reveal,
-        ], gap=2)
-        chip = _StaticPill(pretty_combo(combo) or "None", "neutral", small=True)
-        button = canvasui.PillButton(
-            "Change", "neutral", lambda key=config_key: self._start_capture(key),
-            small=True)
-        control = _Inline((chip, button), gap=8)
+        chip = QLabel(pretty_combo(combo) or "None", objectName="chip")
+        change = pill_button("Change", "neutral",
+                             lambda key=config_key: self._start_capture(key))
+        control = QWidget()
+        control.setStyleSheet("background: transparent;")
+        control_lay = QHBoxLayout(control)
+        control_lay.setContentsMargins(0, 0, 0, 0)
+        control_lay.setSpacing(8)
+        control_lay.addWidget(chip)
+        control_lay.addWidget(change)
+
+        frame = QFrame(objectName="card")
+        outer = QHBoxLayout(frame)
+        outer.setContentsMargins(16, 12, 16, 12)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setProperty("class", "cardTitle")
+        text_col.addWidget(title_label)
+        text_col.addWidget(hint_label(hint))
+        error = hint_label("", theme.RED)
+        error.hide()
+        text_col.addWidget(error)
+        outer.addLayout(text_col, 1)
+        outer.addWidget(control, 0, Qt.AlignVCenter)
+
         self._shortcut_rows[config_key] = {
-            "button": button, "chip": chip,
-            "error": error, "error_reveal": error_reveal, "combo": combo,
-        }
-        return canvasui.Card(canvasui.Row(info, control=control))
+            "chip": chip, "button": change, "error": error, "combo": combo}
+        return frame
 
     def _toggle_card(self, title, key, hint):
-        toggle = canvasui.Toggle(
-            self._config.get(key, True),
-            lambda on, name=key: self._toggle_config(name, on))
-        return self._card(title, hint, toggle)
+        toggle = Toggle(self._config.get(key, True),
+                        lambda on, name=key: self._apply(**{name: on}))
+        return row_card(title, hint, toggle)
 
-    def _toggle_config(self, key, on):
-        self._apply(**{key: on})
+    def _cleanup_card(self):
+        frame = QFrame(objectName="card")
+        outer = QHBoxLayout(frame)
+        outer.setContentsMargins(16, 12, 16, 12)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title = QLabel("AI cleanup")
+        title.setProperty("class", "cardTitle")
+        text_col.addWidget(title)
+        text_col.addWidget(hint_label(
+            "Clean up fillers and false starts with a fast grok model. "
+            "Sends the text near your cursor to your cleanup provider."))
+        warning = hint_label(self._cleanup_warning(), theme.AMBER)
+        warning.setVisible(bool(self._cleanup_warning()))
+        text_col.addWidget(warning)
+        outer.addLayout(text_col, 1)
+
+        def change(on):
+            self._apply(ai_cleanup=on)
+            text = self._cleanup_warning()
+            warning.setText(text)
+            warning.setVisible(bool(text))
+
+        toggle = Toggle(self._config.get("ai_cleanup", True), change)
+        outer.addWidget(toggle, 0, Qt.AlignVCenter)
+        return frame
 
     def _autostart_card(self):
         try:
             initial = autostart.is_enabled()
         except Exception:
             initial = False
-        toggle = canvasui.Toggle(initial)
+        toggle = Toggle(initial)
 
         def change(on):
             try:
@@ -1072,143 +784,218 @@ class SettingsWindow:
                 toggle.set(not on)
 
         toggle.on_change = change
-        return self._card(
-            "Start with Windows", "Launch quietly in the tray when you sign in.",
-            toggle)
+        return row_card(
+            "Start with Windows",
+            "Launch quietly in the tray when you sign in.", toggle)
+
+    # --- Shortcut capture -----------------------------------------------------
+
+    def _start_capture(self, config_key):
+        if self._capturing:
+            return
+        row = self._shortcut_rows[config_key]
+        self._capturing = True
+        self._capture_target = config_key
+        row["error"].hide()
+        row["button"].setEnabled(False)
+        row["chip"].setText("Press keys…")
+        if self._on_capture_start is not None:
+            try:
+                self._on_capture_start()
+            except Exception:
+                pass
+        threading.Thread(target=self._capture_worker, daemon=True).start()
+
+    def _capture_worker(self):
+        try:
+            combo = keyboard.read_hotkey(suppress=True)
+        except Exception:
+            combo = None
+        self._captured.emit(combo)
+
+    def _on_captured(self, combo):
+        if not self._capturing:
+            return
+        self._capturing = False
+        target = self._capture_target
+        row = self._shortcut_rows.get(target)
+        alive = self._win is not None and row is not None
+        cancelled = combo is None or combo.strip().lower() in ("esc",
+                                                               "escape")
+        new_hotkey = None
+        if not cancelled:
+            try:
+                from hotkey import validate_hotkey
+                new_hotkey = validate_hotkey(combo)
+            except ValueError as exc:
+                if alive:
+                    row["error"].setText(str(exc))
+                    row["error"].show()
+                cancelled = True
+            except ImportError:
+                new_hotkey = combo.strip().lower()
+        if not cancelled:
+            for key, label in (("hotkey", "Push-to-talk"),
+                               ("repaste_hotkey", "Re-paste"),
+                               ("toggle_hotkey", "the toggle key")):
+                if key != target and self._config.get(key, "") == new_hotkey:
+                    if alive:
+                        row["error"].setText(f"Already used by {label}.")
+                        row["error"].show()
+                    cancelled = True
+                    break
+        if alive:
+            shown = row["combo"] if cancelled else new_hotkey
+            row["chip"].setText(pretty_combo(shown) or "None")
+            row["button"].setEnabled(True)
+            if not cancelled:
+                row["combo"] = new_hotkey
+        if self._on_capture_end is not None:
+            try:
+                self._on_capture_end()
+            except Exception:
+                pass
+        if not cancelled:
+            self._apply(**{target: new_hotkey})
+
+    # --- Get started -----------------------------------------------------------
 
     def _build_get_started(self):
+        box, col = self._section_column("Get started")
         self._gs_provider = self._config.get("provider", "xai")
         if self._gs_provider not in KEY_FIELDS:
             self._gs_provider = "xai"  # guided setup covers cloud keys only
-        self._gs_key_field = KEY_FIELDS.get(self._gs_provider, "api_key")
-        self._gs_key_value = self._config.get(self._gs_key_field, "")
-        self._test_status = canvasui.TextBlock("", HINT_FONT, theme.MUTED)
-        provider = canvasui.DropdownButton(
-            PROVIDERS_UI, lambda: self._gs_provider,
-            self._gs_pick_provider, width=150)
-        self._gs_key_entry = canvasui.EntryField(
-            lambda: self._gs_key_value, self._set_gs_key,
-            "Paste API key", secret=True, width=1000,
-            on_enter=self._gs_save_key)
-        save = canvasui.PillButton(
-            "Save", "accent", self._gs_save_key, small=True)
-        self._test_button = canvasui.PillButton(
-            "Test", "neutral", self._test_transcription, small=True)
-        self._gs_key_label = canvasui.TextBlock(
-            f"{PROVIDER_BY_ID.get(self._gs_provider, self._gs_provider)} API key",
-            HINT_FONT, theme.SUBTEXT, wrap=False)
-        step1 = canvasui.Card(canvasui.VStack([
-            canvasui.TextBlock(
-                "1.  Choose your transcription provider", CARD_TITLE_FONT,
-                wrap=False),
-            canvasui.Spacer(8),
-            provider,
-            canvasui.Spacer(8),
-            self._gs_key_label,
-            canvasui.Spacer(2),
-            _ActionRow(self._gs_key_entry, (save, self._test_button)),
-            canvasui.Spacer(4),
-            self._test_status,
-        ], gap=0))
+        self._gs_key_field = KEY_FIELDS[self._gs_provider]
 
-        self._mic_meter = _Meter()
-        self._mic_button = canvasui.PillButton(
-            "Test microphone", "neutral", self._start_mic_test, small=True)
-        self._mic_status = canvasui.TextBlock("", HINT_FONT, theme.RED)
-        step2 = canvasui.Card(canvasui.VStack([
-            canvasui.TextBlock("2.  Try your microphone", CARD_TITLE_FONT,
-                               wrap=False),
-            canvasui.Spacer(8),
-            _Inline((self._mic_button, self._mic_meter), gap=12),
-            self._mic_status,
-        ], gap=0))
+        step1, lay1 = card()
+        title1 = QLabel("1.  Choose your transcription provider")
+        title1.setProperty("class", "cardTitle")
+        lay1.addWidget(title1)
+        lay1.addSpacing(8)
+        provider = QComboBox()
+        for label, pid in PROVIDERS_UI:
+            provider.addItem(label, pid)
+        provider.setCurrentIndex(
+            [pid for _l, pid in PROVIDERS_UI].index(self._gs_provider))
+        provider.setFixedWidth(150)
+        provider.currentIndexChanged.connect(
+            lambda _i: self._gs_pick_provider(provider.currentData()))
+        lay1.addWidget(provider)
+        lay1.addSpacing(8)
+        self._gs_key_label = hint_label(
+            f"{PROVIDER_BY_ID[self._gs_provider]} API key", theme.SUBTEXT)
+        lay1.addWidget(self._gs_key_label)
+        entry_row = QHBoxLayout()
+        self._gs_key_entry = QLineEdit(self._config.get(self._gs_key_field,
+                                                        ""))
+        self._gs_key_entry.setEchoMode(QLineEdit.Password)
+        self._gs_key_entry.setPlaceholderText("Paste API key")
+        self._gs_key_entry.returnPressed.connect(self._gs_save_key)
+        entry_row.addWidget(self._gs_key_entry, 1)
+        entry_row.addWidget(pill_button("Save", "accent", self._gs_save_key))
+        self._test_button = pill_button("Test", "neutral",
+                                        self._gs_test_transcription)
+        entry_row.addWidget(self._test_button)
+        lay1.addLayout(entry_row)
+        lay1.addSpacing(4)
+        self._test_status = hint_label("", theme.MUTED, wrap=True)
+        lay1.addWidget(self._test_status)
+        col.addWidget(step1)
 
+        step2, lay2 = card()
+        title2 = QLabel("2.  Try your microphone")
+        title2.setProperty("class", "cardTitle")
+        lay2.addWidget(title2)
+        lay2.addSpacing(8)
+        mic_row = QHBoxLayout()
+        self._mic_button = pill_button("Test microphone", "neutral",
+                                       self._start_mic_test)
+        self._mic_meter = Meter()
+        mic_row.addWidget(self._mic_button)
+        mic_row.addSpacing(12)
+        mic_row.addWidget(self._mic_meter, 0, Qt.AlignVCenter)
+        mic_row.addStretch(1)
+        lay2.addLayout(mic_row)
+        self._mic_status = hint_label("", theme.RED)
+        lay2.addWidget(self._mic_status)
+        col.addWidget(step2)
+
+        step3, lay3 = card()
+        title3 = QLabel("3.  Say something")
+        title3.setProperty("class", "cardTitle")
+        lay3.addWidget(title3)
+        lay3.addSpacing(2)
         combo = pretty_combo(self._config.get("hotkey", "")) or "your shortcut"
-        self._practice_value = ""
-        self._practice_field = canvasui.EntryField(
-            lambda: self._practice_value, self._set_practice,
-            "", width=1000)
-        finish = canvasui.PillButton(
-            "Finish", "accent", self._finish_onboarding, small=True)
-        self._finish_reveal = _Reveal(_Inline((
-            canvasui.TextBlock("✓ That's it — you're set up.", HINT_FONT,
-                               theme.GREEN, wrap=False),
-            finish,
-        ), gap=12))
-        step3 = canvasui.Card(canvasui.VStack([
-            canvasui.TextBlock("3.  Say something", CARD_TITLE_FONT,
-                               wrap=False),
-            canvasui.Spacer(2),
-            canvasui.TextBlock(
-                f"Click into the box below, hold {combo} and read: “Testing, "
-                "one two three — it works.”", HINT_FONT, theme.MUTED),
-            canvasui.Spacer(8),
-            self._practice_field,
-            canvasui.Spacer(8),
-            self._finish_reveal,
-        ], gap=0))
+        lay3.addWidget(hint_label(
+            f"Click into the box below, hold {combo} and read: “Testing, "
+            "one two three — it works.”"))
+        lay3.addSpacing(8)
+        self._practice_field = QLineEdit()
+        lay3.addWidget(self._practice_field)
+        lay3.addSpacing(8)
+        finish_row = QWidget()
+        finish_lay = QHBoxLayout(finish_row)
+        finish_lay.setContentsMargins(0, 0, 0, 0)
+        done = QLabel("✓ That's it — you're set up.")
+        done.setStyleSheet(f"color: {theme.GREEN}; font-size: 9pt;"
+                           "background: transparent;")
+        finish_lay.addWidget(done)
+        finish_lay.addSpacing(12)
+        finish_lay.addWidget(pill_button("Finish", "accent",
+                                         self._finish_onboarding))
+        finish_lay.addStretch(1)
+        finish_row.hide()
+        lay3.addWidget(finish_row)
+        col.addWidget(step3)
 
-        self._practice_after_id = self._root.after(500, self._poll_practice)
-        return canvasui.VStack([
-            self._heading("Get started"), step1, step2, step3,
-            self._autostart_card(),
-        ], gap=9)
+        practice_timer = QTimer(box)
+        practice_timer.timeout.connect(
+            lambda: (finish_row.show(), practice_timer.stop())
+            if len(self._practice_field.text().strip()) > 10 else None)
+        practice_timer.start(500)
 
-    def _set_gs_key(self, value):
-        self._gs_key_value = value
+        col.addWidget(self._autostart_card())
+        return box
 
     def _gs_pick_provider(self, provider):
         self._gs_provider = provider
         self._apply(provider=provider)
-        self._gs_key_field = KEY_FIELDS.get(provider, "api_key")
-        self._gs_key_value = self._config.get(self._gs_key_field, "")
-        self._gs_key_label.set_text(
-            f"{PROVIDER_BY_ID.get(provider, provider)} API key")
-        self._gs_key_entry.refresh()
+        self._gs_key_field = KEY_FIELDS[provider]
+        self._gs_key_entry.setText(self._config.get(self._gs_key_field, ""))
+        self._gs_key_label.setText(f"{PROVIDER_BY_ID[provider]} API key")
         self._set_status(self._test_status, "", theme.MUTED)
 
     def _gs_save_key(self):
-        self._scene.end_edit(commit=True)
-        self._apply(**{self._gs_key_field: self._gs_key_value.strip()})
+        self._apply(**{self._gs_key_field: self._gs_key_entry.text().strip()})
 
-    def _set_practice(self, value):
-        self._practice_value = value
-
-    def _practice_text(self):
-        if (self._scene.editing is self._practice_field
-                and self._scene._entry is not None):
-            return self._scene._entry.get()
-        return self._practice_value
-
-    def _poll_practice(self):
-        self._practice_after_id = None
-        if self._active_section != "Get started" or self._win is None:
+    def _gs_test_transcription(self):
+        if self._testing:
             return
-        if len(self._practice_text().strip()) > 10:
-            self._finish_reveal.show()
+        provider = self._gs_provider
+        key = self._gs_key_entry.text().strip()
+        if not key:
+            self._set_status(
+                self._test_status,
+                f"Enter your {PROVIDER_BY_ID[provider]} API key below first.",
+                theme.RED)
             return
-        self._practice_after_id = self._root.after(500, self._poll_practice)
+        self._testing = True
+        self._test_context = "get_started"
+        self._test_button.setEnabled(False)
+        self._set_status(self._test_status, "Testing…", theme.MUTED)
+        threading.Thread(target=self._test_stt_worker,
+                         args=(key, provider, dict(self._config)),
+                         daemon=True).start()
 
     def _finish_onboarding(self):
         self._apply(onboarded=True)
-        self._build_sidebar(hide_get_started=True)
+        self._remove_get_started_nav()
         self._select_section("General")
 
-    def _input_devices(self):
-        options = [("System default", "")]
-        try:
-            from recorder import list_input_devices
-            options.extend((_ellipsize(name), name)
-                           for _index, name in list_input_devices())
-        except Exception:
-            pass
-        current = self._config.get("input_device", "")
-        if current and all(value != current for _label, value in options):
-            options.append((_ellipsize(current), current))
-        return options
+    # --- Mic test ---------------------------------------------------------------
 
     def _start_mic_test(self):
-        if self._mic_testing:
+        if self._mic_recorder is not None:
             return
         from recorder import Recorder, RecorderError
         recorder = Recorder(
@@ -1219,87 +1006,41 @@ class SettingsWindow:
         except RecorderError as exc:
             self._set_status(self._mic_status, str(exc), theme.RED)
             return
-        self._mic_testing = True
         self._mic_recorder = recorder
-        self._mic_generation += 1
-        generation = self._mic_generation
-        self._mic_button.set_text("Listening…")
-        self._mic_button.disable()
-        self._mic_tick(60, generation, recorder)
+        self._mic_button.setText("Listening…")
+        self._mic_button.setEnabled(False)
+        meter, button = self._mic_meter, self._mic_button
+        ticks = {"left": 60}
+        timer = QTimer(meter)   # dies with the section widget
 
-    def _mic_tick(self, remaining, generation, recorder):
-        self._mic_after_id = None
-        win = self._win
-        alive = (generation == self._mic_generation
-                 and recorder is self._mic_recorder
-                 and self._scene is not None
-                 and win is not None and win.winfo_exists()
-                 and self._active_section == "Get started"
-                 and self._mic_meter.scene is self._scene)
-        if not alive or remaining <= 0:
-            if generation == self._mic_generation:
-                self._stop_mic_test()
-            return
-        self._mic_meter.set_level(recorder.level)
-        self._mic_after_id = self._root.after(
-            50, lambda: self._mic_tick(remaining - 1, generation, recorder))
+        def tick():
+            ticks["left"] -= 1
+            if ticks["left"] <= 0 or self._mic_recorder is not recorder:
+                timer.stop()
+                self._stop_mic_test(meter, button)
+                return
+            meter.set_level(recorder.level)
 
-    def _stop_mic_test(self):
-        self._mic_generation += 1
-        after_id, self._mic_after_id = self._mic_after_id, None
-        if after_id is not None:
-            try:
-                self._root.after_cancel(after_id)
-            except tk.TclError:
-                pass
+        timer.timeout.connect(tick)
+        timer.start(50)
+
+    def _stop_mic_test(self, meter=None, button=None):
         recorder, self._mic_recorder = self._mic_recorder, None
         if recorder is not None:
             try:
                 recorder.stop()
             except Exception:
                 pass
-        self._mic_testing = False
-        win = self._win
-        scene = self._scene
-        controls_alive = (scene is not None and win is not None
-                          and win.winfo_exists())
-        meter = getattr(self, "_mic_meter", None)
-        if controls_alive and meter is not None and meter.scene is scene:
-            meter.set_level(0.0)
-        button = getattr(self, "_mic_button", None)
-        if controls_alive and button is not None and button.scene is scene:
-            button.set_text("Test microphone")
-            button.enable()
+        try:
+            if meter is not None:
+                meter.set_level(0.0)
+            if button is not None:
+                button.setText("Test microphone")
+                button.setEnabled(True)
+        except RuntimeError:
+            pass  # section widget already deleted
 
-    def _test_transcription(self):
-        if self._active_section == "Providers":
-            provider = self._config.get("provider", "xai")
-            field = KEY_FIELDS.get(provider, "api_key")
-            self._start_provider_test(
-                "stt", provider, field, self._test_stt_btn,
-                self._test_stt_worker)
-            return
-        if self._testing:
-            return
-        self._scene.end_edit(commit=True)
-        provider = self._gs_provider
-        field = KEY_FIELDS.get(provider, "api_key")
-        key = self._gs_key_value.strip()
-        if not key:
-            name = PROVIDER_BY_ID.get(provider, provider)
-            self._set_status(
-                self._test_status, f"Enter your {name} API key below first.",
-                theme.RED)
-            return
-        self._testing = True
-        self._test_context = "get_started"
-        self._test_window_generation = self._window_generation
-        self._test_button.disable()
-        self._set_status(self._test_status, "Testing…", theme.MUTED)
-        cfg = dict(self._config)
-        threading.Thread(
-            target=self._test_stt_worker,
-            args=(key, provider, cfg), daemon=True).start()
+    # --- Providers tests ---------------------------------------------------------
 
     def _test_stt_worker(self, key, provider, cfg):
         buf = io.BytesIO()
@@ -1317,269 +1058,208 @@ class SettingsWindow:
             result = ("stt", True, f"Transcription works ({name}).")
         except Exception as exc:
             result = ("stt", False, str(exc))
-        self._queue.put(("tested", result))
+        self._tested.emit(result)
+
+    def _test_cleanup_worker(self, key, provider, cfg):
+        try:
+            from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
+            model = ((cfg.get("cleanup_models") or {}).get(provider)
+                     or DEFAULT_CLEANUP_MODELS[provider])
+            output = cleanup("testing one two three", None, "", {}, key,
+                             model, provider=provider)
+            if output is not None:
+                name = PROVIDER_BY_ID.get(provider, provider)
+                result = ("cleanup", True, f"Cleanup works ({name}).")
+            else:
+                result = ("cleanup", False,
+                          "Cleanup failed — check the key, or see app.log.")
+        except Exception:
+            result = ("cleanup", False,
+                      "Cleanup failed — check the key, or see app.log.")
+        self._tested.emit(result)
 
     def _on_tested(self, result):
         self._testing = False
         which, ok, message = result
-        win = self._win
-        if (self._scene is None or win is None or not win.winfo_exists()
-                or self._test_window_generation != self._window_generation):
+        if self._win is None:
             return
-        context = getattr(self, "_test_context", None)
-        if context == "get_started":
-            button = getattr(self, "_test_button", None)
-            status = getattr(self, "_test_status", None)
-        else:
-            button = (getattr(self, "_test_stt_btn", None) if which == "stt"
-                      else getattr(self, "_test_cleanup_btn", None))
-            status = getattr(self, "_providers_status", None)
-        if (button is None or button.scene is not self._scene
-                or status is None or status.scene is not self._scene):
-            return
-        button.enable()
-        self._set_status(
-            status, ("✓ " if ok else "") + message,
-            theme.GREEN if ok else theme.RED)
-
-    def _set_status(self, block, text, color):
-        block.fill = color
-        block.set_text(text)
-        if block._item is not None:
-            block.canvas.itemconfigure(block._item, fill=color)
-
-    def _start_capture(self, config_key):
-        if self._capturing:
-            return
-        row = self._shortcut_rows[config_key]
-        self._capturing = True
-        self._capture_target = config_key
-        row["error"].set_text("")
-        row["error_reveal"].set_visible(False)
-        row["button"].disable()
-        row["chip"].set_text("Press keys…")
-        if self._on_capture_start is not None:
-            try:
-                self._on_capture_start()
-            except Exception:
-                pass
         try:
-            threading.Thread(target=self._capture_worker, daemon=True).start()
-        except Exception:
-            self._on_captured(None)
+            if getattr(self, "_test_context", None) == "get_started":
+                button, status = self._test_button, self._test_status
+            else:
+                button = (self._test_stt_btn if which == "stt"
+                          else self._test_cleanup_btn)
+                status = self._providers_status
+            button.setEnabled(True)
+            self._set_status(status, ("✓ " if ok else "") + message,
+                             theme.GREEN if ok else theme.RED)
+        except RuntimeError:
+            pass  # the section that started the test was rebuilt
 
-    def _capture_worker(self):
-        try:
-            combo = keyboard.read_hotkey(suppress=True)
-        except Exception:
-            combo = None
-        self._queue.put(("captured", combo))
+    def _set_status(self, label, text, color):
+        label.setText(text)
+        label.setStyleSheet(f"color: {color}; font-size: 9pt;"
+                            "background: transparent;")
 
-    def _on_captured(self, combo):
-        if not self._capturing:
-            return
-        self._capturing = False
-        target = self._capture_target
-        row = self._shortcut_rows.get(target, {})
-        win = self._win
-        alive = bool(self._scene is not None and win is not None
-                     and win.winfo_exists() and row
-                     and row["button"].scene is self._scene)
-        cancelled = combo is None or combo.strip().lower() in ("esc", "escape")
-        new_hotkey = None
-        if not cancelled:
-            try:
-                from hotkey import validate_hotkey
-                new_hotkey = validate_hotkey(combo)
-            except ValueError as exc:
-                if alive:
-                    row["error"].set_text(str(exc))
-                    row["error_reveal"].set_visible(True)
-                cancelled = True
-            except ImportError:
-                new_hotkey = combo.strip().lower()
-        if not cancelled:
-            for key, label in (("hotkey", "Push-to-talk"),
-                               ("repaste_hotkey", "Re-paste"),
-                               ("toggle_hotkey", "the toggle key")):
-                if key != target and self._config.get(key, "") == new_hotkey:
-                    if alive:
-                        row["error"].set_text(f"Already used by {label}.")
-                        row["error_reveal"].set_visible(True)
-                    cancelled = True
-                    break
-        if alive:
-            shown = row["combo"] if cancelled else new_hotkey
-            row["chip"].set_text(pretty_combo(shown) or "None")
-            row["button"].enable()
-            if not cancelled:
-                row["combo"] = new_hotkey
-        if self._on_capture_end is not None:
-            try:
-                self._on_capture_end()
-            except Exception:
-                pass
-        if not cancelled:
-            self._apply(**{target: new_hotkey})
+    # --- Dictionary -----------------------------------------------------------
 
     def _build_dictionary(self):
-        self._vocab_value = ""
-        self._corr_heard_value = ""
-        self._corr_right_value = ""
-        self._vocab_entry = canvasui.EntryField(
-            lambda: self._vocab_value,
-            lambda value: setattr(self, "_vocab_value", value),
-            "", width=1000, on_enter=self._add_vocab)
-        vocab_add = canvasui.PillButton(
-            "Add", "accent", self._add_vocab, small=True)
+        box, col = self._section_column("Dictionary")
+
+        col.addWidget(self._group_label("Vocabulary"))
+        vocab_card, vlay = card()
+        vlay.addWidget(hint_label(
+            "Words and names the transcriber should recognize — sent as "
+            "hints with every request."))
+        vlay.addSpacing(8)
+        vocab_row = QHBoxLayout()
+        self._vocab_entry = QLineEdit()
+        self._vocab_entry.returnPressed.connect(self._add_vocab)
+        vocab_row.addWidget(self._vocab_entry, 1)
+        vocab_row.addWidget(pill_button("Add", "accent", self._add_vocab))
+        vlay.addLayout(vocab_row)
+        vlay.addSpacing(8)
+        panel, self._vocab_column = list_panel(rows_visible=3)
+        vlay.addWidget(panel)
+        col.addWidget(vocab_card)
+        self._render_vocab()
+
+        col.addWidget(self._group_label("Corrections"))
+        corr_card, clay = card()
+        clay.addWidget(hint_label(
+            "Always replace a misheard phrase with the right one."))
+        clay.addSpacing(8)
+        corr_row = QHBoxLayout()
+        self._corr_heard_entry = QLineEdit()
+        self._corr_heard_entry.returnPressed.connect(self._add_correction)
+        arrow = QLabel("→")
+        arrow.setStyleSheet(f"color: {theme.SUBTEXT};"
+                            "background: transparent;")
+        self._corr_right_entry = QLineEdit()
+        self._corr_right_entry.returnPressed.connect(self._add_correction)
+        corr_row.addWidget(self._corr_heard_entry, 1)
+        corr_row.addWidget(arrow)
+        corr_row.addWidget(self._corr_right_entry, 1)
+        corr_row.addWidget(pill_button("Add", "accent", self._add_correction))
+        clay.addLayout(corr_row)
+        clay.addSpacing(8)
+        panel2, self._corr_column = list_panel(rows_visible=3)
+        clay.addWidget(panel2)
+        col.addWidget(corr_card)
+        self._render_corrections()
+        return box
+
+    def _dict_row(self, text, on_remove):
+        row = ListRow()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 6, 10, 6)
+        label = QLabel(text)
+        label.setStyleSheet("background: transparent;")
+        lay.addWidget(label, 1)
+        row.setFixedHeight(ROW_H)
+        remove = QPushButton("✕")
+        remove.setCursor(Qt.PointingHandCursor)
+        remove.setStyleSheet(
+            f"QPushButton {{ color: {theme.MUTED}; background: transparent;"
+            "border: none; padding: 0 4px; }"
+            f"QPushButton:hover {{ color: {theme.RED}; }}")
+        remove.clicked.connect(lambda _=False: on_remove())
+        lay.addWidget(remove)
+        return row
+
+    def _render_vocab(self):
+        clear_rows(self._vocab_column)
         terms = list(self._config.get("vocabulary", []))
-        vocab_rows = terms or [None]
-        self._vocab_list = canvasui.ListView(
-            vocab_rows, self._vocab_row, height=108, gap=0)
-        vocab_card = canvasui.Card(canvasui.VStack([
-            canvasui.TextBlock(
-                "Words and names the transcriber should recognize — sent as "
-                "hints with every request.", HINT_FONT, theme.MUTED),
-            canvasui.Spacer(8),
-            _ActionRow(self._vocab_entry, (vocab_add,), gap=8),
-            canvasui.Spacer(8),
-            self._vocab_list,
-        ], gap=0))
+        if not terms:
+            self._vocab_column.insertWidget(0, empty_row(
+                "No terms yet — add names and jargon the transcriber gets "
+                "wrong."))
+            return
+        for index, term in enumerate(terms):
+            self._vocab_column.insertWidget(index, self._dict_row(
+                term, lambda value=term: self._remove_vocab(value)))
 
-        self._corr_heard_entry = canvasui.EntryField(
-            lambda: self._corr_heard_value,
-            lambda value: setattr(self, "_corr_heard_value", value),
-            "", width=1000, on_enter=self._add_correction)
-        self._corr_right_entry = canvasui.EntryField(
-            lambda: self._corr_right_value,
-            lambda value: setattr(self, "_corr_right_value", value),
-            "", width=1000, on_enter=self._add_correction)
-        arrow = canvasui.TextBlock("→", ("Segoe UI", 10), theme.SUBTEXT,
-                                   wrap=False)
-        correction_add = canvasui.PillButton(
-            "Add", "accent", self._add_correction, small=True)
+    def _render_corrections(self):
+        clear_rows(self._corr_column)
         pairs = list((self._config.get("corrections") or {}).items())
-        correction_rows = pairs or [None]
-        self._correction_list = canvasui.ListView(
-            correction_rows, self._correction_row, height=108, gap=0)
-        correction_card = canvasui.Card(canvasui.VStack([
-            canvasui.TextBlock(
-                "Always replace a misheard phrase with the right one.",
-                HINT_FONT, theme.MUTED),
-            canvasui.Spacer(8),
-            _CorrectionRow(
-                self._corr_heard_entry, arrow, self._corr_right_entry,
-                correction_add),
-            canvasui.Spacer(8),
-            self._correction_list,
-        ], gap=0))
-        return canvasui.VStack([
-            self._heading("Dictionary"),
-            self._group("Vocabulary"),
-            vocab_card,
-            self._group("Corrections"),
-            correction_card,
-        ], gap=9)
-
-    def _vocab_row(self, term, _index):
-        if term is None:
-            return _EmptyListRow(
-                "No terms yet — add names and jargon the transcriber gets wrong.")
-        return _DictionaryListRow(
-            term, lambda value=term: self._remove_vocab(value))
-
-    def _correction_row(self, pair, _index):
-        if pair is None:
-            return _EmptyListRow("No corrections yet.")
-        heard, right = pair
-        return _DictionaryListRow(
-            f"{heard}   →   {right}",
-            lambda value=heard: self._remove_correction(value))
+        if not pairs:
+            self._corr_column.insertWidget(0, empty_row(
+                "No corrections yet."))
+            return
+        for index, (heard, right) in enumerate(pairs):
+            self._corr_column.insertWidget(index, self._dict_row(
+                f"{heard}   →   {right}",
+                lambda value=heard: self._remove_correction(value)))
 
     def _add_vocab(self):
-        if self._scene.editing is self._vocab_entry:
-            self._scene.end_edit(commit=True)
-        term = self._vocab_value.strip()
+        term = self._vocab_entry.text().strip()
         terms = list(self._config.get("vocabulary", []))
+        self._vocab_entry.clear()
         if not term or term in terms:
-            self._vocab_value = ""
-            self._vocab_entry.refresh()
             return
         terms.append(term)
-        self._vocab_value = ""
-        self._vocab_entry.refresh()
         self._apply(vocabulary=terms)
-        self._vocab_list.set_rows(terms, self._vocab_row)
+        self._render_vocab()
 
     def _remove_vocab(self, term):
         terms = [value for value in self._config.get("vocabulary", [])
                  if value != term]
         self._apply(vocabulary=terms)
-        self._vocab_list.set_rows(terms or [None], self._vocab_row)
+        self._render_vocab()
 
     def _add_correction(self):
-        if self._scene.editing in (self._corr_heard_entry,
-                                   self._corr_right_entry):
-            self._scene.end_edit(commit=True)
-        heard = self._corr_heard_value.strip()
-        right = self._corr_right_value.strip()
+        heard = self._corr_heard_entry.text().strip()
+        right = self._corr_right_entry.text().strip()
         if not heard or not right:
             return
         pairs = dict(self._config.get("corrections", {}))
         pairs[heard] = right
-        self._corr_heard_value = ""
-        self._corr_right_value = ""
-        self._corr_heard_entry.refresh()
-        self._corr_right_entry.refresh()
+        self._corr_heard_entry.clear()
+        self._corr_right_entry.clear()
         self._apply(corrections=pairs)
-        self._correction_list.set_rows(
-            list(pairs.items()), self._correction_row)
+        self._render_corrections()
 
     def _remove_correction(self, heard):
         pairs = {key: value for key, value
                  in self._config.get("corrections", {}).items()
                  if key != heard}
         self._apply(corrections=pairs)
-        self._correction_list.set_rows(
-            list(pairs.items()) or [None], self._correction_row)
+        self._render_corrections()
+
+    # --- History -----------------------------------------------------------------
 
     def _build_history(self):
+        box, col = self._section_column("History")
         combo = pretty_combo(self._config.get("repaste_hotkey", ""))
         if combo:
-            hint = (
-                "Dictations from this session, newest first. "
-                f"Press {combo} anywhere to re-paste the newest one — or "
-                "click into the target app first and use the buttons here.")
+            hint = ("Dictations from this session, newest first. "
+                    f"Press {combo} anywhere to re-paste the newest one — or "
+                    "click into the target app first and use the buttons "
+                    "here.")
         else:
-            hint = (
-                "Dictations from this session, newest first. Set a re-paste "
-                "shortcut in General to paste the newest one anywhere.")
+            hint = ("Dictations from this session, newest first. Set a "
+                    "re-paste shortcut in General to paste the newest one "
+                    "anywhere.")
+        col.addWidget(hint_label(hint))
+        col.addSpacing(3)
+        panel, self._hist_column = list_panel()
+        panel.setMinimumHeight(300)
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        col.addWidget(panel, 1)
         items = self._hist_snapshot()
         self._hist_fp = self._hist_fingerprint(items)
-        rows = items or [None]
-        heading = self._heading("History")
-        hint_block = canvasui.TextBlock(hint, HINT_FONT, theme.MUTED)
-        gap = theme.sc(9)
+        self._render_history(items)
 
-        def reserve(avail_w):
-            # The hint re-flows with width, so the list must reserve the
-            # measured content above it, or the page grows past the viewport
-            # at narrow widths. The default 150 stays as the floor so wide
-            # windows keep their usual bottom margin.
-            return max(theme.sc(150),
-                       self._scene.padding * 2 + gap * 3 + theme.sc(3)
-                       + heading._measure(avail_w)[1]
-                       + hint_block._measure(avail_w)[1])
+        poll = QTimer(box)   # dies with the section
 
-        self._hist_list = canvasui.ListView(
-            rows, self._history_row, height=None, gap=1, reserve=reserve)
-        self._hist_poll_id = self._root.after(2000, self._hist_poll)
-        return canvasui.VStack([
-            heading,
-            hint_block,
-            canvasui.Spacer(3),
-            self._hist_list,
-        ], gap=9)
+        def check():
+            items = self._hist_snapshot()
+            if self._hist_fingerprint(items) != self._hist_fp:
+                self._render_history(items)
+
+        poll.timeout.connect(check)
+        poll.start(2000)
+        return box
 
     def _hist_snapshot(self):
         if self._history_getter is None:
@@ -1594,31 +1274,92 @@ class SettingsWindow:
         return tuple((entry.get("ts"), entry.get("ok", True))
                      for entry in items)
 
-    def _history_row(self, entry, _index):
-        if entry is None:
-            return _EmptyListRow(
-                "Nothing dictated yet this session. Hold your shortcut and "
-                "speak — dictations appear here.")
-        return _HistoryRow(self, entry)
-
-    def _hist_poll(self):
-        self._hist_poll_id = None
-        if (self._active_section != "History" or self._win is None
-                or not self._win.winfo_exists()):
-            return
-        items = self._hist_snapshot()
-        if self._hist_fingerprint(items) != self._hist_fp:
-            self._render_history(items)
-        self._hist_poll_id = self._root.after(2000, self._hist_poll)
-
     def _render_history(self, items=None):
         items = self._hist_snapshot() if items is None else items
         self._hist_fp = self._hist_fingerprint(items)
         if not any(entry.get("ts") == self._hist_expanded_ts
                    for entry in items):
             self._hist_expanded_ts = None
-        self._hist_list.set_rows(
-            items or [None], self._history_row, reset_scroll=False)
+        clear_rows(self._hist_column)
+        if not items:
+            self._hist_column.insertWidget(0, empty_row(
+                "Nothing dictated yet this session. Hold your shortcut and "
+                "speak — dictations appear here."))
+            return
+        for index, entry in enumerate(items):
+            self._hist_column.insertWidget(index, self._history_row(entry))
+
+    def _history_row(self, entry):
+        ok = entry.get("ok", True)
+        expanded = ok and self._hist_expanded_ts == entry.get("ts")
+        row = ListRow()
+        outer = QVBoxLayout(row)
+        outer.setContentsMargins(10, 0, 8, 0)
+        outer.setSpacing(0)
+
+        head = QWidget()
+        head.setStyleSheet("background: transparent;")
+        head.setFixedHeight(34)
+        head_lay = QHBoxLayout(head)
+        head_lay.setContentsMargins(0, 0, 0, 0)
+        head_lay.setSpacing(6)
+        when = time.strftime("%H:%M", time.localtime(entry.get("ts", 0)))
+        if ok:
+            time_label = hint_label(when, theme.MUTED, wrap=False)
+            preview = entry.get("text", "").replace("\n", " ").strip()
+        else:
+            time_label = hint_label(f"✕ {when}", theme.AMBER, wrap=False)
+            preview = " ".join(entry.get("error", "").split())
+        time_label.setFixedWidth(52)
+        head_lay.addWidget(time_label)
+        head_lay.addWidget(ElideLabel(
+            preview, theme.TEXT if ok else theme.SUBTEXT), 1)
+        if ok:
+            text = entry.get("text", "")
+            copy = pill_button("Copy", "neutral",
+                               lambda value=text: self._copy(value))
+            head_lay.addWidget(copy)
+        elif entry.get("wav") is not None:
+            wav = entry.get("wav")
+            head_lay.addWidget(pill_button(
+                "Retry", "accent", lambda value=wav: self._retry(value)))
+        outer.addWidget(head)
+
+        if expanded:
+            detail = QWidget()
+            detail.setStyleSheet("background: transparent;")
+            detail_lay = QVBoxLayout(detail)
+            detail_lay.setContentsMargins(52, 0, 0, 10)
+            detail_lay.setSpacing(4)
+            full = QLabel(entry.get("text", ""))
+            full.setWordWrap(True)
+            full.setStyleSheet("background: transparent;")
+            full.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            detail_lay.addWidget(full)
+            raw = entry.get("raw")
+            if raw and raw != entry.get("text"):
+                detail_lay.addWidget(hint_label(f"Heard: {raw}", theme.MUTED))
+            action_row = QHBoxLayout()
+            if raw:
+                action_row.addWidget(pill_button(
+                    "Copy raw", "neutral",
+                    lambda value=raw: self._copy(value)))
+            action_row.addWidget(pill_button(
+                "Add correction…", "neutral",
+                lambda value=raw or entry.get("text", ""):
+                self._hist_add_correction(value)))
+            action_row.addStretch(1)
+            detail_lay.addLayout(action_row)
+            outer.addWidget(detail)
+
+        if ok:
+            ts = entry.get("ts")
+
+            def toggle(_event, value=ts):
+                self._hist_toggle(value)
+
+            head.mousePressEvent = toggle
+        return row
 
     def _hist_toggle(self, ts):
         self._hist_expanded_ts = None if self._hist_expanded_ts == ts else ts
@@ -1626,12 +1367,10 @@ class SettingsWindow:
 
     def _hist_add_correction(self, heard):
         self._select_section("Dictionary")
-        self._corr_heard_value = heard
-        self._corr_heard_entry.refresh()
-        self._scene.begin_edit(self._corr_heard_entry)
-        if self._scene._entry is not None:
-            self._scene._entry.selection_clear()
-            self._scene._entry.icursor("end")
+        self._corr_heard_entry.setText(heard)
+        self._corr_heard_entry.setFocus()
+        self._corr_heard_entry.deselect()
+        self._corr_heard_entry.end(False)
 
     def _copy(self, text):
         try:
@@ -1643,186 +1382,341 @@ class SettingsWindow:
     def _retry(self, wav):
         if self._on_retry is None:
             return
-        if self._win is not None and self._win.winfo_exists():
-            self._win.iconify()
-        self._root.after(600, lambda: self._on_retry(wav))
+        if self._win is not None:
+            self._win.showMinimized()
+        QTimer.singleShot(600, lambda: self._on_retry(wav))
+
+    # --- Providers -------------------------------------------------------------
 
     def _build_providers(self):
-        self._key_values = {
-            field: self._config.get(field, "")
-            for field in KEY_FIELDS.values()
-        }
+        box, col = self._section_column("Providers")
         self._key_entries = {}
         self._key_status_blocks = {}
-        self._model_values = {
-            "stt": self._model_override("stt"),
-            "cleanup": self._model_override("cleanup"),
-        }
         self._model_entries = {}
         self._model_hints = {}
-        self._providers_status = canvasui.TextBlock(
-            "", HINT_FONT, theme.MUTED)
 
-        stt_dropdown = canvasui.DropdownButton(
-            STT_PROVIDERS_UI, lambda: self._config.get("provider", "xai"),
-            lambda value: self._pick_provider("provider", value), width=130)
-        self._test_stt_btn = canvasui.PillButton(
-            "Test", "neutral", self._test_transcription, small=True)
-        cleanup_dropdown = canvasui.DropdownButton(
-            PROVIDERS_UI,
-            lambda: self._config.get("cleanup_provider", "xai"),
-            lambda value: self._pick_provider("cleanup_provider", value),
-            width=130)
-        self._test_cleanup_btn = canvasui.PillButton(
-            "Test", "neutral", self._test_cleanup, small=True)
-        children = [
-            self._heading("Providers"),
-            self._group("Services"),
-            self._card(
-                "Transcription", "Turns your speech into text.",
-                _Inline((stt_dropdown, self._test_stt_btn), gap=8)),
-            self._card(
-                "AI cleanup", "Polishes the wording before it's pasted.",
-                _Inline((cleanup_dropdown, self._test_cleanup_btn), gap=8)),
-            self._providers_status,
-            self._group("On-device"),
-            self._local_card(),
-            self._toggle_card(
-                "Load model on startup", "local_stt_loaded",
-                "Load the local model when Undertone starts, so the first "
-                "dictation is instant."),
-            self._local_idle_card(),
-            self._group("API keys"),
-        ]
-        for provider, field in KEY_FIELDS.items():
-            children.append(self._provider_key_card(
-                PROVIDER_BY_ID.get(provider, provider), field))
+        col.addWidget(self._group_label("Services"))
+        stt_combo = QComboBox()
+        for label, pid in STT_PROVIDERS_UI:
+            stt_combo.addItem(label, pid)
+        stt_combo.setCurrentIndex([pid for _l, pid in STT_PROVIDERS_UI]
+                                  .index(self._config.get("provider", "xai")))
+        stt_combo.setFixedWidth(130)
+        stt_combo.currentIndexChanged.connect(
+            lambda _i: self._pick_provider("provider", stt_combo.currentData()))
+        self._test_stt_btn = pill_button("Test", "neutral",
+                                         self._test_stt_from_providers)
+        col.addWidget(row_card("Transcription", "Turns your speech into text.",
+                               self._inline(stt_combo, self._test_stt_btn)))
 
-        links = [canvasui.TextBlock(
-            "Get a key:", HINT_FONT, theme.MUTED, wrap=False)]
-        for index, (label, url) in enumerate(PROVIDER_LINKS):
-            if index:
-                links.append(canvasui.TextBlock(
-                    "·", HINT_FONT, theme.MUTED, wrap=False))
-            links.append(_ClickableText(
-                label, lambda target=url: webbrowser.open(target)))
-        children.append(_Inline(links, gap=6))
+        cleanup_combo = QComboBox()
+        for label, pid in PROVIDERS_UI:
+            cleanup_combo.addItem(label, pid)
+        cleanup_combo.setCurrentIndex(
+            [pid for _l, pid in PROVIDERS_UI]
+            .index(self._config.get("cleanup_provider", "xai")))
+        cleanup_combo.setFixedWidth(130)
+        cleanup_combo.currentIndexChanged.connect(
+            lambda _i: self._pick_provider("cleanup_provider",
+                                           cleanup_combo.currentData()))
+        self._test_cleanup_btn = pill_button("Test", "neutral",
+                                             self._test_cleanup)
+        col.addWidget(row_card("AI cleanup",
+                               "Polishes the wording before it's pasted.",
+                               self._inline(cleanup_combo,
+                                            self._test_cleanup_btn)))
+        self._providers_status = hint_label("", theme.MUTED)
+        col.addWidget(self._providers_status)
 
-        disclosure = "Advanced  ▾" if self._providers_advanced else "Advanced  ▸"
-        children.append(_ClickableText(
-            disclosure, self._toggle_providers_advanced,
-            font=GROUP_FONT, fill=theme.SUBTEXT))
-        if self._providers_advanced:
-            children.append(canvasui.Card(canvasui.VStack([
-                self._model_control("Transcription model", "stt"),
-                canvasui.Spacer(10),
-                self._model_control("Cleanup model", "cleanup"),
-            ], gap=0)))
-        return canvasui.VStack(children, gap=9)
-
-    def _provider_key_card(self, name, field):
-        status = canvasui.TextBlock("", HINT_FONT, theme.MUTED, wrap=False)
-        self._key_status_blocks[field] = status
-        self._refresh_key_status(field)
-        entry = canvasui.EntryField(
-            lambda key=field: self._key_values[key],
-            lambda value, key=field: self._key_values.__setitem__(key, value),
-            "", secret=True, width=1000,
-            on_enter=lambda key=field: self._save_provider_key(key))
-        self._key_entries[field] = entry
-        show = canvasui.PillButton("Show", "neutral", small=True)
-        show.on_click = lambda node=entry, button=show: self._toggle_show(
-            node, button)
-        save = canvasui.PillButton(
-            "Save", "accent", lambda key=field: self._save_provider_key(key),
-            small=True)
-        return canvasui.Card(canvasui.VStack([
-            canvasui.Row(name, control=status),
-            canvasui.Spacer(7),
-            _ActionRow(entry, (show, save)),
-        ], gap=0))
-
-    def _local_card(self):
-        self._local_status = canvasui.TextBlock("", HINT_FONT, theme.MUTED,
-                                                wrap=False)
-        self._local_btn = canvasui.PillButton(
-            "", "accent", self._on_local_action, small=True)
-        self._refresh_local_card()
-        # Dictating while ejected auto-loads the model on the pipeline
-        # thread; poll so an open card flips to "Eject model" by itself.
-        self._local_poll_id = self._root.after(1000, self._local_poll)
-        return canvasui.Card(canvasui.VStack([
-            canvasui.Row(
-                "Local engine",
-                "Whisper runs on this PC — audio never leaves your "
-                "computer. Select the Local provider above to use it.",
-                self._local_btn),
-            canvasui.Spacer(7),
-            self._local_status,
-        ], gap=0))
-
-    def _local_poll(self):
-        self._local_poll_id = None
-        if (self._active_section != "Providers" or self._win is None
-                or not self._win.winfo_exists()):
-            return
-        if not self._local_busy:  # busy updates arrive via _drain
-            self._refresh_local_card()
-        self._local_poll_id = self._root.after(1000, self._local_poll)
-
-    def _local_idle_card(self):
-        dropdown = canvasui.DropdownButton(
-            [("Never", 0), ("After 5 min", 5), ("After 15 min", 15),
-             ("After 30 min", 30), ("After 1 hour", 60)],
-            lambda: int(self._config.get("local_stt_idle_minutes") or 0),
-            lambda value: self._apply(local_stt_idle_minutes=value),
-            width=130)
-        return self._card(
+        col.addWidget(self._group_label("On-device"))
+        col.addWidget(self._local_card(box))
+        col.addWidget(self._toggle_card(
+            "Load model on startup", "local_stt_loaded",
+            "Load the local model when Undertone starts, so the first "
+            "dictation is instant."))
+        idle_combo = QComboBox()
+        for label, minutes in [("Never", 0), ("After 5 min", 5),
+                               ("After 15 min", 15), ("After 30 min", 30),
+                               ("After 1 hour", 60)]:
+            idle_combo.addItem(label, minutes)
+        idle_combo.setFixedWidth(130)
+        current_idle = int(self._config.get("local_stt_idle_minutes") or 0)
+        idle_combo.setCurrentIndex(max(0, [0, 5, 15, 30, 60].index(
+            current_idle) if current_idle in (0, 5, 15, 30, 60) else 0))
+        idle_combo.currentIndexChanged.connect(
+            lambda _i: self._apply(local_stt_idle_minutes=idle_combo
+                                   .currentData()))
+        col.addWidget(row_card(
             "Auto-eject when idle",
             "Frees memory after inactivity; reloads on the next dictation.",
-            dropdown)
+            idle_combo))
+
+        col.addWidget(self._group_label("API keys"))
+        for provider, field in KEY_FIELDS.items():
+            col.addWidget(self._provider_key_card(
+                PROVIDER_BY_ID.get(provider, provider), field))
+
+        links_row = QHBoxLayout()
+        links_row.addWidget(hint_label("Get a key:", wrap=False))
+        for index, (label, url) in enumerate(PROVIDER_LINKS):
+            if index:
+                links_row.addWidget(hint_label("·", wrap=False))
+            links_row.addWidget(link_label(
+                label, lambda target=url: webbrowser.open(target)))
+        links_row.addStretch(1)
+        links_holder = QWidget()
+        links_holder.setLayout(links_row)
+        col.addWidget(links_holder)
+
+        disclosure = "Advanced  ▾" if self._providers_advanced else "Advanced  ▸"
+        advanced_link = link_label(disclosure,
+                                   self._toggle_providers_advanced)
+        advanced_link.setStyleSheet(
+            f'font-family: "Segoe UI Semibold"; font-size: 9pt;')
+        col.addWidget(advanced_link)
+        if self._providers_advanced:
+            adv_card, adv_lay = card()
+            adv_lay.addWidget(self._model_control("Transcription model",
+                                                  "stt"))
+            adv_lay.addSpacing(10)
+            adv_lay.addWidget(self._model_control("Cleanup model", "cleanup"))
+            col.addWidget(adv_card)
+        return box
+
+    @staticmethod
+    def _inline(*widgets):
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        for widget in widgets:
+            lay.addWidget(widget)
+        return holder
+
+    def _provider_key_card(self, name, field):
+        frame, lay = card()
+        head = QHBoxLayout()
+        title = QLabel(name)
+        title.setProperty("class", "cardTitle")
+        head.addWidget(title, 1)
+        status = hint_label("", wrap=False)
+        self._key_status_blocks[field] = status
+        head.addWidget(status)
+        lay.addLayout(head)
+        lay.addSpacing(7)
+        entry_row = QHBoxLayout()
+        entry = QLineEdit(self._config.get(field, ""))
+        entry.setEchoMode(QLineEdit.Password)
+        entry.returnPressed.connect(
+            lambda key=field: self._save_provider_key(key))
+        self._key_entries[field] = entry
+        entry_row.addWidget(entry, 1)
+        show = QPushButton("Show")
+        show.setProperty("variant", "neutral")
+        show.setCursor(Qt.PointingHandCursor)
+        show.clicked.connect(
+            lambda _=False, node=entry, button=show:
+            self._toggle_show(node, button))
+        entry_row.addWidget(show)
+        entry_row.addWidget(pill_button(
+            "Save", "accent", lambda key=field: self._save_provider_key(key)))
+        lay.addLayout(entry_row)
+        self._refresh_key_status(field)
+        return frame
+
+    def _refresh_key_status(self, field):
+        block = self._key_status_blocks.get(field)
+        if block is None:
+            return
+        key = self._config.get(field, "")
+        text = f"●  saved · ····{key[-4:]}" if key else "no key"
+        self._set_status(block, text, theme.GREEN if key else theme.MUTED)
+
+    def _toggle_show(self, entry, button):
+        secret = entry.echoMode() == QLineEdit.Password
+        entry.setEchoMode(QLineEdit.Normal if secret else QLineEdit.Password)
+        button.setText("Hide" if secret else "Show")
+
+    def _save_provider_key(self, field):
+        self._apply(**{field: self._key_entries[field].text().strip()})
+        self._refresh_key_status(field)
+
+    def _pick_provider(self, config_key, provider):
+        self._apply(**{config_key: provider})
+        for kind, entry in self._model_entries.items():
+            entry.setText(self._model_override(kind))
+        self._refresh_model_hints()
+
+    def _toggle_providers_advanced(self):
+        self._providers_advanced = not self._providers_advanced
+        self._select_section("Providers")
+
+    def _model_control(self, label, kind):
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        name = QLabel(label)
+        name.setStyleSheet(f"color: {theme.SUBTEXT};"
+                           "background: transparent;")
+        lay.addWidget(name)
+        entry_row = QHBoxLayout()
+        entry = QLineEdit(self._model_override(kind))
+        entry.returnPressed.connect(lambda key=kind: self._save_model(key))
+        self._model_entries[kind] = entry
+        entry_row.addWidget(entry, 1)
+        entry_row.addWidget(pill_button(
+            "Save", "accent", lambda key=kind: self._save_model(key)))
+        lay.addLayout(entry_row)
+        hint = hint_label("")
+        self._model_hints[kind] = hint
+        lay.addWidget(hint)
+        self._refresh_model_hint(kind)
+        return holder
+
+    def _model_provider(self, kind):
+        config_key = "provider" if kind == "stt" else "cleanup_provider"
+        return self._config.get(config_key, "xai")
+
+    def _model_override(self, kind):
+        return (self._config.get(kind + "_models") or {}).get(
+            self._model_provider(kind), "")
+
+    def _save_model(self, kind):
+        models = dict(self._config.get(kind + "_models") or {})
+        provider = self._model_provider(kind)
+        value = self._model_entries[kind].text().strip()
+        if value:
+            models[provider] = value
+        else:
+            models.pop(provider, None)
+        self._apply(**{kind + "_models": models})
+        self._refresh_model_hint(kind)
+
+    def _default_model(self, kind, provider):
+        try:
+            if kind == "stt":
+                from transcriber import DEFAULT_STT_MODELS
+                return DEFAULT_STT_MODELS.get(provider, "")
+            from cleanup import DEFAULT_CLEANUP_MODELS
+            return DEFAULT_CLEANUP_MODELS.get(provider, "")
+        except Exception:
+            return ""
+
+    def _refresh_model_hint(self, kind):
+        block = self._model_hints.get(kind)
+        if block is None:
+            return
+        default = self._default_model(kind, self._model_provider(kind))
+        tail = f" ({default})" if default else ""
+        block.setText(f"Empty = provider default{tail}.")
+
+    def _refresh_model_hints(self):
+        for kind in tuple(self._model_hints):
+            self._refresh_model_hint(kind)
+
+    def _test_stt_from_providers(self):
+        provider = self._config.get("provider", "xai")
+        field = KEY_FIELDS.get(provider, "api_key")
+        self._start_provider_test("stt", provider, field, self._test_stt_btn,
+                                  self._test_stt_worker)
+
+    def _test_cleanup(self):
+        provider = self._config.get("cleanup_provider", "xai")
+        field = KEY_FIELDS.get(provider, "api_key")
+        self._start_provider_test("cleanup", provider, field,
+                                  self._test_cleanup_btn,
+                                  self._test_cleanup_worker)
+
+    def _start_provider_test(self, which, provider, field, button, worker):
+        if self._testing:
+            return
+        entry = self._key_entries.get(field)
+        key = entry.text().strip() if entry is not None else ""
+        if provider == "local":
+            key = ""  # keyless; the fallback field would be the xAI key
+        elif not key:
+            name = PROVIDER_BY_ID.get(provider, provider)
+            self._set_status(self._providers_status,
+                             f"Enter your {name} API key below first.",
+                             theme.RED)
+            return
+        self._testing = True
+        self._test_context = which
+        button.setEnabled(False)
+        self._set_status(self._providers_status, "Testing…", theme.MUTED)
+        threading.Thread(target=worker,
+                         args=(key, provider, dict(self._config)),
+                         daemon=True).start()
+
+    # --- Local STT card ---------------------------------------------------------
+
+    def _local_card(self, section_box):
+        frame, lay = card()
+        head = QHBoxLayout()
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title = QLabel("Local engine")
+        title.setProperty("class", "cardTitle")
+        text_col.addWidget(title)
+        text_col.addWidget(hint_label(
+            "Whisper runs on this PC — audio never leaves your computer. "
+            "Select the Local provider above to use it."))
+        head.addLayout(text_col, 1)
+        self._local_btn = pill_button("", "accent", self._on_local_action)
+        head.addWidget(self._local_btn, 0, Qt.AlignVCenter)
+        lay.addLayout(head)
+        lay.addSpacing(7)
+        self._local_status = hint_label("", wrap=False)
+        lay.addWidget(self._local_status)
+        self._refresh_local_card()
+
+        # Dictating while ejected auto-loads the model on the pipeline
+        # thread; poll so an open card flips to "Eject model" by itself.
+        poll = QTimer(section_box)
+        poll.timeout.connect(
+            lambda: self._local_busy or self._refresh_local_card())
+        poll.start(1000)
+        return frame
 
     def _local_model_name(self):
-        return (self._model_override_for("stt", "local")
+        return ((self._config.get("stt_models") or {}).get("local", "")
                 or self._default_model("stt", "local"))
 
-    def _model_override_for(self, kind, provider):
-        return (self._config.get(kind + "_models") or {}).get(provider, "")
-
     def _refresh_local_card(self):
-        status = getattr(self, "_local_status", None)
-        button = getattr(self, "_local_btn", None)
-        # scene is None while the card is being built (safe to configure);
-        # a different scene means these widgets belong to a closed window.
-        if (status is None or button is None
-                or (status.scene is not None
-                    and status.scene is not self._scene)):
-            return
-        if self._local_busy:
-            label = {"install": "Downloading", "load": "Loading",
-                     "eject": "Ejecting"}[self._local_busy]
-            button.set_text(label + "…")
-            button.disable()
-            self._set_status(status, self._local_progress or label + "…",
-                             theme.MUTED)
-            return
-        button.enable()
-        if not localstt.is_installed(self._local_model_name()):
-            gb = localstt.install_size() / (1 << 30)
-            size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1024:.0f} MB"
-            button.set_text(f"Download ({size})")
-            engine = "GPU" if localstt.have_nvidia_gpu() else "CPU"
-            text, color = f"Not installed · will use your {engine}", theme.MUTED
-        elif localstt.is_loaded():
-            button.set_text("Eject model")
-            build = "GPU" if localstt.active_build() == "cuda" else "CPU"
-            text, color = f"●  loaded · {build}", theme.GREEN
-        else:
-            button.set_text("Load model")
-            text, color = "Installed · model not loaded", theme.MUTED
-        if self._local_error:
-            text, color = self._local_error, theme.RED
-        self._set_status(status, text, color)
+        try:
+            status, button = self._local_status, self._local_btn
+            if self._local_busy:
+                label = {"install": "Downloading", "load": "Loading",
+                         "eject": "Ejecting"}[self._local_busy]
+                button.setText(label + "…")
+                button.setEnabled(False)
+                self._set_status(status,
+                                 self._local_progress or label + "…",
+                                 theme.MUTED)
+                return
+            button.setEnabled(True)
+            if not localstt.is_installed(self._local_model_name()):
+                gb = localstt.install_size() / (1 << 30)
+                size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1024:.0f} MB"
+                button.setText(f"Download ({size})")
+                engine = "GPU" if localstt.have_nvidia_gpu() else "CPU"
+                text, color = (f"Not installed · will use your {engine}",
+                               theme.MUTED)
+            elif localstt.is_loaded():
+                button.setText("Eject model")
+                build = "GPU" if localstt.active_build() == "cuda" else "CPU"
+                text, color = f"●  loaded · {build}", theme.GREEN
+            else:
+                button.setText("Load model")
+                text, color = "Installed · model not loaded", theme.MUTED
+            if self._local_error:
+                text, color = self._local_error, theme.RED
+            self._set_status(status, text, color)
+        except RuntimeError:
+            pass  # the Providers section was rebuilt mid-refresh
 
     def _on_local_action(self):
         if self._local_busy:
@@ -1849,7 +1743,7 @@ class SettingsWindow:
             pct = int(frac * 100)
             if pct != last_pct:
                 last_pct = pct
-                self._queue.put(("local_progress", f"{phase}… {pct}%"))
+                self._local_progress_sig.emit(f"{phase}… {pct}%")
 
         try:
             if action == "install":
@@ -1861,7 +1755,11 @@ class SettingsWindow:
             result = (action, True, "")
         except Exception as exc:
             result = (action, False, str(exc))
-        self._queue.put(("local_done", result))
+        self._local_done_sig.emit(result)
+
+    def _on_local_progress(self, text):
+        self._local_progress = text
+        self._refresh_local_card()
 
     def _on_local_done(self, result):
         action, ok, message = result
@@ -1872,182 +1770,60 @@ class SettingsWindow:
         # by the "Load model on startup" toggle alone.
         self._refresh_local_card()
 
-    def _refresh_key_status(self, field):
-        block = self._key_status_blocks.get(field)
-        if block is None:
-            return
-        key = self._config.get(field, "")
-        text = f"●  saved · ····{key[-4:]}" if key else "no key"
-        self._set_status(block, text, theme.GREEN if key else theme.MUTED)
-
-    def _toggle_show(self, entry, button):
-        entry.secret = not entry.secret
-        button.set_text("Show" if entry.secret else "Hide")
-        entry.refresh()
-        if self._scene.editing is entry and self._scene._entry is not None:
-            self._scene._entry.configure(show="•" if entry.secret else "")
-
-    def _save_provider_key(self, field):
-        if self._scene.editing is self._key_entries[field]:
-            self._scene.end_edit(commit=True)
-        self._apply(**{field: self._key_values[field].strip()})
-        self._refresh_key_status(field)
-
-    def _pick_provider(self, config_key, provider):
-        self._apply(**{config_key: provider})
-        for kind, entry in self._model_entries.items():
-            self._model_values[kind] = self._model_override(kind)
-            entry.refresh()
-        self._refresh_model_hints()
-
-    def _toggle_providers_advanced(self):
-        self._providers_advanced = not self._providers_advanced
-        self._select_section("Providers")
-
-    def _model_control(self, label, kind):
-        entry = canvasui.EntryField(
-            lambda key=kind: self._model_values[key],
-            lambda value, key=kind: self._model_values.__setitem__(key, value),
-            "", width=1000,
-            on_enter=lambda key=kind: self._save_model(key))
-        self._model_entries[kind] = entry
-        save = canvasui.PillButton(
-            "Save", "accent", lambda key=kind: self._save_model(key),
-            small=True)
-        hint = canvasui.TextBlock("", HINT_FONT, theme.MUTED)
-        self._model_hints[kind] = hint
-        self._refresh_model_hint(kind)
-        return canvasui.VStack([
-            canvasui.TextBlock(label, ("Segoe UI", 10), theme.SUBTEXT,
-                               wrap=False),
-            canvasui.Spacer(3),
-            _ActionRow(entry, (save,)),
-            canvasui.Spacer(3),
-            hint,
-        ], gap=0)
-
-    def _model_provider(self, kind):
-        config_key = "provider" if kind == "stt" else "cleanup_provider"
-        return self._config.get(config_key, "xai")
-
-    def _model_override(self, kind):
-        return (self._config.get(kind + "_models") or {}).get(
-            self._model_provider(kind), "")
-
-    def _save_model(self, kind):
-        entry = self._model_entries[kind]
-        if self._scene.editing is entry:
-            self._scene.end_edit(commit=True)
-        models = dict(self._config.get(kind + "_models") or {})
-        provider = self._model_provider(kind)
-        value = self._model_values[kind].strip()
-        if value:
-            models[provider] = value
-        else:
-            models.pop(provider, None)
-        self._apply(**{kind + "_models": models})
-        self._refresh_model_hint(kind)
-
-    def _default_model(self, kind, provider):
-        try:
-            if kind == "stt":
-                from transcriber import DEFAULT_STT_MODELS
-                return DEFAULT_STT_MODELS.get(provider, "")
-            from cleanup import DEFAULT_CLEANUP_MODELS
-            return DEFAULT_CLEANUP_MODELS.get(provider, "")
-        except Exception:
-            return ""
-
-    def _refresh_model_hint(self, kind):
-        block = self._model_hints.get(kind)
-        if block is None:
-            return
-        default = self._default_model(kind, self._model_provider(kind))
-        tail = f" ({default})" if default else ""
-        block.set_text(f"Empty = provider default{tail}.")
-
-    def _refresh_model_hints(self):
-        for kind in tuple(self._model_hints):
-            self._refresh_model_hint(kind)
-
-    def _test_cleanup(self):
-        provider = self._config.get("cleanup_provider", "xai")
-        field = KEY_FIELDS.get(provider, "api_key")
-        self._start_provider_test(
-            "cleanup", provider, field, self._test_cleanup_btn,
-            self._test_cleanup_worker)
-
-    def _start_provider_test(self, which, provider, field, button, worker):
-        if self._testing:
-            return
-        entry = self._key_entries.get(field)
-        if entry is not None and self._scene.editing is entry:
-            self._scene.end_edit(commit=True)
-        key = self._key_values.get(field, "").strip()
-        if provider == "local":
-            key = ""  # keyless; the fallback field would be the xAI key
-        elif not key:
-            name = PROVIDER_BY_ID.get(provider, provider)
-            self._set_status(
-                self._providers_status,
-                f"Enter your {name} API key below first.", theme.RED)
-            return
-        self._testing = True
-        self._test_context = which
-        self._test_window_generation = self._window_generation
-        button.disable()
-        self._set_status(self._providers_status, "Testing…", theme.MUTED)
-        cfg = dict(self._config)
-        threading.Thread(
-            target=worker, args=(key, provider, cfg), daemon=True).start()
-
-    def _test_cleanup_worker(self, key, provider, cfg):
-        try:
-            from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
-            model = ((cfg.get("cleanup_models") or {}).get(provider)
-                     or DEFAULT_CLEANUP_MODELS[provider])
-            output = cleanup(
-                "testing one two three", None, "", {}, key, model,
-                provider=provider)
-            if output is not None:
-                name = PROVIDER_BY_ID.get(provider, provider)
-                result = ("cleanup", True, f"Cleanup works ({name}).")
-            else:
-                result = (
-                    "cleanup", False,
-                    "Cleanup failed — check the key, or see app.log.")
-        except Exception:
-            result = (
-                "cleanup", False,
-                "Cleanup failed — check the key, or see app.log.")
-        self._queue.put(("tested", result))
+    # --- About -------------------------------------------------------------------
 
     def _build_about(self):
-        icon = _Centered(canvasui.Icon(pil_image=load_app_image(theme.sc(64)),
-                                       size=64))
-        name = _Centered(canvasui.TextBlock(
-            "Undertone", ("Segoe UI Semibold", 16), wrap=False))
-        version = _Centered(canvasui.TextBlock(
-            f"Version {APP_VERSION}", HINT_FONT, theme.MUTED, wrap=False))
-        tagline = _Centered(canvasui.TextBlock(
-            "Push-to-talk dictation for Windows.", ("Segoe UI", 10),
-            theme.SUBTEXT, wrap=False))
-        description = _Centered(canvasui.TextBlock(
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addStretch(1)
+        icon = QLabel()
+        icon.setPixmap(_pil_pixmap(load_app_image(64)))
+        icon.setAlignment(Qt.AlignHCenter)
+        col.addWidget(icon)
+        col.addSpacing(3)
+        name = QLabel("Undertone")
+        name.setStyleSheet('font-family: "Segoe UI Semibold";'
+                           'font-size: 16pt; background: transparent;')
+        name.setAlignment(Qt.AlignHCenter)
+        col.addWidget(name)
+        version = hint_label(f"Version {APP_VERSION}")
+        version.setAlignment(Qt.AlignHCenter)
+        col.addWidget(version)
+        col.addSpacing(5)
+        tagline = QLabel("Push-to-talk dictation for Windows.")
+        tagline.setStyleSheet(f"color: {theme.SUBTEXT};"
+                              "background: transparent;")
+        tagline.setAlignment(Qt.AlignHCenter)
+        col.addWidget(tagline)
+        col.addSpacing(10)
+        description = hint_label(
             "Hold your shortcut, speak, release — the transcript is typed "
             "into whatever text box has focus. Audio is sent only to your "
             "chosen provider, only while you dictate. Your API keys and "
-            "settings stay on this computer.", HINT_FONT, theme.MUTED,
-            justify="center"), max_width=400)
-        links = _Centered(_Inline((
-            _ClickableText("Open settings folder", self._open_config_folder),
-            canvasui.TextBlock("·", HINT_FONT, theme.MUTED, wrap=False),
-            _ClickableText("View log", self._open_log),
-        ), gap=8))
-        return _VCenter(canvasui.VStack([
-            icon, canvasui.Spacer(3), name,
-            canvasui.Spacer(2), version, canvasui.Spacer(5), tagline,
-            canvasui.Spacer(10), description, canvasui.Spacer(10), links,
-        ], gap=0))
+            "settings stay on this computer.")
+        description.setAlignment(Qt.AlignHCenter)
+        description.setMaximumWidth(400)
+        holder = QWidget()
+        holder_lay = QHBoxLayout(holder)
+        holder_lay.setContentsMargins(0, 0, 0, 0)
+        holder_lay.addStretch(1)
+        holder_lay.addWidget(description)
+        holder_lay.addStretch(1)
+        col.addWidget(holder)
+        col.addSpacing(10)
+        links = QHBoxLayout()
+        links.addStretch(1)
+        links.addWidget(link_label("Open settings folder",
+                                   self._open_config_folder))
+        links.addWidget(hint_label("·", wrap=False))
+        links.addWidget(link_label("View log", self._open_log))
+        links.addStretch(1)
+        links_holder = QWidget()
+        links_holder.setLayout(links)
+        col.addWidget(links_holder)
+        col.addStretch(1)
+        return box
 
     def _open_config_folder(self):
         os.startfile(CONFIG_PATH.parent)
@@ -2055,6 +1831,8 @@ class SettingsWindow:
     def _open_log(self):
         log = CONFIG_PATH.parent / "app.log"
         os.startfile(log if log.exists() else CONFIG_PATH.parent)
+
+    # --- Shared state helpers ----------------------------------------------------
 
     def _provider_key(self, provider_config_key):
         provider = self._config.get(provider_config_key, "xai")
@@ -2084,130 +1862,23 @@ class SettingsWindow:
         self._flash_saved()
 
     def _flash_saved(self):
-        if self._win is None or not self._win.winfo_exists():
+        if self._win is None:
             return
-        self._content.itemconfigure(self._saved_item, text="✓ Saved")
-        self._content.tag_raise(self._saved_item)
+        self._saved_label.setText("✓ Saved")
+        self._saved_label.adjustSize()
         self._position_saved()
-        if self._saved_after_id is not None:
-            self._root.after_cancel(self._saved_after_id)
-        self._saved_after_id = self._root.after(1500, self._clear_saved)
-
-    def _clear_saved(self):
-        self._saved_after_id = None
-        if self._win is not None and self._win.winfo_exists():
-            self._content.itemconfigure(self._saved_item, text="")
+        self._saved_label.raise_()
+        self._saved_timer.start(1500)
 
     def _position_saved(self, _event=None):
-        if self._win is None or not hasattr(self, "_saved_item"):
+        if self._win is None:
             return
-        x = self._content.winfo_width() - theme.sc(18)
-        y = self._content.canvasy(self._content.winfo_height() - theme.sc(12))
-        self._content.coords(self._saved_item, x, y)
-        self._content.tag_raise(self._saved_item)
+        holder = self._content_holder
+        self._saved_label.move(
+            holder.width() - self._saved_label.width() - 18,
+            holder.height() - self._saved_label.height() - 10)
 
-    def _cancel_section_tasks(self):
-        if self._hist_poll_id is not None:
-            try:
-                self._root.after_cancel(self._hist_poll_id)
-            except tk.TclError:
-                pass
-            self._hist_poll_id = None
-        if self._local_poll_id is not None:
-            try:
-                self._root.after_cancel(self._local_poll_id)
-            except tk.TclError:
-                pass
-            self._local_poll_id = None
-        if self._practice_after_id is not None:
-            try:
-                self._root.after_cancel(self._practice_after_id)
-            except tk.TclError:
-                pass
-            self._practice_after_id = None
-        if self._mic_recorder is not None or self._mic_after_id is not None:
-            self._stop_mic_test()
-
-    def _monitor_work_areas(self):
-        areas = []
-        try:
-            user32 = ctypes.WinDLL("user32")
-            monitor_proc = ctypes.WINFUNCTYPE(
-                wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
-                ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
-
-            class MonitorInfo(ctypes.Structure):
-                _fields_ = (
-                    ("cbSize", wintypes.DWORD),
-                    ("rcMonitor", wintypes.RECT),
-                    ("rcWork", wintypes.RECT),
-                    ("dwFlags", wintypes.DWORD),
-                )
-
-            get_monitor_info = user32.GetMonitorInfoW
-            get_monitor_info.argtypes = (
-                wintypes.HMONITOR, ctypes.POINTER(MonitorInfo))
-            get_monitor_info.restype = wintypes.BOOL
-            enum_monitors = user32.EnumDisplayMonitors
-            enum_monitors.argtypes = (
-                wintypes.HDC, ctypes.POINTER(wintypes.RECT), monitor_proc,
-                wintypes.LPARAM)
-            enum_monitors.restype = wintypes.BOOL
-
-            def collect(monitor, _hdc, _rect, _data):
-                info = MonitorInfo(cbSize=ctypes.sizeof(MonitorInfo))
-                if get_monitor_info(monitor, ctypes.byref(info)):
-                    work = info.rcWork
-                    area = (work.left, work.top, work.right, work.bottom)
-                    if info.dwFlags & 1:
-                        areas.insert(0, area)
-                    else:
-                        areas.append(area)
-                return True
-
-            callback = monitor_proc(collect)
-            if not enum_monitors(None, None, callback, 0):
-                areas.clear()
-        except Exception:
-            areas.clear()
-        return areas
-
-    @staticmethod
-    def _title_bar_visible(x, y, width, area):
-        left, top, right, bottom = area
-        title_h = theme.sc(40)
-        required_w = theme.sc(120)
-        overlap_w = max(0, min(x + width, right) - max(x, left))
-        overlap_h = max(0, min(y + title_h, bottom) - max(y, top))
-        return overlap_w >= required_w and overlap_h >= title_h
-
-    def _clamp_to_work_area(self, width, height, x, y, areas):
-        if not areas:
-            return None
-        for area in areas:
-            if self._title_bar_visible(x, y, width, area):
-                return x, y
-
-        center_x = x + width / 2
-        center_y = y + height / 2
-
-        def distance(area):
-            left, top, right, bottom = area
-            dx = max(left - center_x, 0, center_x - right)
-            dy = max(top - center_y, 0, center_y - bottom)
-            return dx * dx + dy * dy
-
-        area = min(areas, key=distance)
-        left, top, right, bottom = area
-        required_w = theme.sc(120)
-        if (width < required_w or right - left < required_w
-                or bottom - top < theme.sc(40)):
-            return None
-        x = max(left + required_w - width, min(x, right - required_w))
-        y = max(top, min(y, max(top, bottom - theme.sc(40))))
-        if not self._title_bar_visible(x, y, width, area):
-            return None
-        return x, y
+    # --- Geometry persistence ------------------------------------------------------
 
     def _valid_geometry(self, value):
         if not isinstance(value, str):
@@ -2216,70 +1887,24 @@ class SettingsWindow:
         if match is None:
             return None
         width, height, x, y = map(int, match.groups())
-        if width < theme.sc(660) or height < theme.sc(560):
+        if width < MIN_W or height < MIN_H:
             return None
-        position = self._clamp_to_work_area(
-            width, height, x, y, self._monitor_work_areas())
-        if position is None:
-            return None
-        x, y = position
-        return f"{width}x{height}{x:+d}{y:+d}"
+        # The title bar must land visibly on some screen.
+        for screen in QGuiApplication.screens():
+            area = screen.availableGeometry()
+            overlap = area.intersected(QRect(x, y, width, 40))
+            if overlap.width() >= 120 and overlap.height() >= 30:
+                return QRect(x, y, width, height)
+        return None
 
     def _restore_geometry(self):
-        geometry = self._valid_geometry(self._config.get("window_geometry"))
-        if geometry is None:
-            areas = self._monitor_work_areas()
-            if areas:
-                left, top, right, bottom = areas[0]
-            else:
-                left = top = 0
-                right = self._win.winfo_screenwidth()
-                bottom = self._win.winfo_screenheight()
-            width = min(theme.sc(WIN_W), max(1, right - left))
-            height = min(theme.sc(WIN_H), max(1, bottom - top))
-            x = left + (right - left - width) // 2
-            y = top + (bottom - top - height) // 2 - theme.sc(30)
-            y = max(top, min(y, bottom - height))
-            geometry = f"{width}x{height}{x:+d}{y:+d}"
-        self._win.geometry(geometry)
-
-    def _raise(self):
-        win = self._win
-        win.deiconify()
-        win.attributes("-topmost", True)
-        win.lift()
-        win.focus_force()
-        win.after(200, lambda: win.winfo_exists()
-                  and win.attributes("-topmost", False))
-
-    def _on_escape(self, _event=None):
-        if not self._capturing:
-            self._close()
-
-    def _close(self):
-        if self._capturing:
-            row = self._shortcut_rows.get(self._capture_target, {})
-            if row and row["button"].scene is self._scene:
-                row["error"].set_text(
-                    "Finish the shortcut, or press Esc to cancel capture.")
-                row["error_reveal"].set_visible(True)
-                row["chip"].set_text("Press keys…")
-            self._raise()
-            return
-        self._cancel_section_tasks()
-        if self._saved_after_id is not None:
-            try:
-                self._root.after_cancel(self._saved_after_id)
-            except tk.TclError:
-                pass
-            self._saved_after_id = None
-        if self._win is not None and self._win.winfo_exists():
-            self._scene.end_edit(commit=True)
-            self._win.update_idletasks()
-            self._config = {
-                **self._config, "window_geometry": self._win.winfo_geometry()}
-            self._on_save(self._config)
-            self._scene.destroy()
-            self._win.destroy()
-        self._scene = None
-        self._win = None
+        rect = self._valid_geometry(self._config.get("window_geometry"))
+        if rect is None:
+            area = QGuiApplication.primaryScreen().availableGeometry()
+            width = min(WIN_W, area.width())
+            height = min(WIN_H, area.height())
+            rect = QRect(area.x() + (area.width() - width) // 2,
+                         max(area.y(), area.y()
+                             + (area.height() - height) // 2 - 30),
+                         width, height)
+        self._win.setGeometry(rect)

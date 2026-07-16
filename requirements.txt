@@ -3,7 +3,6 @@ keyboard
 mouse
 requests
 pyperclip
-pystray
 pillow
 comtypes
 PySide6

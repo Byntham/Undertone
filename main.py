@@ -32,7 +32,7 @@ from hotkey import PushToTalk, TapStateMachine
 from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
-from settingsqt import SettingsWindow
+from settingsui import SettingsWindow
 from transcriber import TranscriptionError, transcribe
 from ui import load_app_image, make_recording_tray_image, pretty_combo
 

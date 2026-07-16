@@ -1,15 +1,12 @@
-"""Tray icon plus imagery/constants shared with the settings window.
+"""Imagery and constants shared by main.py and the settings window.
 
-The settings window itself lives in settingsui.py (canvas-rendered on the
-canvasui framework); this module keeps the pystray tray, the Pillow-drawn
-icons and nav glyphs (supersampled 4x for crisp edges), and the provider/
-language/section tables both consume.
+The settings window itself lives in settingsui.py (Qt); this module keeps
+the Pillow-drawn icons and nav glyphs (supersampled 4x for crisp edges)
+and the provider/language/section tables both consume.
 """
 
 import pathlib
-from typing import Callable, Optional
 
-import pystray
 from PIL import Image, ImageDraw
 
 
@@ -164,35 +161,4 @@ def _nav_glyph(name: str, color: str, size: int) -> Image.Image:
         d.ellipse((x(0.5) - r, x(0.30) - r, x(0.5) + r, x(0.30) + r), fill=c)
         d.line((x(0.5), x(0.44), x(0.5), x(0.72)), fill=c, width=lw)
     return img.resize((size, size), Image.LANCZOS)
-
-
-
-
-# --- Tray ---------------------------------------------------------------------
-
-def create_tray(
-    on_settings: Callable[[], None],
-    on_quit: Callable[[], None],
-    on_toggle_pause: Optional[Callable[[], None]] = None,
-    is_paused: Optional[Callable[[], bool]] = None,
-) -> pystray.Icon:
-    """Build (but do not run) the system tray icon."""
-    items = [pystray.MenuItem("Settings…", lambda icon, item: on_settings(),
-                              default=True)]
-    if on_toggle_pause is not None and is_paused is not None:
-        items.append(pystray.MenuItem(
-            "Pause dictation", lambda icon, item: on_toggle_pause(),
-            checked=lambda item: is_paused()))
-    items += [pystray.Menu.SEPARATOR,
-              pystray.MenuItem("Quit", lambda icon, item: on_quit())]
-    menu = pystray.Menu(*items)
-    return pystray.Icon(
-        "Undertone",
-        icon=load_app_image(),
-        title="Undertone",
-        menu=menu,
-    )
-
-
-# --- Pill buttons --------------------------------------------------------------
 

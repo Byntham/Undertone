@@ -1,7 +1,8 @@
 # Qt (PySide6) migration plan
 
-Status: **decided-pending-owner-go** after the Phase 1 spike (2026-07-16).
-Phase 0 hardening and the spike are committed; nothing below has started.
+Status: **COMPLETE** (2026-07-16) — all four phases landed on the
+qt-migration branch. This document remains as the migration record and
+for the learning notes.
 
 ## Why (one paragraph)
 
@@ -224,6 +225,32 @@ state, swapped tray icons cross-thread, and quit clean.
   QScreen.availableGeometry (replacing a ctypes EnumDisplayMonitors
   callback), password echo modes, link labels, elided text metrics,
   scroll physics, focus traversal, and IME-correct text fields.
+
+## Phase 4 learning notes (teardown, tests, packaging)
+
+- **The ledger**: canvasui.py (2,361) + old settingsui.py (2,285) +
+  overlay's GDI half deleted; replacements are settingsui.py (1,910),
+  overlay.py (337). Net ≈ −2,700 lines, and what remains is almost all
+  product behavior rather than rendering machinery. theme.py shrank to
+  a pure palette (27 lines) — Qt owns DPI, so `sc()`/`init_dpi()` and
+  their import-order constraint vanished.
+- **Perf gate ported and passed**: the real Qt window relayouts at
+  3.2–5.0 ms/step median per section against the same <18 ms budget the
+  canvas framework was engineered to hit (canvasui measured 4.0–7.2 on
+  this machine the same day).
+- **Packaging reality vs. fear**: with only QtCore/QtGui/QtWidgets and
+  an explicit exclude list for the rest of the Qt zoo, the one-file exe
+  is 56 MB (was ~20). The dreaded onefile cold-start tax measured under
+  1 s to "App started" on this machine's NVMe — onefile stays, onedir
+  unneeded. First launch also proved the exclude list correct (the app
+  boots frozen; an over-aggressive exclude fails exactly here, at
+  import time, which is why the frozen smoke matters).
+- **E2E harnesses survived almost untouched**: two lines each
+  (`root.mainloop()` → `qapp.exec()`, `root.destroy` → `_quit`) — the
+  harness drives the app through OS-level input injection and window
+  focus, which is exactly why it's toolkit-agnostic.
+- **pystray left requirements.txt**; Pillow stays (icon/glyph drawing,
+  recorder-adjacent image work), bridged to Qt via PNG bytes.
 
 ## Estimate
 
