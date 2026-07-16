@@ -1,148 +1,91 @@
-"""Always-on-top status pill for Undertone.
+"""Always-on-top status pill for Undertone (Qt).
 
 A small dark capsule at the bottom-center of the screen with four states:
 recording (live microphone level bars), transcribing (spinner), success
 (check + transcript preview) and error (alert icon + message).
 
-Rendering: each frame is composed with Pillow (capsule at 4x supersampling,
-text at 1x) and pushed to a Windows per-pixel-alpha layered window via
-UpdateLayeredWindow, so the anti-aliased edges blend into whatever is behind
-the pill — no colour-key fringe. The window is click-through and never takes
-focus. Fading is done with the layered window's constant-alpha channel.
+Rendering: a frameless, translucent, click-through QWidget painted with
+QPainter — Qt composites the per-pixel-alpha surface, which replaces the
+old Pillow + UpdateLayeredWindow path entirely. Fading goes through
+windowOpacity (the SourceConstantAlpha analog).
 
-Thread-safety: public methods only enqueue commands onto a queue.Queue that
-is drained on the Tk main loop via root.after(); the window is never touched
-from other threads.
+Thread-safety: public methods only emit a signal; Qt delivers it on the
+main thread (queued connection), so the widget is never touched from the
+recorder, hook, or pipeline threads.
 """
 
-import ctypes
 import math
-import queue
 import time
-import tkinter as tk
-from ctypes import wintypes
-from typing import Callable, Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PySide6.QtCore import (QPointF, QPropertyAnimation, QRectF, Qt, QTimer,
+                            Signal)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter,
+                           QPen)
+from PySide6.QtWidgets import QApplication, QWidget
 
-from theme import ACCENT, AMBER, BASE, GREEN, RED, SURFACE1, TEXT, sc
+from theme import ACCENT, AMBER, BASE, GREEN, RED, SURFACE1, TEXT
 
-# Design measures in 96-dpi pixels, scaled once at import (main.py calls
-# theme.init_dpi() before importing this module).
-PILL_H = sc(44)
-PAD_X = sc(16)
-GAP = sc(10)
-ICON = sc(20)           # icon box size (px)
-BARS_W = sc(32)         # width of the level-bars block
-BAR_W = sc(4)
-BAR_GAP = sc(3)
-BAR_MIN = sc(5)
-BAR_MAX = sc(22)
+# Design measures in logical pixels (Qt scales for DPI on its own).
+PILL_H = 44
+PAD_X = 16
+GAP = 10
+ICON = 20               # icon box size
+BARS_W = 32             # width of the level-bars block
+BAR_W = 4
+BAR_GAP = 3
+BAR_MIN = 5
+BAR_MAX = 22
+BOTTOM_MARGIN = 80
 
-S = 4                   # supersampling factor for Pillow rendering
-POLL_MS = 50
 BAR_TICK_MS = 33
 SPIN_TICK_MS = 60
 SPIN_FRAMES = 12
-FADE_STEPS = 4
-FADE_MS = 25
+FADE_MS = 100
 TARGET_ALPHA = 0.96
-
-FONT_SIZE = sc(15)      # px; ~11pt Segoe UI at 96 dpi
-
-# --- Win32 layered-window plumbing -------------------------------------------
-
-_user32 = ctypes.windll.user32
-_gdi32 = ctypes.windll.gdi32
-
-GWL_EXSTYLE = -20
-WS_EX_LAYERED = 0x00080000
-WS_EX_TOOLWINDOW = 0x00000080
-WS_EX_NOACTIVATE = 0x08000000
-WS_EX_TRANSPARENT = 0x00000020
-ULW_ALPHA = 0x00000002
-AC_SRC_OVER = 0x00
-AC_SRC_ALPHA = 0x01
-GA_ROOT = 2
+FONT_PX = 15            # ~11pt Segoe UI at 96 dpi
 
 
-class _BLENDFUNCTION(ctypes.Structure):
-    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
-                ("SourceConstantAlpha", ctypes.c_ubyte),
-                ("AlphaFormat", ctypes.c_ubyte)]
+class Overlay(QWidget):
+    """A hidden-by-default, focus-less, click-through status pill."""
 
+    _command = Signal(str, object)
 
-class _SIZE(ctypes.Structure):
-    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+    def __init__(self, level_getter=None):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
+                         | Qt.WindowStaysOnTopHint
+                         | Qt.WindowTransparentForInput
+                         | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
 
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long),
-                ("biHeight", ctypes.c_long), ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD),
-                ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD),
-                ("biXPelsPerMeter", ctypes.c_long),
-                ("biYPelsPerMeter", ctypes.c_long),
-                ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD)]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER),
-                ("bmiColors", wintypes.DWORD * 3)]
-
-
-def _hex_to_rgb(h):
-    h = h.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def _load_font():
-    for name in ("segoeui.ttf", "arial.ttf"):
-        try:
-            return ImageFont.truetype(name, FONT_SIZE)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-class Overlay:
-    """A withdrawn, focus-less, click-through status pill."""
-
-    def __init__(self, root: tk.Tk,
-                 level_getter: Optional[Callable[[], float]] = None):
-        self._root = root
         self._level = level_getter or (lambda: 0.0)
-        self._queue: "queue.Queue" = queue.Queue()
         self._generation = 0
-        self._hide_after_id = None
-        self._anim_after_id = None
-        self._fade_after_id = None
         self._state = None
-        self._hwnd = None
-        self._alpha = int(255 * TARGET_ALPHA)
-        self._x = self._y = 0
 
-        self._win = tk.Toplevel(root)
-        self._win.withdraw()
-        self._win.overrideredirect(True)
-        self._win.attributes("-topmost", True)
+        self._font = QFont("Segoe UI")
+        self._font.setPixelSize(FONT_PX)
+        # Grayscale AA, not ClearType: subpixel fringes assume an opaque
+        # background, and this window composites over arbitrary content.
+        self._font.setStyleStrategy(QFont.NoSubpixelAntialias)
+        self._metrics = QFontMetrics(self._font)
 
-        self._font = _load_font()
-        self._bg_cache = {}      # width -> 4x RGBA capsule background
+        # Current layout, repainted each animation tick.
+        self._text = ""
+        self._text_img = None
+        self._text_color = TEXT
+        self._mode = "none"      # "bars" | "spinner" | "check" | "alert" | "warn"
+        self._locked = False     # hands-free: accent bars + label
         self._spin_index = 0
         self._bar_heights = [BAR_MIN] * 5
         self._t0 = time.monotonic()
 
-        # Current layout, re-composed each animation tick.
-        self._text = ""
-        self._text_color = TEXT
-        self._mode = "none"      # "bars" | "spinner" | "check" | "alert" | "warn"
-        self._locked = False     # hands-free: accent bars + label
-        self._pill_width = 0
+        self._anim = QTimer(self)          # bars/spinner ticks
+        self._anim_slot = None             # currently connected tick slot
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(FADE_MS)
 
-        self._root.after(POLL_MS, self._drain)
+        # Cross-thread funnel: emits arrive on the Qt main thread.
+        self._command.connect(self._handle)
 
     # --- Public, thread-safe API ------------------------------------------
 
@@ -152,11 +95,11 @@ class Overlay:
         locked=True marks hands-free mode: accent bars plus a
         "tap to finish" label, so the double-tap visibly registered.
         """
-        self._queue.put(("recording", locked))
+        self._command.emit("recording", locked)
 
     def show_transcribing(self):
         """Show the pill with a spinner (escalates to text if it drags on)."""
-        self._queue.put(("transcribing", None))
+        self._command.emit("transcribing", None)
 
     def show_message(self, text: str, duration_ms: int = 2500,
                      error: bool = False, warn: bool = False):
@@ -165,204 +108,68 @@ class Overlay:
         error draws a red alert and red text; warn an amber one — for
         notices that aren't failures (too short, canceled, can't paste).
         """
-        self._queue.put(("message", (text, duration_ms, error, warn)))
+        self._command.emit("message", (text, duration_ms, error, warn))
 
-    def hide(self):
+    def hide_pill(self):
         """Withdraw the pill."""
-        self._queue.put(("hide", None))
+        self._command.emit("hide", None)
 
-    # --- Frame composition (all Pillow) -------------------------------------
+    # Back-compat alias: callers know the pill as overlay.hide().
+    hide = hide_pill
 
-    def _capsule_bg(self, width):
-        """4x supersampled RGBA capsule on a transparent field, cached."""
-        if width not in self._bg_cache:
-            w, h = width * S, PILL_H * S
-            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            d = ImageDraw.Draw(img)
-            d.rounded_rectangle(
-                (0, 0, w - 1, h - 1), radius=h // 2,
-                fill=_hex_to_rgb(BASE) + (255,),
-                outline=_hex_to_rgb(SURFACE1) + (255,), width=S,
-            )
-            self._bg_cache[width] = img
-        return self._bg_cache[width]
-
-    def _compose(self):
-        """Render the current pill state as a 1x RGBA frame."""
-        width = self._pill_width
-        img = self._capsule_bg(width).copy()
-        d = ImageDraw.Draw(img)
-        cy = PILL_H * S // 2
-
-        if self._mode == "bars":
-            bar_rgb = _hex_to_rgb(ACCENT if self._locked else RED)
-            for i, bh in enumerate(self._bar_heights):
-                x = (PAD_X + i * (BAR_W + BAR_GAP)) * S
-                hh = bh * S / 2
-                d.rounded_rectangle(
-                    (x, cy - hh, x + BAR_W * S, cy + hh),
-                    radius=BAR_W * S // 2, fill=bar_rgb + (255,))
-        elif self._mode == "spinner":
-            self._draw_spinner(d, self._spin_index / SPIN_FRAMES)
-        elif self._mode == "check":
-            self._draw_check(d)
-        elif self._mode == "alert":
-            self._draw_alert(d)
-        elif self._mode == "warn":
-            self._draw_alert(d, color=AMBER)
-
-        frame = img.resize((width, PILL_H), Image.LANCZOS)
-        if self._text:
-            lead = BARS_W if self._mode == "bars" else ICON
-            ImageDraw.Draw(frame).text(
-                (PAD_X + lead + GAP, PILL_H / 2), self._text,
-                font=self._font, fill=_hex_to_rgb(self._text_color) + (255,),
-                anchor="lm")
-        return frame
-
-    # Icon painters draw into the 20px icon box at 4x scale.
-
-    def _icon_box(self):
-        x0 = PAD_X * S
-        y0 = (PILL_H - ICON) * S // 2
-        return x0, y0, ICON * S
-
-    def _draw_spinner(self, d, fraction):
-        x0, y0, px = self._icon_box()
-        m = int(0.10 * px)
-        start = fraction * 360.0
-        d.arc((x0 + m, y0 + m, x0 + px - m, y0 + px - m), start=start,
-              end=start + 270, fill=_hex_to_rgb(ACCENT) + (255,),
-              width=int(0.12 * px))
-
-    def _draw_check(self, d):
-        x0, y0, px = self._icon_box()
-        pts = [(x0 + 0.18 * px, y0 + 0.55 * px),
-               (x0 + 0.42 * px, y0 + 0.78 * px),
-               (x0 + 0.84 * px, y0 + 0.26 * px)]
-        d.line(pts, fill=_hex_to_rgb(GREEN) + (255,), width=int(0.13 * px),
-               joint="curve")
-
-    def _draw_alert(self, d, color=RED):
-        x0, y0, px = self._icon_box()
-        base = _hex_to_rgb(BASE) + (255,)
-        d.ellipse((x0, y0, x0 + px - 1, y0 + px - 1),
-                  fill=_hex_to_rgb(color) + (255,))
-        bar_w = int(0.10 * px)
-        cx = x0 + px // 2
-        d.rounded_rectangle(
-            (cx - bar_w, y0 + int(0.22 * px), cx + bar_w, y0 + int(0.58 * px)),
-            radius=bar_w, fill=base)
-        r = int(0.07 * px)
-        d.ellipse((cx - r, y0 + int(0.70 * px), cx + r,
-                   y0 + int(0.70 * px) + 2 * r), fill=base)
-
-    # --- Layered-window presentation -----------------------------------------
-
-    def _ensure_layered(self):
-        self._win.update_idletasks()
-        hwnd = _user32.GetAncestor(self._win.winfo_id(), GA_ROOT)
-        if hwnd != self._hwnd:
-            self._hwnd = hwnd
-        ex = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ex |= (WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-               | WS_EX_TRANSPARENT)
-        _user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-
-    def _push(self, frame):
-        """Blit an RGBA frame to the layered window with per-pixel alpha."""
-        if self._hwnd is None:
-            return
-        w, h = frame.size
-        data = frame.tobytes("raw", "BGRa")  # premultiplied BGRA
-
-        screen_dc = _user32.GetDC(None)
-        mem_dc = _gdi32.CreateCompatibleDC(screen_dc)
-        bmi = _BITMAPINFO()
-        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = w
-        bmi.bmiHeader.biHeight = -h  # top-down
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 32
-        bits = ctypes.c_void_p()
-        dib = _gdi32.CreateDIBSection(screen_dc, ctypes.byref(bmi), 0,
-                                      ctypes.byref(bits), None, 0)
-        if not dib:
-            _gdi32.DeleteDC(mem_dc)
-            _user32.ReleaseDC(None, screen_dc)
-            return
-        ctypes.memmove(bits, data, len(data))
-        old = _gdi32.SelectObject(mem_dc, dib)
-
-        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, self._alpha, AC_SRC_ALPHA)
-        pos = wintypes.POINT(self._x, self._y)
-        size = _SIZE(w, h)
-        src = wintypes.POINT(0, 0)
-        _user32.UpdateLayeredWindow(
-            self._hwnd, screen_dc, ctypes.byref(pos), ctypes.byref(size),
-            mem_dc, ctypes.byref(src), 0, ctypes.byref(blend), ULW_ALPHA)
-
-        _gdi32.SelectObject(mem_dc, old)
-        _gdi32.DeleteObject(dib)
-        _gdi32.DeleteDC(mem_dc)
-        _user32.ReleaseDC(None, screen_dc)
-
-    def _present(self):
-        self._push(self._compose())
-
-    # --- Tk-thread internals ----------------------------------------------
-
-    def _drain(self):
-        try:
-            while True:
-                cmd, payload = self._queue.get_nowait()
-                self._handle(cmd, payload)
-        except queue.Empty:
-            pass
-        finally:
-            self._root.after(POLL_MS, self._drain)
+    # --- Main-thread state machine ------------------------------------------
 
     def _handle(self, cmd, payload):
+        # Bumping the generation orphans every pending single-shot (auto-hide,
+        # escalation) — their gen guard makes a stale fire a no-op, so no
+        # timer bookkeeping is needed.
         self._generation += 1
-        self._cancel_hide()
-        self._stop_anim()
+        self._anim.stop()
+        if self._anim_slot is not None:
+            self._anim.timeout.disconnect(self._anim_slot)
+            self._anim_slot = None
 
         if cmd == "recording":
             self._state = "recording"
             self._locked = bool(payload)
             self._layout("Hands-free · tap to finish" if payload else None,
                          TEXT, mode="bars")
-            self._show()
-            self._tick_bars()
+            self._present()
+            self._start_anim(self._tick_bars, BAR_TICK_MS)
         elif cmd == "transcribing":
             self._state = "transcribing"
             self._layout(None, TEXT, mode="spinner")
-            self._show()
-            self._tick_spinner()
+            self._present()
+            self._start_anim(self._tick_spinner, SPIN_TICK_MS)
             # If it drags on, say so — an unchanging spinner reads as hung.
             gen = self._generation
-            self._root.after(4000, lambda: self._escalate(gen))
+            QTimer.singleShot(4000, self, lambda: self._escalate(gen))
         elif cmd == "message":
             text, duration_ms, error, warn = payload
             self._state = "message"
             color = RED if error else (AMBER if warn else TEXT)
             mode = "alert" if error else ("warn" if warn else "check")
             self._layout(text, color, mode=mode)
-            self._show()
+            self._present()
             gen = self._generation
-            self._hide_after_id = self._root.after(
-                duration_ms, lambda: self._auto_hide(gen))
+            QTimer.singleShot(duration_ms, self,
+                              lambda: self._auto_hide(gen))
         elif cmd == "hide":
             self._state = None
-            self._win.withdraw()
+            super().hide()
+
+    def _start_anim(self, slot, interval_ms):
+        self._anim_slot = slot
+        self._anim.timeout.connect(slot)
+        self._anim.start(interval_ms)
 
     def _layout(self, text, text_color, mode):
         """Size the pill; text=None gives a compact animation-only capsule."""
         lead = BARS_W if mode == "bars" else ICON
         if text:
             text = self._ellipsize(text)
-            text_w = int(math.ceil(self._font.getlength(text)))
-            width = PAD_X + lead + GAP + text_w + PAD_X
+            width = PAD_X + lead + GAP + self._metrics.horizontalAdvance(
+                text) + PAD_X
             width = int(math.ceil(width / 8.0)) * 8
         else:
             text = ""
@@ -371,22 +178,59 @@ class Overlay:
         self._text = text
         self._text_color = text_color
         self._mode = mode
-        self._pill_width = width
+        self._render_text()
+        self.setFixedSize(width, PILL_H)
+
+    def _render_text(self):
+        """Pre-render the label into an alpha QImage, once per state change.
+
+        Painting text straight onto the translucent window gets ClearType
+        subpixel AA (colored fringes that assume an opaque background);
+        Qt's raster engine on an alpha QImage antialiases in grayscale,
+        matching the old Pillow rendering. Caching it also keeps the
+        33 ms bar ticks from re-shaping glyphs.
+        """
+        if not self._text:
+            self._text_img = None
+            return
+        ratio = self.devicePixelRatioF()
+        w = self._metrics.horizontalAdvance(self._text) + 2
+        h = self._metrics.height()
+        img = QImage(int(w * ratio), int(h * ratio),
+                     QImage.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(ratio)
+        img.fill(0)
+        p = QPainter(img)
+        p.setFont(self._font)
+        p.setPen(QColor(self._text_color))
+        p.drawText(0, self._metrics.ascent(), self._text)
+        p.end()
+        self._text_img = img
 
     def _ellipsize(self, text):
         text = " ".join(text.split())  # collapse newlines/runs of whitespace
-        max_text = int(self._win.winfo_screenwidth() * 0.6) - (
+        screen = self.screen() or QApplication.primaryScreen()
+        max_text = int(screen.geometry().width() * 0.6) - (
             PAD_X + ICON + GAP + PAD_X)
-        if self._font.getlength(text) <= max_text:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if self._font.getlength(text[:mid] + "…") <= max_text:
-                lo = mid
-            else:
-                hi = mid - 1
-        return (text[:lo].rstrip() + "…") if lo > 0 else "…"
+        return self._metrics.elidedText(text, Qt.ElideRight, max_text)
+
+    def _present(self):
+        """Position bottom-center and show, fading in from hidden."""
+        screen = QApplication.primaryScreen().geometry()
+        self.move(screen.x() + (screen.width() - self.width()) // 2,
+                  screen.y() + screen.height() - PILL_H - BOTTOM_MARGIN)
+        self._fade.stop()
+        if not self.isVisible():
+            # Content is laid out before the window maps, so the first
+            # visible frame is already the new state (no stale flash).
+            self.setWindowOpacity(0.0)
+            self.show()
+            self._fade.setStartValue(0.0)
+            self._fade.setEndValue(TARGET_ALPHA)
+            self._fade.start()
+        else:
+            self.setWindowOpacity(TARGET_ALPHA)
+            self.update()
 
     # --- Animation ----------------------------------------------------------
 
@@ -402,66 +246,92 @@ class Overlay:
             wobble = 0.5 + 0.5 * math.sin(t * 7.0 + i * 1.9)
             frac = 0.10 + 0.90 * min(1.0, level * 1.25) * (0.5 + 0.5 * wobble)
             self._bar_heights[i] = BAR_MIN + (BAR_MAX - BAR_MIN) * frac
-        self._present()
-        self._anim_after_id = self._root.after(BAR_TICK_MS, self._tick_bars)
+        self.update()
 
     def _tick_spinner(self):
         self._spin_index = (self._spin_index + 1) % SPIN_FRAMES
-        self._present()
-        self._anim_after_id = self._root.after(SPIN_TICK_MS, self._tick_spinner)
-
-    def _stop_anim(self):
-        if self._anim_after_id is not None:
-            self._root.after_cancel(self._anim_after_id)
-            self._anim_after_id = None
-        if self._fade_after_id is not None:
-            self._root.after_cancel(self._fade_after_id)
-            self._fade_after_id = None
-
-    # --- Show / hide ----------------------------------------------------------
-
-    def _show(self):
-        w = self._pill_width
-        sw = self._win.winfo_screenwidth()
-        sh = self._win.winfo_screenheight()
-        self._x = (sw - w) // 2
-        self._y = sh - PILL_H - sc(80)
-        self._win.geometry(f"{int(w)}x{PILL_H}+{self._x}+{self._y}")
-
-        was_hidden = self._win.state() == "withdrawn"
-        # Push the new frame while the window is still hidden: a layered
-        # window keeps displaying its last bitmap, so mapping it before the
-        # push would flash the previous state for a frame.
-        self._ensure_layered()
-        self._alpha = 0 if was_hidden else int(255 * TARGET_ALPHA)
-        self._present()
-        self._win.deiconify()
-        self._win.lift()
-        if was_hidden:
-            self._fade(1)
-
-    def _fade(self, step):
-        self._alpha = int(255 * TARGET_ALPHA * min(1.0, step / FADE_STEPS))
-        self._push(self._compose())
-        if step < FADE_STEPS:
-            self._fade_after_id = self._root.after(
-                FADE_MS, lambda: self._fade(step + 1))
-        else:
-            self._fade_after_id = None
+        self.update()
 
     def _escalate(self, gen):
         """Add 'Still transcribing…' to a spinner that has run 4+ seconds."""
         if gen != self._generation or self._state != "transcribing":
             return
         self._layout("Still transcribing…", TEXT, mode="spinner")
-        self._show()
+        self._present()
 
     def _auto_hide(self, gen):
         if gen == self._generation:
             self._state = None
-            self._win.withdraw()
+            super().hide()
 
-    def _cancel_hide(self):
-        if self._hide_after_id is not None:
-            self._root.after_cancel(self._hide_after_id)
-            self._hide_after_id = None
+    # --- Painting -------------------------------------------------------------
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        # Capsule: BASE fill, hairline SURFACE1 border.
+        p.setBrush(QColor(BASE))
+        p.setPen(QPen(QColor(SURFACE1), 1))
+        r = self.rect().adjusted(0, 0, -1, -1)
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+
+        cy = PILL_H / 2
+        if self._mode == "bars":
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(ACCENT if self._locked else RED))
+            for i, bh in enumerate(self._bar_heights):
+                x = PAD_X + i * (BAR_W + BAR_GAP)
+                p.drawRoundedRect(QRectF(x, cy - bh / 2, BAR_W, bh),
+                                  BAR_W / 2, BAR_W / 2)
+        elif self._mode == "spinner":
+            self._draw_spinner(p)
+        elif self._mode == "check":
+            self._draw_check(p)
+        elif self._mode == "alert":
+            self._draw_alert(p, QColor(RED))
+        elif self._mode == "warn":
+            self._draw_alert(p, QColor(AMBER))
+
+        if self._text and self._text_img is not None:
+            lead = BARS_W if self._mode == "bars" else ICON
+            y = (PILL_H - self._text_img.height()
+                 / self._text_img.devicePixelRatio()) / 2
+            p.drawImage(QPointF(PAD_X + lead + GAP, y), self._text_img)
+
+    # Icon painters draw into the 20px icon box.
+
+    def _icon_box(self):
+        return PAD_X, (PILL_H - ICON) / 2, ICON
+
+    def _draw_spinner(self, p):
+        x0, y0, px = self._icon_box()
+        m = 0.10 * px
+        start = -(self._spin_index / SPIN_FRAMES) * 360.0
+        p.setPen(QPen(QColor(ACCENT), 0.12 * px, Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        # Qt angles are in 1/16 degree, counterclockwise-positive.
+        p.drawArc(QRectF(x0 + m, y0 + m, px - 2 * m, px - 2 * m),
+                  int(start * 16), int(-270 * 16))
+
+    def _draw_check(self, p):
+        x0, y0, px = self._icon_box()
+        p.setPen(QPen(QColor(GREEN), 0.13 * px, Qt.SolidLine, Qt.RoundCap,
+                      Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolyline([QPointF(x0 + fx * px, y0 + fy * px)
+                        for fx, fy in ((0.18, 0.55), (0.42, 0.78),
+                                       (0.84, 0.26))])
+
+    def _draw_alert(self, p, color):
+        x0, y0, px = self._icon_box()
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawEllipse(QRectF(x0, y0, px, px))
+        p.setBrush(QColor(BASE))
+        bar_w = 0.10 * px
+        cx = x0 + px / 2
+        p.drawRoundedRect(QRectF(cx - bar_w, y0 + 0.22 * px,
+                                 2 * bar_w, 0.36 * px), bar_w, bar_w)
+        r = 0.07 * px
+        p.drawEllipse(QRectF(cx - r, y0 + 0.70 * px, 2 * r, 2 * r))

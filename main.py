@@ -5,20 +5,21 @@ status overlay, and system tray. Run with:  python main.py
 """
 
 import ctypes
+import io
 import logging
 import queue
 import sys
 import threading
 import time
-import tkinter as tk
 from collections import deque
 
 import keyboard
 import mouse
 import pyperclip
 
-import theme
-theme.init_dpi()  # before overlay/ui compute pixel metrics or Tk starts
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 import autostart
 import caretctx
@@ -32,9 +33,7 @@ from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
 from transcriber import TranscriptionError, transcribe
-from settingsui import SettingsWindow
-from ui import (create_tray, load_app_image,
-                make_recording_tray_image, pretty_combo)
+from ui import load_app_image, make_recording_tray_image, pretty_combo
 
 # Recordings shorter than this many bytes of PCM (~0.3 s at 16 kHz mono
 # int16) are treated as an accidental tap and skipped.
@@ -47,6 +46,29 @@ LOG_PATH = config_mod.CONFIG_PATH.parent / "app.log"
 
 def _foreground_hwnd() -> int:
     return ctypes.windll.user32.GetForegroundWindow()
+
+
+def _qicon(pil_img) -> QIcon:
+    """PIL image -> QIcon (via PNG bytes; no ImageQt dependency)."""
+    buf = io.BytesIO()
+    pil_img.save(buf, "PNG")
+    pixmap = QPixmap()
+    pixmap.loadFromData(buf.getvalue(), "PNG")
+    return QIcon(pixmap)
+
+
+class _Dispatcher(QObject):
+    """Runs posted callables on the Qt main thread.
+
+    Signal emission is thread-safe and delivery is a queued connection
+    when the emitter is another thread — the Qt-native replacement for
+    the old queue.Queue + root.after(50) poller.
+    """
+    call = Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self.call.connect(lambda fn: fn())
 
 
 def _setup_logging():
@@ -83,18 +105,16 @@ class App:
     def __init__(self):
         self.cfg = config_mod.load_config()
 
-        self.root = tk.Tk()
-        self.root.withdraw()
-        # Under pythonw there is no console: route Tk callback errors to the
-        # log file instead of losing them.
-        self.root.report_callback_exception = lambda et, e, tb: logging.error(
-            "Tk callback error", exc_info=(et, e, tb)
-        )
+        self.qapp = QApplication.instance() or QApplication(sys.argv)
+        self.qapp.setQuitOnLastWindowClosed(False)  # tray app: no windows
+        # Under pythonw there is no console: route uncaught errors from Qt
+        # slots to the log file instead of losing them.
+        sys.excepthook = lambda et, e, tb: logging.error(
+            "Uncaught error", exc_info=(et, e, tb))
 
-        # Commands from non-Tk threads (pystray, keyboard hook) are queued
-        # and executed on the Tk main loop.
-        self._commands: queue.Queue = queue.Queue()
-        self.root.after(50, self._drain_commands)
+        # Commands from non-Qt threads (keyboard hook, pipeline) run on the
+        # Qt main thread via a queued signal.
+        self._dispatch = _Dispatcher()
 
         # Scan codes of Undertone's own extra hotkeys — they must not count
         # as "typing" for insertion-memory invalidation. Filled at
@@ -105,33 +125,31 @@ class App:
         self.recorder = Recorder(
             sample_rate=self.cfg.get("sample_rate", 16000),
             device=self.cfg.get("input_device") or None)
-        self.overlay = Overlay(self.root,
-                               level_getter=lambda: self.recorder.level)
+        self.overlay = Overlay(level_getter=lambda: self.recorder.level)
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
                               self._on_release,
                               on_other_key=self._on_other_key)
-        self.settings = SettingsWindow(
-            self.root,
-            self.cfg,
-            self._on_save_settings,
-            on_capture_start=self._pause_hotkey,
-            on_capture_end=self._resume_hotkey,
-            history_getter=self._history_snapshot,
-            on_retry=self._retry_failed,
-            config_getter=lambda: self.cfg,
-        )
+        # The settings window is being ported to Qt (Phase 3 of the
+        # migration); until it lands, the tray item explains itself.
+        self.settings = None
         # Tray pause state and icons (normal / red-tinted while recording).
         # Built once; the recording swap happens on the hook thread.
         self._paused = False
         self._capture_active = False   # settings shortcut capture in progress
-        self._tray_img = load_app_image()
-        self._tray_img_recording = make_recording_tray_image()
-        self.tray = create_tray(
-            on_settings=lambda: self._post(self.settings.open),
-            on_quit=lambda: self._post(self._quit),
-            on_toggle_pause=lambda: self._post(self._toggle_pause),
-            is_paused=lambda: self._paused,
-        )
+        self._tray_img = _qicon(load_app_image())
+        self._tray_img_recording = _qicon(make_recording_tray_image())
+        self.tray = QSystemTrayIcon(self._tray_img)
+        self._tray_menu = QMenu()      # kept referenced; the tray doesn't own it
+        act_settings = self._tray_menu.addAction("Settings…")
+        act_settings.triggered.connect(self._open_settings)
+        self._tray_menu.setDefaultAction(act_settings)
+        self._act_pause = self._tray_menu.addAction("Pause dictation")
+        self._act_pause.setCheckable(True)
+        self._act_pause.triggered.connect(lambda _=False: self._toggle_pause())
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("Quit").triggered.connect(self._quit)
+        self.tray.setContextMenu(self._tray_menu)
+        self.tray.activated.connect(self._on_tray_activated)
 
         # Dictation history (session-only, in memory) and insertion memory
         # for smart formatting when the caret can't be read (terminals).
@@ -174,15 +192,16 @@ class App:
     # ---- thread marshaling -------------------------------------------------
 
     def _post(self, fn):
-        self._commands.put(fn)
+        self._dispatch.call.emit(fn)
 
-    def _drain_commands(self):
-        try:
-            while True:
-                self._commands.get_nowait()()
-        except queue.Empty:
-            pass
-        self.root.after(50, self._drain_commands)
+    def _open_settings(self):
+        self.overlay.show_message(
+            "Settings are being ported to Qt — edit config.json for now",
+            duration_ms=4000, warn=True)
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._open_settings()
 
     # ---- recording actions (invoked by the gesture state machine) ------------
 
@@ -235,13 +254,10 @@ class App:
         self.overlay.hide()
         self._set_tray_icon(self._tray_img)
 
-    def _set_tray_icon(self, img):
-        """Swap the tray icon; called from the hook thread too, and pystray
-        quirks must never crash the app."""
-        try:
-            self.tray.icon = img
-        except Exception:
-            pass
+    def _set_tray_icon(self, icon):
+        """Swap the tray icon; called from the hook thread too, so the
+        actual setIcon runs on the Qt main thread."""
+        self._post(lambda: self.tray.setIcon(icon))
 
     def _on_other_key(self, scan_code: int):
         """Non-hotkey keydown (from the PushToTalk hook): the caret has
@@ -539,20 +555,14 @@ class App:
                 self.overlay.show_message("Dictation resumed", 1200)
             self._register_extra_hotkeys()
         self._update_tray_title()
-        try:
-            self.tray.update_menu()
-        except Exception:
-            pass
+        self._act_pause.setChecked(self._paused)
 
     def _update_tray_title(self):
-        """State-bearing tooltip; pystray quirks must never crash the app."""
-        try:
-            self.tray.title = (
-                "Undertone — paused" if self._paused else
-                f"Undertone — hold {pretty_combo(self.cfg.get('hotkey', ''))} "
-                "to dictate")
-        except Exception:
-            pass
+        """State-bearing tooltip."""
+        self.tray.setToolTip(
+            "Undertone — paused" if self._paused else
+            f"Undertone — hold {pretty_combo(self.cfg.get('hotkey', ''))} "
+            "to dictate")
 
     def _on_save_settings(self, new_cfg: dict):
         old_cfg = self.cfg
@@ -601,15 +611,12 @@ class App:
             self.ptt.stop()
         except Exception:
             pass
-        try:
-            self.tray.stop()
-        except Exception:
-            pass
+        self.tray.hide()
         try:
             localstt.shutdown()
         except Exception:
             pass
-        self.root.destroy()
+        self.qapp.quit()
 
     def _register_extra_hotkeys(self):
         """Re-paste and optional dedicated toggle hotkeys."""
@@ -653,12 +660,11 @@ class App:
         )
         self.ptt.start()
         self._register_extra_hotkeys()
-        self.tray.run_detached()
+        self.tray.show()
         self._update_tray_title()
         provider = self.cfg.get("provider", "xai")
         if provider != "local" and not config_mod.provider_key(
                 self.cfg, provider):
-            self.settings.open()
             self.overlay.show_message(
                 "Enter an API key for your provider to get started",
                 duration_ms=4000,
@@ -675,7 +681,7 @@ class App:
             # so the first dictation is instant.
             threading.Thread(
                 target=self._warm_local_stt, daemon=True).start()
-        self.root.mainloop()
+        self.qapp.exec()
 
 
 if __name__ == "__main__":

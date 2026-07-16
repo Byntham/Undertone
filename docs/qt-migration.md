@@ -143,6 +143,51 @@ note), min/max window sweeps, 150% DPI check.
 - **DPI**: Qt scales automatically; overlay positioning math must use
   logical coordinates (devicePixelRatio ≠ 1 on scaled displays).
 
+## Phase 2 learning notes (Tk shell → Qt shell)
+
+What each Tk-era mechanism became, and why:
+
+- **`queue.Queue` + `root.after(50)` poller → one `Signal(object)`.**
+  Emitting a Qt signal from any thread is safe; when the emitter isn't
+  the main thread, Qt automatically queues the delivery onto the main
+  loop (a "queued connection"). Same guarantee the queue+poller gave —
+  UI touched only by the main thread — but event-driven instead of
+  polled: no 50 ms latency, no idle wakeups, ~10 lines total
+  (`_Dispatcher` in main.py). The pattern generalizes: any worker→UI
+  hop in Phase 3 is "emit a signal carrying data."
+- **pystray → QSystemTrayIcon, and a thread disappears.** pystray ran
+  its own loop on its own thread, so every menu callback had to be
+  `_post`ed to Tk and every tray mutation wrapped in try/except.
+  QSystemTrayIcon lives on the main loop: menu actions arrive on the
+  main thread, `setIcon`/`setToolTip` are plain calls, and the
+  checkable "Pause dictation" QAction replaces the `update_menu()`
+  dance. The one remaining hop: `_set_tray_icon` is called from the
+  keyboard hook thread, so it posts through the dispatcher.
+- **UpdateLayeredWindow (250 lines of GDI) → `WA_TranslucentBackground`
+  + `paintEvent`.** Qt gives a per-pixel-alpha window natively; the
+  Pillow supersampling became `QPainter.Antialiasing`; premultiplied
+  BGRA DIB sections became "just paint." Both hard-won invariants
+  dissolved: fading is `windowOpacity` (Qt's SourceConstantAlpha), and
+  no-stale-flash is handled by laying out before `show()` plus fading
+  in from 0. Click-through/no-focus needed zero ctypes:
+  `WindowTransparentForInput` + `WindowDoesNotAcceptFocus` flags.
+- **`root.after` id juggling → generation-guarded `QTimer.singleShot`.**
+  The old code cancelled after-ids defensively; the port keeps the
+  (better) generation counter it already had and drops the id
+  bookkeeping — a stale auto-hide/escalate fires and no-ops.
+- **Manual binary-search ellipsizing → `QFontMetrics.elidedText`.**
+  Ten lines became one call. Emblematic of the whole port: the Qt pill
+  is ~290 lines vs ~470, and the deleted 180 were exactly the
+  platform-plumbing lines.
+- **DPI**: `theme.init_dpi()`/`sc()` are gone from the shell — Qt is
+  per-monitor DPI aware on its own and all design measures are logical
+  pixels. (theme.py keeps them while canvasui/settingsui still exist.)
+
+Verification: six pill states screen-captured from both renderers came
+out width-identical (the layout math survived translation); ui-verifier
+judged the pairs; full-App smoke on an f13 hotkey booted, drove every
+state, swapped tray icons cross-thread, and quit clean.
+
 ## Estimate
 
 Phase 2 ≈ one working session; Phase 3 ≈ one to two (Providers is half
