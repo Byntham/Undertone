@@ -188,6 +188,43 @@ out width-identical (the layout math survived translation); ui-verifier
 judged the pairs; full-App smoke on an f13 hotkey booted, drove every
 state, swapped tray icons cross-thread, and quit clean.
 
+## Phase 3 learning notes (canvas settings → Qt widgets)
+
+- **2,285 lines → ~1,320, and the missing 1,000 are the widget layer.**
+  settingsqt.py contains no layout engine, no focus manager, no shared
+  edit overlay, no ListView virtualization, no clip() methods — every
+  behavior method (capture flow, key tests, local card, history
+  fingerprint poll) ported nearly 1:1, while the rendering half of the
+  old file simply has no counterpart. canvasui.py (2,361 lines) has no
+  replacement at all; QSS + five small custom widgets (Toggle, Meter,
+  NavItem, ElideLabel, ListRow ~120 lines total) cover it.
+- **The worker pattern got simpler, not different.** Old: worker thread →
+  `self._queue.put(...)` → 50 ms `root.after` drain → dispatch table.
+  New: worker thread → `signal.emit(...)` → slot. Same threads, same
+  contracts (capture, STT/cleanup tests, local install/load/eject with
+  per-percent progress), minus the poller and the string-keyed dispatch.
+- **Section lifetime = widget lifetime.** The old code hand-cancelled
+  after-ids per section (`_cancel_section_tasks`). In Qt, each section's
+  QTimers are parented to the section widget, so switching sections
+  deletes them with it — the mic-test recorder is the one resource that
+  still needs explicit stop (hardware, not a widget).
+- **Two real rendering lessons the verifier caught:**
+  (1) A stylesheet-styled QComboBox loses its native chevron — QSS
+  `::down-arrow` needs an image, generated at runtime in %TEMP% since
+  QSS url() wants a file. (2) A QLabel that elides by setText-on-resize
+  fights the layout (its own text change re-triggers sizing, pushing
+  siblings out); eliding at paint time with an Ignored size policy is
+  the stable idiom.
+- **Old-code archaeology paid off once**: `_local_model_name()` looked
+  redundant ("override or default") and got simplified in the port —
+  which silently flipped the local card to "Not installed". The verifier
+  flagged the state mismatch as a fixture difference; it was a real
+  regression. Parity references catch behavior, not just pixels.
+- **What Qt gave for free this phase**: geometry clamping via
+  QScreen.availableGeometry (replacing a ctypes EnumDisplayMonitors
+  callback), password echo modes, link labels, elided text metrics,
+  scroll physics, focus traversal, and IME-correct text fields.
+
 ## Estimate
 
 Phase 2 ≈ one working session; Phase 3 ≈ one to two (Providers is half

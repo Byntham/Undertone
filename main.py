@@ -32,6 +32,7 @@ from hotkey import PushToTalk, TapStateMachine
 from injector import paste_text
 from overlay import Overlay
 from recorder import Recorder, RecorderError
+from settingsqt import SettingsWindow
 from transcriber import TranscriptionError, transcribe
 from ui import load_app_image, make_recording_tray_image, pretty_combo
 
@@ -106,6 +107,7 @@ class App:
         self.cfg = config_mod.load_config()
 
         self.qapp = QApplication.instance() or QApplication(sys.argv)
+        self.qapp.setStyle("Fusion")  # deterministic base under the QSS
         self.qapp.setQuitOnLastWindowClosed(False)  # tray app: no windows
         # Under pythonw there is no console: route uncaught errors from Qt
         # slots to the log file instead of losing them.
@@ -129,9 +131,15 @@ class App:
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
                               self._on_release,
                               on_other_key=self._on_other_key)
-        # The settings window is being ported to Qt (Phase 3 of the
-        # migration); until it lands, the tray item explains itself.
-        self.settings = None
+        self.settings = SettingsWindow(
+            self.cfg,
+            self._on_save_settings,
+            on_capture_start=self._pause_hotkey,
+            on_capture_end=self._resume_hotkey,
+            history_getter=self._history_snapshot,
+            on_retry=self._retry_failed,
+            config_getter=lambda: self.cfg,
+        )
         # Tray pause state and icons (normal / red-tinted while recording).
         # Built once; the recording swap happens on the hook thread.
         self._paused = False
@@ -195,9 +203,7 @@ class App:
         self._dispatch.call.emit(fn)
 
     def _open_settings(self):
-        self.overlay.show_message(
-            "Settings are being ported to Qt — edit config.json for now",
-            duration_ms=4000, warn=True)
+        self.settings.open()
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
