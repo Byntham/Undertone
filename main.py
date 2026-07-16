@@ -24,6 +24,7 @@ import autostart
 import caretctx
 import cleanup as cleanup_mod
 import config as config_mod
+import localstt
 import sounds
 import textproc
 from hotkey import PushToTalk, TapStateMachine
@@ -571,6 +572,12 @@ class App:
                 self.overlay.show_message(
                     f"Re-paste shortcut set to {pretty_combo(combo)}")
 
+    def _warm_local_stt(self):
+        try:
+            localstt.load(config_mod.model_override(self.cfg, "stt", "local"))
+        except localstt.LocalSTTError as e:
+            logging.warning("Local STT warm load failed: %s", e)
+
     def _quit(self):
         try:
             self.ptt.stop()
@@ -578,6 +585,10 @@ class App:
             pass
         try:
             self.tray.stop()
+        except Exception:
+            pass
+        try:
+            localstt.shutdown()
         except Exception:
             pass
         self.root.destroy()
@@ -626,7 +637,9 @@ class App:
         self._register_extra_hotkeys()
         self.tray.run_detached()
         self._update_tray_title()
-        if not config_mod.provider_key(self.cfg, self.cfg.get("provider", "xai")):
+        provider = self.cfg.get("provider", "xai")
+        if provider != "local" and not config_mod.provider_key(
+                self.cfg, provider):
             self.settings.open()
             self.overlay.show_message(
                 "Enter an API key for your provider to get started",
@@ -637,6 +650,11 @@ class App:
                 f"Ready — hold {pretty_combo(self.cfg['hotkey'])} to dictate",
                 duration_ms=2500,
             )
+        if provider == "local" and self.cfg.get("local_stt_loaded"):
+            # Honor the persisted Load choice: warm the local server
+            # off-thread so the first dictation is instant.
+            threading.Thread(
+                target=self._warm_local_stt, daemon=True).start()
         self.root.mainloop()
 
 

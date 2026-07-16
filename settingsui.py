@@ -20,11 +20,12 @@ from PIL import ImageTk
 
 import autostart
 import canvasui
+import localstt
 import theme
 from config import APP_VERSION, CONFIG_PATH, KEY_FIELDS
 from ui import (ICON_ICO, LANGUAGES, PROVIDER_LINKS, PROVIDERS_UI,
-                PROVIDER_BY_ID, SECTIONS, _nav_glyph, load_app_image,
-                pretty_combo)
+                PROVIDER_BY_ID, SECTIONS, STT_PROVIDERS_UI, _nav_glyph,
+                load_app_image, pretty_combo)
 
 
 WIN_W, WIN_H = 780, 724
@@ -770,6 +771,9 @@ class SettingsWindow:
         self._hist_expanded_ts = None
         self._hist_fp = None
         self._providers_advanced = False
+        self._local_busy = None      # "install"/"load"/"eject" while working
+        self._local_progress = ""
+        self._local_error = ""
         self._shortcut_rows = {}
         self._root.after(50, self._drain)
 
@@ -786,6 +790,11 @@ class SettingsWindow:
                     self._on_captured(payload)
                 elif command == "tested":
                     self._on_tested(payload)
+                elif command == "local_progress":
+                    self._local_progress = payload
+                    self._refresh_local_card()
+                elif command == "local_done":
+                    self._on_local_done(payload)
         except queue.Empty:
             pass
         finally:
@@ -955,7 +964,7 @@ class SettingsWindow:
 
     def _build_general(self):
         children = [self._heading("General")]
-        if not self._provider_key("provider"):
+        if not self._stt_configured():
             target = "Get started" if "Get started" in self._nav_items else "Providers"
             children.append(canvasui.Card(canvasui.Row(
                 "Finish setting up Undertone",
@@ -1068,6 +1077,8 @@ class SettingsWindow:
 
     def _build_get_started(self):
         self._gs_provider = self._config.get("provider", "xai")
+        if self._gs_provider not in KEY_FIELDS:
+            self._gs_provider = "xai"  # guided setup covers cloud keys only
         self._gs_key_field = KEY_FIELDS.get(self._gs_provider, "api_key")
         self._gs_key_value = self._config.get(self._gs_key_field, "")
         self._test_status = canvasui.TextBlock("", HINT_FONT, theme.MUTED)
@@ -1652,7 +1663,7 @@ class SettingsWindow:
             "", HINT_FONT, theme.MUTED)
 
         stt_dropdown = canvasui.DropdownButton(
-            PROVIDERS_UI, lambda: self._config.get("provider", "xai"),
+            STT_PROVIDERS_UI, lambda: self._config.get("provider", "xai"),
             lambda value: self._pick_provider("provider", value), width=130)
         self._test_stt_btn = canvasui.PillButton(
             "Test", "neutral", self._test_transcription, small=True)
@@ -1673,6 +1684,8 @@ class SettingsWindow:
                 "AI cleanup", "Polishes the wording before it's pasted.",
                 _Inline((cleanup_dropdown, self._test_cleanup_btn), gap=8)),
             self._providers_status,
+            self._group("On-device"),
+            self._local_card(),
             self._group("API keys"),
         ]
         for provider, field in KEY_FIELDS.items():
@@ -1722,6 +1735,113 @@ class SettingsWindow:
             canvasui.Spacer(7),
             _ActionRow(entry, (show, save)),
         ], gap=0))
+
+    def _local_card(self):
+        self._local_status = canvasui.TextBlock("", HINT_FONT, theme.MUTED,
+                                                wrap=False)
+        self._local_btn = canvasui.PillButton(
+            "", "accent", self._on_local_action, small=True)
+        self._refresh_local_card()
+        return canvasui.Card(canvasui.VStack([
+            canvasui.Row(
+                "Local engine",
+                "Whisper runs on this PC — audio never leaves your "
+                "computer. Select the Local provider above to use it.",
+                self._local_btn),
+            canvasui.Spacer(7),
+            self._local_status,
+        ], gap=0))
+
+    def _local_model_name(self):
+        return (self._model_override_for("stt", "local")
+                or self._default_model("stt", "local"))
+
+    def _model_override_for(self, kind, provider):
+        return (self._config.get(kind + "_models") or {}).get(provider, "")
+
+    def _refresh_local_card(self):
+        status = getattr(self, "_local_status", None)
+        button = getattr(self, "_local_btn", None)
+        # scene is None while the card is being built (safe to configure);
+        # a different scene means these widgets belong to a closed window.
+        if (status is None or button is None
+                or (status.scene is not None
+                    and status.scene is not self._scene)):
+            return
+        if self._local_busy:
+            label = {"install": "Downloading", "load": "Loading",
+                     "eject": "Ejecting"}[self._local_busy]
+            button.set_text(label + "…")
+            button.disable()
+            self._set_status(status, self._local_progress or label + "…",
+                             theme.MUTED)
+            return
+        button.enable()
+        if not localstt.is_installed(self._local_model_name()):
+            gb = localstt.install_size() / (1 << 30)
+            size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1024:.0f} MB"
+            button.set_text(f"Download ({size})")
+            engine = "GPU" if localstt.have_nvidia_gpu() else "CPU"
+            text, color = f"Not installed · will use your {engine}", theme.MUTED
+        elif localstt.is_loaded():
+            button.set_text("Eject model")
+            build = "GPU" if localstt.active_build() == "cuda" else "CPU"
+            text, color = f"●  loaded · {build}", theme.GREEN
+        else:
+            button.set_text("Load model")
+            text, color = "Installed · model not loaded", theme.MUTED
+        if self._local_error:
+            text, color = self._local_error, theme.RED
+        self._set_status(status, text, color)
+
+    def _on_local_action(self):
+        if self._local_busy:
+            return
+        self._local_error = ""
+        if not localstt.is_installed(self._local_model_name()):
+            action = "install"
+        elif localstt.is_loaded():
+            action = "eject"
+        else:
+            action = "load"
+        self._local_busy = action
+        self._local_progress = ""
+        self._refresh_local_card()
+        threading.Thread(target=self._local_worker,
+                         args=(action, self._local_model_name()),
+                         daemon=True).start()
+
+    def _local_worker(self, action, model_name):
+        last_pct = -1
+
+        def progress(phase, frac):
+            nonlocal last_pct
+            pct = int(frac * 100)
+            if pct != last_pct:
+                last_pct = pct
+                self._queue.put(("local_progress", f"{phase}… {pct}%"))
+
+        try:
+            if action == "install":
+                localstt.install(progress)
+            elif action == "load":
+                localstt.load(model_name)
+            else:
+                localstt.eject()
+            result = (action, True, "")
+        except Exception as exc:
+            result = (action, False, str(exc))
+        self._queue.put(("local_done", result))
+
+    def _on_local_done(self, result):
+        action, ok, message = result
+        self._local_busy = None
+        self._local_progress = ""
+        self._local_error = "" if ok else message
+        if ok and action in ("load", "eject"):
+            # Residency intent persists; only these buttons flip it.
+            self._apply(local_stt_loaded=(action == "load"))
+        self._refresh_local_card()
 
     def _refresh_key_status(self, field):
         block = self._key_status_blocks.get(field)
@@ -1835,7 +1955,9 @@ class SettingsWindow:
         if entry is not None and self._scene.editing is entry:
             self._scene.end_edit(commit=True)
         key = self._key_values.get(field, "").strip()
-        if not key:
+        if provider == "local":
+            key = ""  # keyless; the fallback field would be the xAI key
+        elif not key:
             name = PROVIDER_BY_ID.get(provider, provider)
             self._set_status(
                 self._providers_status,
@@ -1909,9 +2031,14 @@ class SettingsWindow:
         provider = self._config.get(provider_config_key, "xai")
         return self._config.get(KEY_FIELDS.get(provider, "api_key"), "")
 
+    def _stt_configured(self):
+        """Local needs no key; cloud providers need theirs."""
+        return (self._config.get("provider") == "local"
+                or bool(self._provider_key("provider")))
+
     def _setup_incomplete(self):
         return (not self._config.get("onboarded", False)
-                or not self._provider_key("provider"))
+                or not self._stt_configured())
 
     def _cleanup_warning(self):
         if (self._config.get("ai_cleanup", True)

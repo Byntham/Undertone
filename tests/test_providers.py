@@ -84,6 +84,23 @@ def test_openrouter_shape():
     assert opts["openai"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
 
 
+def test_local_shape():
+    calls = capture(transcriber, {"text": " hello\n world \n"})
+    transcriber.localstt.ensure_ready = lambda name="": "http://127.0.0.1:9"
+    # Empty key must NOT raise — local is keyless.
+    out = transcriber.transcribe(WAV, "", "en", VOCAB, "local")
+    assert out == "hello world"  # embedded newlines collapsed
+    url, kw = calls[0]
+    assert url == "http://127.0.0.1:9/inference"
+    assert kw["data"]["response_format"] == "json"
+    assert kw["data"]["language"] == "en"
+    assert kw["data"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
+    assert "files" in kw
+    # No vocabulary -> no prompt field.
+    transcriber.transcribe(WAV, "", "en", None, "local")
+    assert "prompt" not in calls[1][1]["data"]
+
+
 def test_missing_key_message():
     try:
         transcriber.transcribe(WAV, "  ", "en", None, "openai")
@@ -139,6 +156,7 @@ def main():
     test_xai_shape()
     test_openai_shape()
     test_openrouter_shape()
+    test_local_shape()
     test_missing_key_message()
     test_cleanup_endpoints()
     test_provider_key_mapping()

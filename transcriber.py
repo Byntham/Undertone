@@ -1,10 +1,11 @@
 """Speech-to-text transcription for Undertone.
 
 Providers: xAI (native /v1/stt with keyterm biasing), OpenAI (multipart
-/v1/audio/transcriptions with a vocabulary prompt), and OpenRouter (JSON
+/v1/audio/transcriptions with a vocabulary prompt), OpenRouter (JSON
 base64 path so vocabulary can ride provider-specific options — its
-multipart path accepts but ignores `prompt`). transcribe() dispatches via
-PROVIDERS; an empty model means the provider's default.
+multipart path accepts but ignores `prompt`), and Local (keyless, POSTs
+to the on-device whisper.cpp server managed by localstt.py). transcribe()
+dispatches via PROVIDERS; an empty model means the provider's default.
 """
 
 import base64
@@ -14,6 +15,8 @@ import re
 
 import requests
 
+import localstt
+
 # Empty model = the provider decides (xAI's endpoint has no model field).
 DEFAULT_STT_MODELS = {
     "xai": "",
@@ -21,6 +24,9 @@ DEFAULT_STT_MODELS = {
     # Not whisper-large-v3-turbo: it has no no-speech rejection and
     # hallucinates fragments on silent audio (field-tested 2026-07).
     "openrouter": "openai/gpt-4o-mini-transcribe",
+    # Local runs the same turbo model safely: whisper-server's Silero VAD
+    # returns empty text on silence. The "model" is a ggml filename.
+    "local": localstt.MODEL_FILENAME,
 }
 
 _TIMEOUT = (10, 120)
@@ -179,10 +185,44 @@ def transcribe_openrouter(wav_bytes: bytes, api_key: str,
     return payload.get("text", "").strip()
 
 
+def transcribe_local(wav_bytes: bytes, api_key: str, language: str = "en",
+                     vocabulary: list = None, model: str = "") -> str:
+    """On-device whisper.cpp server (localstt.py); keyless."""
+    try:
+        base_url = localstt.ensure_ready(model)
+    except localstt.LocalSTTError as exc:
+        raise TranscriptionError(str(exc)) from exc
+    data = {"response_format": "json", "language": language}
+    prompt = _vocab_prompt(vocabulary)
+    if prompt:
+        data["prompt"] = prompt
+    try:
+        resp = requests.post(
+            f"{base_url}/inference",
+            data=data,
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+            timeout=(3, 120),  # loopback; generous read for the CPU build
+        )
+    except requests.RequestException as exc:
+        raise TranscriptionError(
+            "The local transcription engine stopped responding — try "
+            "Eject then Load in Settings → Providers.") from exc
+    _check_response(resp, "Local")
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise TranscriptionError(
+            "The local transcription engine returned an unexpected "
+            "(non-JSON) response.") from exc
+    # whisper-server embeds newlines mid-sentence; collapse to plain text.
+    return " ".join(payload.get("text", "").split())
+
+
 PROVIDERS = {
     "xai": transcribe_xai,
     "openai": transcribe_openai,
     "openrouter": transcribe_openrouter,
+    "local": transcribe_local,
 }
 
 
@@ -195,11 +235,12 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
     each provider translates it into its own biasing mechanism.
     Raises TranscriptionError with a friendly message on any failure.
     """
-    api_key = api_key.strip()
-    if not api_key:
-        raise TranscriptionError(
-            "No API key configured for the transcription provider. Open "
-            "Settings → Providers and enter one.")
+    if provider != "local":  # local runs on this machine, keyless
+        api_key = (api_key or "").strip()
+        if not api_key:
+            raise TranscriptionError(
+                "No API key configured for the transcription provider. "
+                "Open Settings → Providers and enter one.")
     fn = PROVIDERS.get(provider, transcribe_xai)
     text = fn(wav_bytes, api_key, language, vocabulary, model)
     stripped = _strip_prompt_echo(text, vocabulary)

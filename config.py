@@ -25,7 +25,7 @@ DEFAULT_CONFIG = {
     "input_device": "",         # microphone NAME ("" = system default);
                                 # stored by name — indices shift across replugs
     "onboarded": False,         # guided first-run setup completed
-    "provider": "xai",          # STT provider: xai | openai | openrouter
+    "provider": "xai",          # STT provider: xai | openai | openrouter | local
     "stt_models": {},           # per-provider overrides; missing = default
     "smart_formatting": True,
     "ai_cleanup": True,
@@ -36,6 +36,8 @@ DEFAULT_CONFIG = {
     "corrections": {},      # {"heard": "replacement"} applied after transcription
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
+    "local_stt_loaded": False,  # Load/Eject intent for the local model —
+                                # only the Settings buttons flip this
 }
 
 
