@@ -1,6 +1,7 @@
 # Virtualenv and caches
 .venv/
 .venv-qt/
+spikes/out/
 __pycache__/
 *.pyc
 
