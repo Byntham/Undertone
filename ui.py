@@ -24,10 +24,10 @@ LANGUAGES = [
 ]
 
 PROVIDERS_UI = [("xAI", "xai"), ("OpenAI", "openai"), ("OpenRouter", "openrouter")]
-# STT additionally offers the on-device engine; cleanup stays cloud-only
-# (there is no local cleanup adapter), so the lists are separate.
-STT_PROVIDERS_UI = PROVIDERS_UI + [("Local", "local")]
-PROVIDER_BY_ID = {pid: name for name, pid in STT_PROVIDERS_UI}
+# Cloud providers only (the onboarding key flow); STT and cleanup combos
+# additionally offer the on-device engines (whisper.cpp / llama.cpp).
+ALL_PROVIDERS_UI = PROVIDERS_UI + [("Local", "local")]
+PROVIDER_BY_ID = {pid: name for name, pid in ALL_PROVIDERS_UI}
 # provider id -> the config key holding that provider's API key.
 PROVIDER_LINKS = [
     ("console.x.ai", "https://console.x.ai"),

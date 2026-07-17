@@ -74,7 +74,9 @@ def test_download_verifies_sha256(tmp: Path):
         def iter_content(self, chunk_size):
             yield body
 
-    localstt.requests.get = lambda *a, **k: FakeResponse()
+    # The download machinery lives in localproc (shared with localllm).
+    import localproc
+    localproc.requests.get = lambda *a, **k: FakeResponse()
     dest = tmp / "model.bin"
     try:
         localstt._download("vad_model", dest, lambda f: None)

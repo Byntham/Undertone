@@ -13,7 +13,7 @@ from ctypes import wintypes
 
 APP_NAME = "Undertone"
 LEGACY_APP_NAME = "PushToTalkSTT"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 CONFIG_PATH: pathlib.Path = pathlib.Path(os.environ["APPDATA"]) / APP_NAME / "config.json"
 
@@ -42,6 +42,9 @@ DEFAULT_CONFIG = {
     "repaste_hotkey": "ctrl+alt+v",
     "local_stt_loaded": False,        # load the local model on startup
     "local_stt_idle_minutes": 0,      # auto-eject after idle; 0 = never
+    "local_llm_loaded": False,        # local cleanup model: load on startup
+    "local_llm_idle_minutes": 0,      # auto-eject after idle; 0 = never
+    "cleanup_timeout": 2.5,  # seconds before cleanup falls back (dev knob)
     "dev_mode": False,   # About toggle: mirror log warnings/errors on the pill
 }
 

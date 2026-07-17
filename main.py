@@ -25,6 +25,7 @@ import autostart
 import caretctx
 import cleanup as cleanup_mod
 import config as config_mod
+import localllm
 import localstt
 import sounds
 import textproc
@@ -158,9 +159,11 @@ class App:
         # Dev mode (About section): WARNING+ log records also show on the
         # pill. Always attached; emission is gated on the live config.
         logging.getLogger().addHandler(_DevNoticeHandler(self))
-        # Degraded-but-working local STT outcomes (CUDA→CPU fallback)
+        # Degraded-but-working local engine outcomes (CUDA→CPU fallback)
         # deserve a pill regardless of dev mode.
         localstt.on_notice = lambda msg: self.overlay.show_message(
+            msg, 6000, warn=True)
+        localllm.on_notice = lambda msg: self.overlay.show_message(
             msg, 6000, warn=True)
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
                               self._on_release,
@@ -467,6 +470,8 @@ class App:
                 config_mod.provider_key(cfg, cprov),
                 config_mod.model_override(cfg, "cleanup", cprov),
                 cprov,
+                timeout=float(cfg.get("cleanup_timeout")
+                              or config_mod.DEFAULT_CONFIG["cleanup_timeout"]),
             )
             if cleaned is not None:
                 # The model handled the transcript body; rules re-apply the
@@ -644,6 +649,10 @@ class App:
                 != old_cfg.get("local_stt_idle_minutes")):
             localstt.set_idle_timeout(
                 int(new_cfg.get("local_stt_idle_minutes") or 0) * 60)
+        if (new_cfg.get("local_llm_idle_minutes")
+                != old_cfg.get("local_llm_idle_minutes")):
+            localllm.set_idle_timeout(
+                int(new_cfg.get("local_llm_idle_minutes") or 0) * 60)
 
     def _warm_local_stt(self):
         try:
@@ -654,6 +663,16 @@ class App:
             return
         self.overlay.show_message("Local model loaded")
 
+    def _warm_local_llm(self):
+        try:
+            localllm.load(
+                config_mod.model_override(self.cfg, "cleanup", "local"))
+        except localllm.LocalLLMError as e:
+            logging.warning("Local cleanup warm load failed: %s", e)
+            self.overlay.show_message(str(e), 6000, warn=True)
+            return
+        self.overlay.show_message("Local cleanup model loaded")
+
     def _quit(self):
         try:
             self.ptt.stop()
@@ -662,6 +681,10 @@ class App:
         self.tray.hide()
         try:
             localstt.shutdown()
+        except Exception:
+            pass
+        try:
+            localllm.shutdown()
         except Exception:
             pass
         self.qapp.quit()
@@ -727,11 +750,18 @@ class App:
             )
         localstt.set_idle_timeout(
             int(self.cfg.get("local_stt_idle_minutes") or 0) * 60)
+        localllm.set_idle_timeout(
+            int(self.cfg.get("local_llm_idle_minutes") or 0) * 60)
         if provider == "local" and self.cfg.get("local_stt_loaded"):
             # "Load on startup" is on: warm the local server off-thread
             # so the first dictation is instant.
             threading.Thread(
                 target=self._warm_local_stt, daemon=True).start()
+        if (self.cfg.get("cleanup_provider") == "local"
+                and self.cfg.get("ai_cleanup", True)
+                and self.cfg.get("local_llm_loaded")):
+            threading.Thread(
+                target=self._warm_local_llm, daemon=True).start()
         self.qapp.exec()
 
 

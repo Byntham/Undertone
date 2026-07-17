@@ -1,9 +1,10 @@
 """Optional LLM cleanup pass for Undertone.
 
-Sends the transcript plus the text before the caret to a fast grok chat
-model, which removes fillers and false starts, fixes mishearings (guided by
-the user dictionary), and adjusts phrasing/punctuation/first-word casing to
-fit where the text will land. Structured output pins the response to
+Sends the transcript plus the text before the caret to a fast chat model
+(cloud, or the on-device llama.cpp server via localllm), which removes
+fillers and false starts, fixes mishearings (guided by the user
+dictionary), and adjusts phrasing/punctuation/first-word casing to fit
+where the text will land. Structured output pins the response to
 {"text": ...}. Any failure or timeout returns None so the caller falls back
 to the deterministic path — this pass may improve a dictation but must
 never break or stall one.
@@ -18,8 +19,11 @@ import logging
 
 import requests
 
+import localllm
+
 # All supported cleanup providers speak the OpenAI chat-completions dialect;
-# only the base URL and model naming differ.
+# only the base URL and model naming differ. Local (llama.cpp llama-server,
+# managed by localllm.py) speaks it too — its URL is per-run, resolved below.
 API_URLS = {
     "xai": "https://api.x.ai/v1/chat/completions",
     "openai": "https://api.openai.com/v1/chat/completions",
@@ -30,6 +34,9 @@ DEFAULT_CLEANUP_MODELS = {
     "xai": "grok-4.20-0309-non-reasoning",
     "openai": "gpt-4o-mini",
     "openrouter": "openai/gpt-4o-mini",
+    # A ggml filename in the local models dir (the server loads one model;
+    # the request's model field is decorative there).
+    "local": localllm.MODEL_FILENAME,
 }
 
 # Compact on purpose: fewer prompt tokens per dictation, and short direct
@@ -70,7 +77,21 @@ _RESPONSE_FORMAT = {
 def cleanup(transcript, ctx, app, corrections, api_key, model,
             provider: str = "xai", timeout: float = 2.5) -> "str | None":
     """Return the polished transcript, or None on any failure/timeout."""
-    if provider not in API_URLS:
+    if provider == "local":
+        # Keyless loopback server. Never load-block a dictation: if the
+        # model isn't resident, warm it in the background and skip this
+        # pass — the next dictation gets it.
+        base = localllm.base_url(model)
+        if base is None:
+            localllm.load_async(model)
+            logging.info("cleanup pass: local model not loaded — skipped")
+            return None
+        url = base + "/v1/chat/completions"
+        headers = {}
+    elif provider in API_URLS:
+        url = API_URLS[provider]
+        headers = {"Authorization": f"Bearer {api_key}"}
+    else:
         logging.warning("cleanup pass: unknown provider %r — skipped", provider)
         return None
     try:
@@ -83,8 +104,8 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
             "transcript": transcript,
         }, ensure_ascii=False)
         resp = requests.post(
-            API_URLS[provider],
-            headers={"Authorization": f"Bearer {api_key}"},
+            url,
+            headers=headers,
             json={
                 "model": model or DEFAULT_CLEANUP_MODELS.get(provider, ""),
                 "temperature": 0,

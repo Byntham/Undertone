@@ -18,23 +18,18 @@ child's lifetime to ours even through a Task Manager kill.
 Thread-safety: the settings worker thread (install/load/eject) and the
 pipeline worker (ensure_ready) both call in; every state transition holds
 _LOCK. Downloads verify a pinned sha256 and land via atomic rename.
+The engine-agnostic mechanics (download, extraction, job objects, spawn)
+are shared with localllm via localproc.
 """
 
-import ctypes
-import fnmatch
-import hashlib
-import json
 import logging
 import os
 import shutil
-import socket
-import subprocess
 import threading
 import time
-import zipfile
 from pathlib import Path
 
-import requests
+import localproc
 
 ROOT = Path(os.environ["LOCALAPPDATA"]) / "Undertone"
 RUNTIME_DIR = ROOT / "runtime"
@@ -87,7 +82,6 @@ _SUBSET = {
              "nvrtc64_120_0.dll", "nvrtc-builtins64_124.dll"],
 }
 
-_DOWNLOAD_TIMEOUT = (10, 60)   # read timeout applies per chunk
 _READY_TIMEOUT_S = 20
 
 
@@ -108,88 +102,26 @@ def _server_exe(build: str) -> Path:
 
 
 def _load_state() -> dict:
-    try:
-        with open(_STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    return localproc.load_state(_STATE_PATH)
 
 
 def _save_state(**changes) -> None:
-    state = {**_load_state(), **changes}
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    localproc.save_state(_STATE_PATH, **changes)
 
 
-_HAVE_NVIDIA = None
-
-
-def have_nvidia_gpu() -> bool:
-    """True when an NVIDIA driver stack (what the CUDA build needs) is
-    present. Probes nvcuda.dll via a private WinDLL instance — never
-    ctypes.windll, whose shared prototype cache other modules rely on."""
-    global _HAVE_NVIDIA
-    if _HAVE_NVIDIA is None:
-        try:
-            ctypes.WinDLL("nvcuda.dll")
-            _HAVE_NVIDIA = True
-        except OSError:
-            _HAVE_NVIDIA = False
-    return _HAVE_NVIDIA
+have_nvidia_gpu = localproc.have_nvidia_gpu
 
 
 # --- install -----------------------------------------------------------------
 
 def _download(key: str, dest: Path, progress_cb) -> None:
-    spec = MANIFEST[key]
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_suffix(dest.suffix + ".part")
-    digest = hashlib.sha256()
-    done = 0
-    try:
-        with requests.get(spec["url"], stream=True,
-                          timeout=_DOWNLOAD_TIMEOUT) as resp:
-            resp.raise_for_status()
-            with open(part, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    f.write(chunk)
-                    digest.update(chunk)
-                    done += len(chunk)
-                    progress_cb(min(1.0, done / spec["size"]))
-    except requests.RequestException as exc:
-        part.unlink(missing_ok=True)
-        raise LocalSTTError(
-            "Download failed — check your internet connection and retry."
-        ) from exc
-    if digest.hexdigest() != spec["sha256"]:
-        part.unlink(missing_ok=True)
-        raise LocalSTTError(
-            "A downloaded file failed verification — retry the download.")
-    os.replace(part, dest)
+    localproc.download(MANIFEST[key], dest, progress_cb, LocalSTTError)
 
 
 def _extract_subset(zip_path: Path, build: str, progress_cb) -> None:
     """Extract just the server + DLLs into runtime/<build> (flat)."""
-    wanted = _SUBSET[build]
-    target = _build_dir(build)
-    staging = target.with_name(target.name + ".tmp")
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        members = [m for m in zf.infolist() if any(
-            fnmatch.fnmatch(Path(m.filename).name.lower(), pat)
-            for pat in wanted)]
-        total = sum(m.file_size for m in members) or 1
-        done = 0
-        for member in members:
-            with zf.open(member) as src, \
-                    open(staging / Path(member.filename).name, "wb") as out:
-                shutil.copyfileobj(src, out, 1 << 20)
-            done += member.file_size
-            progress_cb(done / total)
-    shutil.rmtree(target, ignore_errors=True)
-    os.replace(staging, target)
+    localproc.extract_subset([zip_path], _SUBSET[build], _build_dir(build),
+                             progress_cb)
 
 
 def is_installed(model_name: str = MODEL_FILENAME) -> bool:
@@ -270,121 +202,28 @@ _idle_seconds = 0    # auto-eject after this much inactivity; 0 = never
 _idle_timer = None
 _last_used = 0.0
 
-_CREATE_NO_WINDOW = 0x08000000
-_JOB_KILL_ON_CLOSE = 0x2000
-_JobObjectExtendedLimitInformation = 9
-
-# Private WinDLL instance: prototypes on ctypes.windll would poison the
-# process-wide cache other modules share. HANDLEs must be c_void_p — the
-# default c_int truncates them on 64-bit.
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-_kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
-_kernel32.SetInformationJobObject.restype = ctypes.c_int
-_kernel32.SetInformationJobObject.argtypes = (
-    ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
-_kernel32.AssignProcessToJobObject.restype = ctypes.c_int
-_kernel32.AssignProcessToJobObject.argtypes = (
-    ctypes.c_void_p, ctypes.c_void_p)
-_kernel32.CloseHandle.restype = ctypes.c_int
-_kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
-
-
-class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                ("PerJobUserTimeLimit", ctypes.c_int64),
-                ("LimitFlags", ctypes.c_uint32),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", ctypes.c_uint32),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", ctypes.c_uint32),
-                ("SchedulingClass", ctypes.c_uint32)]
-
-
-class _IO_COUNTERS(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_uint64) for name in (
-        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-
-class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [("BasicLimitInformation",
-                 _JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", _IO_COUNTERS),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-
-def _attach_job(proc) -> "int | None":
-    """Tie the child to a kill-on-close job so it dies with us, even via
-    Task Manager (the OS closes our job handle on process teardown)."""
-    job = _kernel32.CreateJobObjectW(None, None)
-    if not job:
-        return None
-    info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
-    ok = _kernel32.SetInformationJobObject(
-        job, _JobObjectExtendedLimitInformation,
-        ctypes.byref(info), ctypes.sizeof(info))
-    if not ok or not _kernel32.AssignProcessToJobObject(
-            job, int(proc._handle)):
-        _kernel32.CloseHandle(job)
-        return None
-    return job
-
-
-def _pick_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
 
 def _spawn(build: str, model_name: str) -> None:
     """Start the server and wait until it answers HTTP. Caller holds _LOCK
     and handles failure (raises LocalSTTError)."""
     global _proc, _port, _build, _model_name, _job
-    port = _pick_port()
+    port = localproc.pick_port()
     cmd = [str(_server_exe(build)), "-m", str(model_path(model_name)),
            "--vad", "--vad-model", str(model_path(VAD_FILENAME)),
            "--host", "127.0.0.1", "--port", str(port)]
     if build == "cpu":
         cmd += ["-t", str(min(8, os.cpu_count() or 4))]
-    log = open(_SERVER_LOG, "wb")
-    try:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=log,
-                                creationflags=_CREATE_NO_WINDOW)
-    except OSError as exc:
-        log.close()
-        raise LocalSTTError(
-            "Could not start the local transcription engine — "
-            "try re-downloading it in Settings → Providers.") from exc
-    finally:
-        # Popen duplicated the handle (or failed); ours can close either way.
-        if not log.closed:
-            log.close()
-    job = _attach_job(proc)
-    deadline = time.monotonic() + _READY_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        try:
-            requests.get(f"http://127.0.0.1:{port}/", timeout=1)
-            _proc, _port, _build, _model_name, _job = (
-                proc, port, build, model_name, job)
-            logging.info("local STT server ready (%s, %s, port %d)",
-                         build, model_name, port)
-            return
-        except requests.RequestException:
-            time.sleep(0.25)
-    proc.kill()
-    if job:
-        _kernel32.CloseHandle(job)
-    raise LocalSTTError(
+    proc, job = localproc.spawn_server(
+        cmd, _SERVER_LOG, f"http://127.0.0.1:{port}/", LocalSTTError,
+        "Could not start the local transcription engine — "
+        "try re-downloading it in Settings → Providers.",
         "The local transcription engine failed to start — see server.log "
-        "in the Undertone data folder.")
+        "in the Undertone data folder.",
+        timeout_s=_READY_TIMEOUT_S)
+    _proc, _port, _build, _model_name, _job = (
+        proc, port, build, model_name, job)
+    logging.info("local STT server ready (%s, %s, port %d)",
+                 build, model_name, port)
 
 
 # Optional UI hook for degraded-but-working outcomes (set by the app,
@@ -488,14 +327,27 @@ def load(model_name: str = "") -> None:
 
 
 def is_loaded() -> bool:
-    with _LOCK:
+    # Non-blocking: ensure_ready holds _LOCK for the whole model load, and
+    # the settings poll calls this from the Qt main thread — a contended
+    # lock must read as "not loaded yet", not freeze the UI.
+    if not _LOCK.acquire(blocking=False):
+        return False
+    try:
         return _proc is not None and _proc.poll() is None
+    finally:
+        _LOCK.release()
 
 
 def active_build() -> str:
     """'cuda'/'cpu' of the running server ('' when not loaded)."""
-    with _LOCK:
-        return _build if is_loaded() else ""
+    if not _LOCK.acquire(blocking=False):
+        return ""
+    try:
+        if _proc is not None and _proc.poll() is None:
+            return _build
+        return ""
+    finally:
+        _LOCK.release()
 
 
 def eject() -> None:
@@ -509,8 +361,7 @@ def eject() -> None:
                 _proc.wait(timeout=5)
             except OSError:
                 pass
-        if _job:
-            _kernel32.CloseHandle(_job)
+        localproc.close_job(_job)
         _proc = _port = _build = _model_name = _job = None
 
 

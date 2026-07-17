@@ -119,6 +119,38 @@ def test_cleanup_endpoints():
     assert calls[-1][1]["json"]["model"] == "my-model"
 
 
+def test_cleanup_local_shape():
+    reply = {"choices": [{"message": {"content": json.dumps({"text": "ok"})}}]}
+    calls = capture(cleanup, reply)
+    old_base_url = cleanup.localllm.base_url
+    old_load_async = cleanup.localllm.load_async
+    warmed = []
+    try:
+        cleanup.localllm.base_url = lambda name="": "http://127.0.0.1:9"
+        cleanup.localllm.load_async = warmed.append
+        # Empty key must work — local is keyless and sends no auth header.
+        out = cleanup.cleanup("some words", None, "", {}, "", "", "local")
+        assert out == "ok"
+        url, kw = calls[0]
+        assert url == "http://127.0.0.1:9/v1/chat/completions"
+        assert kw["headers"] == {}
+        assert kw["json"]["model"] == cleanup.DEFAULT_CLEANUP_MODELS["local"]
+        assert kw["json"]["temperature"] == 0
+        assert kw["json"]["response_format"]["type"] == "json_schema"
+        assert not warmed  # resident server: no warm-up needed
+        # Ejected model: the pass is skipped without any request (cleanup
+        # must never block a dictation on a model load) and the model is
+        # warmed in the background for the next dictation.
+        cleanup.localllm.base_url = lambda name="": None
+        assert cleanup.cleanup("some words", None, "", {},
+                               "", "my.gguf", "local") is None
+        assert len(calls) == 1
+        assert warmed == ["my.gguf"]
+    finally:
+        cleanup.localllm.base_url = old_base_url
+        cleanup.localllm.load_async = old_load_async
+
+
 def test_provider_key_mapping():
     cfg = {"api_key": "X", "openai_api_key": "O", "openrouter_api_key": "R"}
     assert config.provider_key(cfg, "xai") == "X"
@@ -199,6 +231,7 @@ def main():
     test_local_shape()
     test_missing_key_message()
     test_cleanup_endpoints()
+    test_cleanup_local_shape()
     test_provider_key_mapping()
     test_unknown_provider_fails_loudly()
     test_key_encryption_roundtrip()

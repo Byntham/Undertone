@@ -29,11 +29,12 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QVBoxLayout, QWidget)
 
 import autostart
+import localllm
 import localstt
 import theme
-from config import APP_VERSION, CONFIG_PATH, KEY_FIELDS
+from config import APP_VERSION, CONFIG_PATH, DEFAULT_CONFIG, KEY_FIELDS
 from ui import (ICON_ICO, LANGUAGES, PROVIDER_LINKS, PROVIDERS_UI,
-                PROVIDER_BY_ID, SECTIONS, STT_PROVIDERS_UI, _nav_glyph,
+                PROVIDER_BY_ID, SECTIONS, ALL_PROVIDERS_UI, _nav_glyph,
                 load_app_image, pretty_combo)
 
 WIN_W, WIN_H = 780, 724
@@ -497,8 +498,12 @@ class SettingsWindow(QObject):
 
     _captured = Signal(object)
     _tested = Signal(object)
-    _local_progress_sig = Signal(str)
-    _local_done_sig = Signal(object)
+    _local_progress_sig = Signal(object)   # (engine, text)
+    _local_done_sig = Signal(object)       # (engine, action, ok, message)
+
+    # The two on-device engines share one card/worker implementation,
+    # keyed "stt" (whisper.cpp) / "llm" (llama.cpp cleanup).
+    _LOCAL_ENGINES = {"stt": localstt, "llm": localllm}
 
     def __init__(self, cfg, on_save, on_capture_start=None,
                  on_capture_end=None, history_getter=None, on_retry=None,
@@ -521,9 +526,12 @@ class SettingsWindow(QObject):
         self._hist_expanded_ts = None
         self._hist_fp = None
         self._providers_advanced = False
-        self._local_busy = None      # "install"/"load"/"eject" while working
-        self._local_progress = ""
-        self._local_error = ""
+        # Per-engine card state: "install"/"load"/"eject" while working.
+        self._local_busy = {"stt": None, "llm": None}
+        self._local_progress = {"stt": "", "llm": ""}
+        self._local_error = {"stt": "", "llm": ""}
+        self._local_btn = {}
+        self._local_status = {}
 
         self._captured.connect(self._on_captured)
         self._tested.connect(self._on_tested)
@@ -1162,14 +1170,22 @@ class SettingsWindow(QObject):
             from cleanup import DEFAULT_CLEANUP_MODELS, cleanup
             model = ((cfg.get("cleanup_models") or {}).get(provider)
                      or DEFAULT_CLEANUP_MODELS[provider])
+            timeout = 2.5
+            if provider == "local":
+                # The test may load the model (we're on a worker thread)
+                # and shouldn't fail a slow CPU box on the paste budget.
+                localllm.ensure_ready(model)
+                timeout = 30.0
             output = cleanup("testing one two three", None, "", {}, key,
-                             model, provider=provider)
+                             model, provider=provider, timeout=timeout)
             if output is not None:
                 name = PROVIDER_BY_ID.get(provider, provider)
                 result = ("cleanup", True, f"Cleanup works ({name}).")
             else:
                 result = ("cleanup", False,
                           "Cleanup failed — check the key, or see app.log.")
+        except localllm.LocalLLMError as exc:
+            result = ("cleanup", False, str(exc))
         except Exception:
             result = ("cleanup", False,
                       "Cleanup failed — check the key, or see app.log.")
@@ -1495,9 +1511,9 @@ class SettingsWindow(QObject):
 
         col.addWidget(self._group_label("Services"))
         stt_combo = Combo()
-        for label, pid in STT_PROVIDERS_UI:
+        for label, pid in ALL_PROVIDERS_UI:
             stt_combo.addItem(label, pid)
-        stt_combo.setCurrentIndex([pid for _l, pid in STT_PROVIDERS_UI]
+        stt_combo.setCurrentIndex([pid for _l, pid in ALL_PROVIDERS_UI]
                                   .index(self._config.get("provider", "xai")))
         stt_combo.setFixedWidth(130)
         stt_combo.currentIndexChanged.connect(
@@ -1508,10 +1524,10 @@ class SettingsWindow(QObject):
                                self._inline(stt_combo, self._test_stt_btn)))
 
         cleanup_combo = Combo()
-        for label, pid in PROVIDERS_UI:
+        for label, pid in ALL_PROVIDERS_UI:
             cleanup_combo.addItem(label, pid)
         cleanup_combo.setCurrentIndex(
-            [pid for _l, pid in PROVIDERS_UI]
+            [pid for _l, pid in ALL_PROVIDERS_UI]
             .index(self._config.get("cleanup_provider", "xai")))
         cleanup_combo.setFixedWidth(130)
         cleanup_combo.currentIndexChanged.connect(
@@ -1527,27 +1543,18 @@ class SettingsWindow(QObject):
         col.addWidget(self._providers_status)
 
         col.addWidget(self._group_label("On-device"))
-        col.addWidget(self._local_card(box))
+        col.addWidget(self._local_card(box, "stt"))
         col.addWidget(self._toggle_card(
             "Load model on startup", "local_stt_loaded",
             "Load the local model when Undertone starts, so the first "
             "dictation is instant."))
-        idle_combo = Combo()
-        for label, minutes in [("Never", 0), ("After 5 min", 5),
-                               ("After 15 min", 15), ("After 30 min", 30),
-                               ("After 1 hour", 60)]:
-            idle_combo.addItem(label, minutes)
-        idle_combo.setFixedWidth(130)
-        current_idle = int(self._config.get("local_stt_idle_minutes") or 0)
-        idle_combo.setCurrentIndex(max(0, [0, 5, 15, 30, 60].index(
-            current_idle) if current_idle in (0, 5, 15, 30, 60) else 0))
-        idle_combo.currentIndexChanged.connect(
-            lambda _i: self._apply(local_stt_idle_minutes=idle_combo
-                                   .currentData()))
-        col.addWidget(row_card(
-            "Auto-eject when idle",
-            "Frees memory after inactivity; reloads on the next dictation.",
-            idle_combo))
+        col.addWidget(self._idle_card("local_stt_idle_minutes"))
+        col.addWidget(self._local_card(box, "llm"))
+        col.addWidget(self._toggle_card(
+            "Load cleanup model on startup", "local_llm_loaded",
+            "Load the local cleanup model when Undertone starts, so the "
+            "first dictation gets AI cleanup."))
+        col.addWidget(self._idle_card("local_llm_idle_minutes"))
 
         col.addWidget(self._group_label("API keys"))
         for provider, field in KEY_FIELDS.items():
@@ -1578,8 +1585,64 @@ class SettingsWindow(QObject):
                                                   "stt"))
             adv_lay.addSpacing(10)
             adv_lay.addWidget(self._model_control("Cleanup model", "cleanup"))
+            if self._config.get("dev_mode"):
+                adv_lay.addSpacing(10)
+                adv_lay.addWidget(self._cleanup_timeout_control())
             col.addWidget(adv_card)
         return box
+
+    def _idle_card(self, config_key):
+        idle_combo = Combo()
+        for label, minutes in [("Never", 0), ("After 5 min", 5),
+                               ("After 15 min", 15), ("After 30 min", 30),
+                               ("After 1 hour", 60)]:
+            idle_combo.addItem(label, minutes)
+        idle_combo.setFixedWidth(130)
+        current_idle = int(self._config.get(config_key) or 0)
+        idle_combo.setCurrentIndex(max(0, [0, 5, 15, 30, 60].index(
+            current_idle) if current_idle in (0, 5, 15, 30, 60) else 0))
+        idle_combo.currentIndexChanged.connect(
+            lambda _i, key=config_key: self._apply(
+                **{key: idle_combo.currentData()}))
+        return row_card(
+            "Auto-eject when idle",
+            "Frees memory after inactivity; reloads on the next dictation.",
+            idle_combo)
+
+    def _cleanup_timeout_control(self):
+        # Dev mode only: how long the cleanup pass may take before the
+        # dictation falls back to rule-based formatting.
+        holder = QWidget()
+        lay = QVBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        name = QLabel("Cleanup timeout (dev)")
+        name.setStyleSheet(f"color: {theme.SUBTEXT};"
+                           "background: transparent;")
+        lay.addWidget(name)
+        default = DEFAULT_CONFIG["cleanup_timeout"]
+        entry_row = QHBoxLayout()
+        entry = QLineEdit(f"{self._config.get('cleanup_timeout', default):g}")
+        entry.setFixedWidth(80)
+
+        def save():
+            try:
+                value = float(entry.text().strip() or default)
+            except ValueError:
+                value = default
+            value = min(30.0, max(0.5, value))
+            entry.setText(f"{value:g}")
+            self._apply(cleanup_timeout=value)
+
+        entry.returnPressed.connect(save)
+        entry_row.addWidget(entry)
+        entry_row.addWidget(pill_button("Save", "accent", save))
+        entry_row.addStretch(1)
+        lay.addLayout(entry_row)
+        lay.addWidget(hint_label(
+            "Seconds before cleanup gives up and the dictation falls back "
+            f"to standard formatting. Default {default:g}."))
+        return holder
 
     @staticmethod
     def _inline(*widgets):
@@ -1747,91 +1810,108 @@ class SettingsWindow(QObject):
                          args=(key, provider, dict(self._config)),
                          daemon=True).start()
 
-    # --- Local STT card ---------------------------------------------------------
+    # --- Local engine cards (STT + cleanup share the implementation) -------------
 
-    def _local_card(self, section_box):
+    _LOCAL_CARD_TEXT = {
+        "stt": ("Local transcription",
+                "Whisper runs on this PC — audio never leaves your "
+                "computer. Select the Local provider above to use it."),
+        "llm": ("Local cleanup",
+                "Qwen runs on this PC — transcripts never leave your "
+                "computer. Works best with an NVIDIA GPU; without one, "
+                "cleanup may not finish inside its time budget."),
+    }
+
+    def _local_card(self, section_box, engine):
         frame, lay = card()
         head = QHBoxLayout()
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
-        title = QLabel("Local engine")
+        card_title, blurb = self._LOCAL_CARD_TEXT[engine]
+        title = QLabel(card_title)
         title.setProperty("class", "cardTitle")
         text_col.addWidget(title)
-        text_col.addWidget(hint_label(
-            "Whisper runs on this PC — audio never leaves your computer. "
-            "Select the Local provider above to use it."))
+        text_col.addWidget(hint_label(blurb))
         head.addLayout(text_col, 1)
-        self._local_btn = pill_button("", "accent", self._on_local_action)
-        head.addWidget(self._local_btn, 0, Qt.AlignVCenter)
+        self._local_btn[engine] = pill_button(
+            "", "accent", lambda eng=engine: self._on_local_action(eng))
+        head.addWidget(self._local_btn[engine], 0, Qt.AlignVCenter)
         lay.addLayout(head)
         lay.addSpacing(7)
-        self._local_status = hint_label("", wrap=False)
-        lay.addWidget(self._local_status)
-        self._refresh_local_card()
+        self._local_status[engine] = hint_label("", wrap=False)
+        lay.addWidget(self._local_status[engine])
+        self._refresh_local_card(engine)
 
         # Dictating while ejected auto-loads the model on the pipeline
         # thread; poll so an open card flips to "Eject model" by itself.
         poll = QTimer(section_box)
         poll.timeout.connect(
-            lambda: self._local_busy or self._refresh_local_card())
+            lambda eng=engine: (self._local_busy[eng]
+                                or self._refresh_local_card(eng)))
         poll.start(1000)
         return frame
 
-    def _local_model_name(self):
-        return ((self._config.get("stt_models") or {}).get("local", "")
-                or self._default_model("stt", "local"))
+    def _local_model_name(self, engine):
+        kind = {"stt": "stt", "llm": "cleanup"}[engine]
+        return ((self._config.get(kind + "_models") or {}).get("local", "")
+                or self._default_model(kind, "local"))
 
-    def _refresh_local_card(self):
+    def _refresh_local_card(self, engine):
+        mod = self._LOCAL_ENGINES[engine]
         try:
-            status, button = self._local_status, self._local_btn
-            if self._local_busy:
+            status = self._local_status[engine]
+            button = self._local_btn[engine]
+            if self._local_busy[engine]:
                 label = {"install": "Downloading", "load": "Loading",
-                         "eject": "Ejecting"}[self._local_busy]
+                         "eject": "Ejecting"}[self._local_busy[engine]]
                 button.setText(label + "…")
                 button.setEnabled(False)
                 self._set_status(status,
-                                 self._local_progress or label + "…",
+                                 self._local_progress[engine] or label + "…",
                                  theme.MUTED)
                 return
             button.setEnabled(True)
-            if not localstt.is_installed(self._local_model_name()):
-                gb = localstt.install_size() / (1 << 30)
+            if not mod.is_installed(self._local_model_name(engine)):
+                gb = mod.install_size() / (1 << 30)
                 size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1024:.0f} MB"
                 button.setText(f"Download ({size})")
-                engine = "GPU" if localstt.have_nvidia_gpu() else "CPU"
-                text, color = (f"Not installed · will use your {engine}",
+                engine_kind = "GPU" if mod.have_nvidia_gpu() else "CPU"
+                text, color = (f"Not installed · will use your {engine_kind}",
                                theme.MUTED)
-            elif localstt.is_loaded():
+            elif mod.is_loaded():
                 button.setText("Eject model")
-                build = "GPU" if localstt.active_build() == "cuda" else "CPU"
+                build = "GPU" if mod.active_build() == "cuda" else "CPU"
                 text, color = f"●  loaded · {build}", theme.GREEN
             else:
                 button.setText("Load model")
                 text, color = "Installed · model not loaded", theme.MUTED
-            if self._local_error:
-                text, color = self._local_error, theme.RED
+            if self._local_error[engine]:
+                text, color = self._local_error[engine], theme.RED
             self._set_status(status, text, color)
         except RuntimeError:
             pass  # the Providers section was rebuilt mid-refresh
 
-    def _on_local_action(self):
-        if self._local_busy:
+    def _on_local_action(self, engine):
+        mod = self._LOCAL_ENGINES[engine]
+        if self._local_busy[engine]:
             return
-        self._local_error = ""
-        if not localstt.is_installed(self._local_model_name()):
+        self._local_error[engine] = ""
+        if not mod.is_installed(self._local_model_name(engine)):
             action = "install"
-        elif localstt.is_loaded():
+        elif mod.is_loaded():
             action = "eject"
         else:
             action = "load"
-        self._local_busy = action
-        self._local_progress = ""
-        self._refresh_local_card()
+        self._local_busy[engine] = action
+        self._local_progress[engine] = ""
+        self._refresh_local_card(engine)
         threading.Thread(target=self._local_worker,
-                         args=(action, self._local_model_name()),
+                         args=(engine, action,
+                               self._local_model_name(engine)),
                          daemon=True).start()
 
-    def _local_worker(self, action, model_name):
+    def _local_worker(self, engine, action, model_name):
+        mod = self._LOCAL_ENGINES[engine]
         last_pct = -1
 
         def progress(phase, frac):
@@ -1839,32 +1919,33 @@ class SettingsWindow(QObject):
             pct = int(frac * 100)
             if pct != last_pct:
                 last_pct = pct
-                self._local_progress_sig.emit(f"{phase}… {pct}%")
+                self._local_progress_sig.emit((engine, f"{phase}… {pct}%"))
 
         try:
             if action == "install":
-                localstt.install(progress)
+                mod.install(progress)
             elif action == "load":
-                localstt.load(model_name)
+                mod.load(model_name)
             else:
-                localstt.eject()
-            result = (action, True, "")
+                mod.eject()
+            result = (engine, action, True, "")
         except Exception as exc:
-            result = (action, False, str(exc))
+            result = (engine, action, False, str(exc))
         self._local_done_sig.emit(result)
 
-    def _on_local_progress(self, text):
-        self._local_progress = text
-        self._refresh_local_card()
+    def _on_local_progress(self, payload):
+        engine, text = payload
+        self._local_progress[engine] = text
+        self._refresh_local_card(engine)
 
     def _on_local_done(self, result):
-        action, ok, message = result
-        self._local_busy = None
-        self._local_progress = ""
-        self._local_error = "" if ok else message
+        engine, action, ok, message = result
+        self._local_busy[engine] = None
+        self._local_progress[engine] = ""
+        self._local_error[engine] = "" if ok else message
         # Load/Eject is a pure runtime action; startup behavior is owned
         # by the "Load model on startup" toggle alone.
-        self._refresh_local_card()
+        self._refresh_local_card(engine)
 
     # --- About -------------------------------------------------------------------
 
@@ -1958,6 +2039,7 @@ class SettingsWindow(QObject):
 
     def _cleanup_warning(self):
         if (self._config.get("ai_cleanup", True)
+                and self._config.get("cleanup_provider", "xai") != "local"
                 and not self._provider_key("cleanup_provider")):
             provider = self._config.get("cleanup_provider", "xai")
             name = PROVIDER_BY_ID.get(provider, provider)
