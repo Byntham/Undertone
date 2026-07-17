@@ -41,7 +41,7 @@ def _vocab_prompt(vocabulary: list) -> "str | None":
     # on this as prior transcript, and a labeled list invited list-shaped
     # echo (mangled term runs) at the start of marginal-audio transcripts.
     terms = [str(t).strip() for t in (vocabulary or []) if str(t).strip()]
-    return ("The following terms may be mentioned in the input: "
+    return ("These are some words I like to Use: "
             + ", ".join(terms[:100])) if terms else None
 
 
