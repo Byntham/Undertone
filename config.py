@@ -4,9 +4,12 @@ Stores a JSON config under %APPDATA%/Undertone/config.json, merging any
 on-disk values over a set of defaults so new keys always have a value.
 """
 
+import base64
+import ctypes
 import json
 import os
 import pathlib
+from ctypes import wintypes
 
 APP_NAME = "Undertone"
 LEGACY_APP_NAME = "PushToTalkSTT"
@@ -47,6 +50,63 @@ KEY_FIELDS = {
     "openai": "openai_api_key",
     "openrouter": "openrouter_api_key",
 }
+
+
+# --- API keys are DPAPI-encrypted at rest ------------------------------------
+# The config is plain JSON; keys alone are stored as "dpapi:<b64>" blobs
+# bound to this Windows user (a key once leaked into a pushed commit).
+# In memory they stay plaintext. Legacy plaintext values still load and
+# are encrypted on the next save.
+
+_DPAPI_PREFIX = "dpapi:"
+_CRYPTPROTECT_UI_FORBIDDEN = 0x01
+
+# Private DLL instances: prototypes/structures must never touch the shared
+# ctypes.windll cache (see AGENTS.md).
+_crypt32 = ctypes.WinDLL("crypt32")
+_kernel32 = ctypes.WinDLL("kernel32")
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = (("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_byte)))
+
+
+def _blob_take(blob: "_DataBlob") -> bytes:
+    data = ctypes.string_at(blob.pbData, blob.cbData)
+    _kernel32.LocalFree(blob.pbData)
+    return data
+
+
+def _as_blob(raw: bytes) -> "_DataBlob":
+    buf = ctypes.create_string_buffer(raw, len(raw))
+    return _DataBlob(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
+
+
+def _protect_key(value: str) -> str:
+    data_out = _DataBlob()
+    ok = _crypt32.CryptProtectData(
+        ctypes.byref(_as_blob(value.encode("utf-8"))), None, None, None,
+        None, _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(data_out))
+    if not ok:
+        return value  # availability over secrecy: never lose the key
+    return _DPAPI_PREFIX + base64.b64encode(_blob_take(data_out)).decode()
+
+
+def _unprotect_key(value: str) -> str:
+    if not value.startswith(_DPAPI_PREFIX):
+        return value  # legacy plaintext; encrypted on the next save
+    try:
+        raw = base64.b64decode(value[len(_DPAPI_PREFIX):])
+    except ValueError:
+        return ""
+    data_out = _DataBlob()
+    ok = _crypt32.CryptUnprotectData(
+        ctypes.byref(_as_blob(raw)), None, None, None, None,
+        _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(data_out))
+    if not ok:
+        return ""  # different user/machine: treat as no key
+    return _blob_take(data_out).decode("utf-8", "replace")
 
 
 def provider_key(cfg: dict, provider: str) -> str:
@@ -122,6 +182,9 @@ def load_config() -> dict:
         if isinstance(value, (dict, list)):
             cfg[key] = type(value)(value)
     _fold_legacy_models(cfg)
+    for field in KEY_FIELDS.values():
+        if isinstance(cfg.get(field), str):
+            cfg[field] = _unprotect_key(cfg[field])
     return cfg
 
 
@@ -131,7 +194,12 @@ def save_config(cfg: dict) -> None:
     The JSON lands in a temp file and is swapped in with os.replace, so an
     interrupted save can't destroy the existing config."""
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    on_disk = dict(cfg)
+    for field in KEY_FIELDS.values():
+        value = on_disk.get(field)
+        if isinstance(value, str) and value:
+            on_disk[field] = _protect_key(value)
     tmp = CONFIG_PATH.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, sort_keys=True)
+        json.dump(on_disk, f, indent=2, sort_keys=True)
     os.replace(tmp, CONFIG_PATH)

@@ -117,7 +117,7 @@ Data flow: `hotkey.PushToTalk` (global keyboard hook) → `recorder.Recorder` (s
 
 **High-DPI**: Qt handles DPI awareness and scaling on its own — all pixel measures in overlay.py/settingsui.py are logical pixels, no scaling helper needed (`theme.sc()`/`init_dpi()` were retired with the Tk stack). The one DPI-sensitive spot is `Overlay._render_text`, which sizes its QImage by `devicePixelRatioF()`.
 
-**Config**: `%APPDATA%\Undertone\config.json`, read with `utf-8-sig`, on-disk values merged over `DEFAULT_CONFIG`. Legacy `PushToTalkSTT` migrations live in `config.py` (dir move — must handle the dir already existing, since logging creates it before `load_config`) and `autostart.py` (HKCU Run value).
+**Config**: `%APPDATA%\Undertone\config.json`, read with `utf-8-sig`, on-disk values merged over `DEFAULT_CONFIG`. Saves are atomic (temp file + `os.replace`). API keys are DPAPI-encrypted at rest (`dpapi:<b64>` values bound to the Windows user; plaintext in memory; legacy plaintext keys still load and encrypt on the next save — pinned by `tests/test_providers.py`). Legacy `PushToTalkSTT` migrations live in `config.py` (dir move — must handle the dir already existing, since logging creates it before `load_config`) and `autostart.py` (HKCU Run value).
 
 **Icon assets** (`assets/icon.png`, `icon.ico`) are post-processed AI art: the square's colour is bled under the transparent rounded corners (prevents white halos on downscale) and the .ico carries individually resized + unsharp-masked 16–48px frames. Regenerate with the same care or small sizes go muddy.
 

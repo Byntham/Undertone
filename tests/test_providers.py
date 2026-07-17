@@ -145,6 +145,36 @@ def test_unknown_provider_fails_loudly():
     assert not calls
 
 
+def test_key_encryption_roundtrip():
+    import pathlib
+    import tempfile
+    old_path = config.CONFIG_PATH
+    with tempfile.TemporaryDirectory() as d:
+        config.CONFIG_PATH = pathlib.Path(d) / "config.json"
+        try:
+            cfg = dict(config.DEFAULT_CONFIG)
+            cfg["api_key"] = "sk-super-secret-123"
+            config.save_config(cfg)
+            text = config.CONFIG_PATH.read_text(encoding="utf-8")
+            # The plaintext key must never touch the disk.
+            assert "sk-super-secret-123" not in text
+            assert "dpapi:" in text
+            assert config.load_config()["api_key"] == "sk-super-secret-123"
+            # In-memory cfg must stay plaintext (save must not mutate it).
+            assert cfg["api_key"] == "sk-super-secret-123"
+            # Legacy plaintext keys still load (encrypted on the next save).
+            data = json.loads(text)
+            data["api_key"] = "plain-legacy-key"
+            config.CONFIG_PATH.write_text(json.dumps(data), encoding="utf-8")
+            assert config.load_config()["api_key"] == "plain-legacy-key"
+            # Garbage blobs mean "no key", not a crash or a garbage key.
+            data["api_key"] = "dpapi:not-really-a-blob"
+            config.CONFIG_PATH.write_text(json.dumps(data), encoding="utf-8")
+            assert config.load_config()["api_key"] == ""
+        finally:
+            config.CONFIG_PATH = old_path
+
+
 def test_legacy_model_fold():
     # The old shipped xAI default is NOT an override — it must vanish, or
     # switching cleanup provider sends a grok model id to OpenAI.
@@ -175,6 +205,7 @@ def main():
     test_cleanup_endpoints()
     test_provider_key_mapping()
     test_unknown_provider_fails_loudly()
+    test_key_encryption_roundtrip()
     test_legacy_model_fold()
     print("ALL TESTS PASSED")
 
