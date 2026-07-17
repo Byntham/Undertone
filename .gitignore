@@ -2,6 +2,9 @@
 .venv/
 .venv-qt/
 spikes/out/
+spikes/cleanup_prompt_100/server_url.txt
+spikes/cleanup_prompt_100/server_stdout.log
+spikes/cleanup_prompt_100/server_stderr.log
 __pycache__/
 *.pyc
 
@@ -12,6 +15,5 @@ dist/
 # Transient agent worktrees (a second checkout appears here during agent
 # runs — without this, git add -A would sweep in thousands of files)
 .claude/worktrees/
-
 
 
