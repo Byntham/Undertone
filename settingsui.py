@@ -676,7 +676,8 @@ class SettingsWindow(QObject):
             "About": self._build_about,
         }
         old = self._stack.currentWidget()
-        page = self._wrap_scroll(builders[section]())
+        page = self._wrap_scroll(builders[section](),
+                                 fill=section == "About")
         self._stack.addWidget(page)
         self._stack.setCurrentWidget(page)
         if old is not None:
@@ -684,14 +685,18 @@ class SettingsWindow(QObject):
             old.deleteLater()   # kills the old section's QTimers with it
         self._saved_label.raise_()
 
-    def _wrap_scroll(self, inner):
+    def _wrap_scroll(self, inner, fill=False):
         scroll = QScrollArea(widgetResizable=True)
         holder = QWidget()
         lay = QVBoxLayout(holder)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(9)
-        lay.addWidget(inner)
-        lay.addStretch(1)
+        # fill: the section expands to the viewport so its own stretches
+        # can place content (About centers itself and pins its dev-mode
+        # row to the bottom); otherwise content top-aligns over the slack.
+        lay.addWidget(inner, 1 if fill else 0)
+        if not fill:
+            lay.addStretch(1)
         scroll.setWidget(holder)
         # setWidget() flips autoFillBackground on — that paints the Qt
         # dark-mode PALETTE color, not the theme, over the whole page.
@@ -1909,6 +1914,19 @@ class SettingsWindow(QObject):
         links_holder.setLayout(links)
         col.addWidget(links_holder)
         col.addStretch(1)
+        dev = QHBoxLayout()
+        dev.setContentsMargins(0, 0, 0, 0)
+        dev.setSpacing(8)
+        dev.addStretch(1)
+        dev.addWidget(hint_label("Dev mode", wrap=False))
+        dev_toggle = Toggle(self._config.get("dev_mode", False),
+                            lambda on: self._apply(dev_mode=on))
+        dev_toggle.setToolTip(
+            "Also show log warnings and errors on the status pill")
+        dev.addWidget(dev_toggle)
+        dev_holder = QWidget()
+        dev_holder.setLayout(dev)
+        col.addWidget(dev_holder)
         return box
 
     def _open_config_folder(self):

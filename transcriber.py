@@ -37,17 +37,21 @@ class TranscriptionError(Exception):
 
 
 def _vocab_prompt(vocabulary: list) -> "str | None":
+    # Prose, not a "Vocabulary:" list header: whisper-style models condition
+    # on this as prior transcript, and a labeled list invited list-shaped
+    # echo (mangled term runs) at the start of marginal-audio transcripts.
     terms = [str(t).strip() for t in (vocabulary or []) if str(t).strip()]
-    return ("Vocabulary: " + ", ".join(terms[:100])) if terms else None
+    return ("The following terms may be mentioned in the input: "
+            + ", ".join(terms[:100])) if terms else None
 
 
 def _strip_prompt_echo(text: str, vocabulary: list) -> "str | None":
     """Remove an echoed vocabulary prompt from a transcript.
 
     STT models handed silence sometimes leak the biasing prompt verbatim,
-    wrapped in OpenAI's server-side template ("context: ###\\nVocabulary:
-    term1, term2, ...\\n###"). Detection requires the EXACT comma-joined
-    term sequence — dictating ABOUT the vocabulary feature ("add Claude
+    wrapped in OpenAI's server-side template ("context: ###\\n<prompt>
+    \\n###"). Detection requires the EXACT prompt text — dictating ABOUT
+    the vocabulary feature ("add Claude
     and Codex to the vocabulary") must never match. Returns the transcript
     with the echo and its scaffolding removed (may be empty), or None when
     no echo is present.

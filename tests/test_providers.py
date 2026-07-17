@@ -59,7 +59,8 @@ def test_openai_shape():
     url, kw = calls[0]
     assert url == "https://api.openai.com/v1/audio/transcriptions"
     assert kw["data"]["model"] == transcriber.DEFAULT_STT_MODELS["openai"]
-    assert kw["data"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
+    assert kw["data"]["prompt"] == ("The following terms may be mentioned in the input: "
+            "Undertone, Kubernetes")
     assert kw["data"]["language"] == "en"
     assert "files" in kw
     # Explicit model override wins.
@@ -80,8 +81,10 @@ def test_openrouter_shape():
     assert base64.b64decode(body["input_audio"]["data"]) == WAV
     # Vocabulary rides provider options (multipart `prompt` is ignored there).
     opts = body["provider"]["options"]
-    assert opts["groq"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
-    assert opts["openai"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
+    assert opts["groq"]["prompt"] == ("The following terms may be mentioned in the input: "
+            "Undertone, Kubernetes")
+    assert opts["openai"]["prompt"] == ("The following terms may be mentioned in the input: "
+            "Undertone, Kubernetes")
 
 
 def test_local_shape():
@@ -94,7 +97,8 @@ def test_local_shape():
     assert url == "http://127.0.0.1:9/inference"
     assert kw["data"]["response_format"] == "json"
     assert kw["data"]["language"] == "en"
-    assert kw["data"]["prompt"] == "Vocabulary: Undertone, Kubernetes"
+    assert kw["data"]["prompt"] == ("The following terms may be mentioned in the input: "
+            "Undertone, Kubernetes")
     assert "files" in kw
     # No vocabulary -> no prompt field.
     transcriber.transcribe(WAV, "", "en", None, "local")

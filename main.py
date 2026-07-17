@@ -72,6 +72,33 @@ class _Dispatcher(QObject):
         self.call.connect(lambda fn: fn())
 
 
+class _DevNoticeHandler(logging.Handler):
+    """Dev mode: mirror the app's WARNING+ log records onto the status pill.
+
+    Only unnamed-logger records (the app's own logging.warning/error calls)
+    are surfaced — named library loggers stay in the file. show_message is
+    thread-safe (signal emission), so records from any thread are fine.
+    """
+
+    def __init__(self, app: "App"):
+        super().__init__(level=logging.WARNING)
+        self._app = app
+
+    def emit(self, record):
+        if record.name != "root" or not self._app.cfg.get("dev_mode"):
+            return
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return
+        if len(msg) > 160:
+            msg = msg[:159] + "…"
+        self._app.overlay.show_message(
+            f"[{record.levelname}] {msg}", 6000,
+            error=record.levelno >= logging.ERROR,
+            warn=record.levelno < logging.ERROR)
+
+
 def _setup_logging():
     config_mod.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -128,6 +155,9 @@ class App:
             sample_rate=self.cfg.get("sample_rate", 16000),
             device=self.cfg.get("input_device") or None)
         self.overlay = Overlay(level_getter=lambda: self.recorder.level)
+        # Dev mode (About section): WARNING+ log records also show on the
+        # pill. Always attached; emission is gated on the live config.
+        logging.getLogger().addHandler(_DevNoticeHandler(self))
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
                               self._on_release,
                               on_other_key=self._on_other_key)

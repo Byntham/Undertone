@@ -1,10 +1,12 @@
 """Vocabulary-prompt-echo stripping (offline, no keys).
 
 STT models handed silence can leak the biasing prompt verbatim, wrapped in
-OpenAI's server-side template. Detection requires the EXACT comma-joined
-term sequence — keyword matching false-positived on the owner dictating
-ABOUT the vocabulary feature. Echo shapes here were captured live from the
-OpenAI and OpenRouter APIs on 2026-07-13.
+OpenAI's server-side template. Detection requires the EXACT prompt text —
+keyword matching false-positived on the owner dictating ABOUT the
+vocabulary feature. The template wrapping ("context: ###\n...\n###") was
+captured live from the OpenAI and OpenRouter APIs on 2026-07-13; the
+prompt inside is built via _vocab_prompt so these fixtures track its
+wording.
 """
 import os
 import sys
@@ -12,21 +14,20 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import transcriber
-from transcriber import (TranscriptionError, _strip_prompt_echo, transcribe)
+from transcriber import (TranscriptionError, _strip_prompt_echo, transcribe,
+                         _vocab_prompt)
 
 VOCAB = ["Claude", "Claude.md", "Codex", "subagent", "sol", "5.6-sol"]
+PROMPT = _vocab_prompt(VOCAB)
 
-# the exact echo both providers returned for pure silence (live capture)
-LIVE_ECHO = ("context: ###\nVocabulary: Claude, Claude.md, Codex, subagent, "
-             "sol, 5.6-sol\n###")
+# the echo shape both providers returned for pure silence (live capture)
+LIVE_ECHO = f"context: ###\n{PROMPT}\n###"
 assert _strip_prompt_echo(LIVE_ECHO, VOCAB) == ""
 
 # the owner's original OpenAI report (echo with punctuation drift): the
 # leftover "." is punctuation-only residue, so it's a pure echo (""), not
 # a stray period to paste.
-assert _strip_prompt_echo(
-    "Context: Vocabulary: Claude, Claude.md, Codex, subagent, sol, 5.6-sol.",
-    VOCAB) == ""
+assert _strip_prompt_echo(f"Context: {PROMPT}.", VOCAB) == ""
 
 # echo leaked alongside real speech -> speech survives
 assert _strip_prompt_echo(
@@ -39,7 +40,8 @@ assert _strip_prompt_echo(
     VOCAB) is None
 assert _strip_prompt_echo("Claude", VOCAB) is None
 assert _strip_prompt_echo("expand your vocabulary daily", VOCAB) is None
-assert _strip_prompt_echo("Vocabulary: Claude, Codex", VOCAB) is None  # partial
+assert _strip_prompt_echo(
+    _vocab_prompt(["Claude", "Codex"]), VOCAB) is None  # partial
 assert _strip_prompt_echo("Of the", VOCAB) is None
 assert _strip_prompt_echo("", VOCAB) is None
 assert _strip_prompt_echo("Vocabulary: whatever", []) is None
@@ -57,9 +59,7 @@ try:
     transcriber.PROVIDERS["_t"] = lambda *a: LIVE_ECHO + " real words here"
     assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "real words here"
     # punctuation-only residue is a pure echo -> raises, doesn't paste "."
-    transcriber.PROVIDERS["_t"] = lambda *a: (
-        "Context: Vocabulary: Claude, Claude.md, Codex, subagent, "
-        "sol, 5.6-sol.")
+    transcriber.PROVIDERS["_t"] = lambda *a: f"Context: {PROMPT}."
     try:
         transcribe(b"RIFF", "key", "en", VOCAB, "_t")
     except TranscriptionError as e:

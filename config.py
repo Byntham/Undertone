@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "repaste_hotkey": "ctrl+alt+v",
     "local_stt_loaded": False,        # load the local model on startup
     "local_stt_idle_minutes": 0,      # auto-eject after idle; 0 = never
+    "dev_mode": False,   # About toggle: mirror log warnings/errors on the pill
 }
 
 
