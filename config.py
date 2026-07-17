@@ -45,6 +45,8 @@ DEFAULT_CONFIG = {
     "local_llm_loaded": False,        # local cleanup model: load on startup
     "local_llm_idle_minutes": 0,      # auto-eject after idle; 0 = never
     "cleanup_timeout": 2.5,  # seconds before cleanup falls back (dev knob)
+    "cleanup_prompt": "",    # cleanup system prompt override (dev knob;
+                             # "" = the built-in cleanup.SYSTEM_PROMPT)
     "dev_mode": False,   # About toggle: mirror log warnings/errors on the pill
 }
 

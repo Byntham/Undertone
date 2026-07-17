@@ -25,8 +25,8 @@ from PySide6.QtGui import (QColor, QFontMetrics, QIcon, QPainter, QPixmap,
                            QGuiApplication)
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QComboBox, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
-    QStyledItemDelegate, QVBoxLayout, QWidget)
+    QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 import autostart
 import localllm
@@ -63,13 +63,13 @@ QFrame#listPanel {{ background: {theme.MANTLE};
                     border-radius: 8px; }}
 QWidget#listRow {{ background: transparent; border-radius: 6px; }}
 QWidget#listRow[hover="true"] {{ background: {theme.ROW_HOVER}; }}
-QLineEdit {{
+QLineEdit, QPlainTextEdit {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
     border-radius: 6px; padding: 4px 8px;
     selection-background-color: {theme.ACCENT};
     selection-color: {theme.INK};
 }}
-QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
+QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {theme.ACCENT}; }}
 QComboBox {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
     border-radius: 11px; padding: 4px 12px;
@@ -1588,6 +1588,8 @@ class SettingsWindow(QObject):
             if self._config.get("dev_mode"):
                 adv_lay.addSpacing(10)
                 adv_lay.addWidget(self._cleanup_timeout_control())
+                adv_lay.addSpacing(10)
+                adv_lay.addWidget(self._cleanup_prompt_control())
             col.addWidget(adv_card)
         return box
 
@@ -1809,6 +1811,55 @@ class SettingsWindow(QObject):
         threading.Thread(target=worker,
                          args=(key, provider, dict(self._config)),
                          daemon=True).start()
+
+    def _cleanup_prompt_control(self):
+        # Dev mode only: the system prompt the cleanup model runs with.
+        # The editor always shows the effective prompt (override or the
+        # built-in default), so tweaks start from the real text.
+        from cleanup import SYSTEM_PROMPT
+        holder = QWidget()
+        lay = QVBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        name = QLabel("Cleanup system prompt (dev)")
+        name.setStyleSheet(f"color: {theme.SUBTEXT};"
+                           "background: transparent;")
+        lay.addWidget(name)
+        editor = QPlainTextEdit()
+        editor.setPlainText(self._config.get("cleanup_prompt")
+                            or SYSTEM_PROMPT)
+        editor.setFixedHeight(190)
+        lay.addWidget(editor)
+        lay.addSpacing(4)
+        status = hint_label("")
+
+        def refresh():
+            custom = bool(self._config.get("cleanup_prompt"))
+            status.setText("Using a custom prompt."
+                           if custom else "Using the default prompt.")
+
+        def save():
+            text = editor.toPlainText().strip()
+            # Saving the default (or nothing) means "no override".
+            override = text if text and text != SYSTEM_PROMPT.strip() else ""
+            if not override:
+                editor.setPlainText(SYSTEM_PROMPT)
+            self._apply(cleanup_prompt=override)
+            refresh()
+
+        def reset():
+            editor.setPlainText(SYSTEM_PROMPT)
+            self._apply(cleanup_prompt="")
+            refresh()
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(pill_button("Save", "accent", save))
+        btn_row.addWidget(pill_button("Reset to default", "neutral", reset))
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+        lay.addWidget(status)
+        refresh()
+        return holder
 
     # --- Local engine cards (STT + cleanup share the implementation) -------------
 

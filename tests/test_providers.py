@@ -117,6 +117,12 @@ def test_cleanup_endpoints():
     # Explicit model override wins.
     cleanup.cleanup("some words", None, "", {}, "k", "my-model", "openrouter")
     assert calls[-1][1]["json"]["model"] == "my-model"
+    # The dev-mode prompt override replaces the system message; "" = default.
+    assert (calls[-1][1]["json"]["messages"][0]["content"]
+            == cleanup.SYSTEM_PROMPT)
+    cleanup.cleanup("some words", None, "", {}, "k", "", "xai",
+                    system_prompt="Be terse.")
+    assert calls[-1][1]["json"]["messages"][0]["content"] == "Be terse."
 
 
 def test_cleanup_local_shape():

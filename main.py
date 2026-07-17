@@ -472,6 +472,7 @@ class App:
                 cprov,
                 timeout=float(cfg.get("cleanup_timeout")
                               or config_mod.DEFAULT_CONFIG["cleanup_timeout"]),
+                system_prompt=cfg.get("cleanup_prompt", ""),
             )
             if cleaned is not None:
                 # The model handled the transcript body; rules re-apply the

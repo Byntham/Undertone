@@ -75,8 +75,12 @@ _RESPONSE_FORMAT = {
 
 
 def cleanup(transcript, ctx, app, corrections, api_key, model,
-            provider: str = "xai", timeout: float = 2.5) -> "str | None":
-    """Return the polished transcript, or None on any failure/timeout."""
+            provider: str = "xai", timeout: float = 2.5,
+            system_prompt: str = "") -> "str | None":
+    """Return the polished transcript, or None on any failure/timeout.
+
+    system_prompt overrides SYSTEM_PROMPT ("" = default) — a dev-mode
+    knob for prompt experiments (config cleanup_prompt)."""
     if provider == "local":
         # Keyless loopback server. Never load-block a dictation: if the
         # model isn't resident, warm it in the background and skip this
@@ -110,7 +114,8 @@ def cleanup(transcript, ctx, app, corrections, api_key, model,
                 "model": model or DEFAULT_CLEANUP_MODELS.get(provider, ""),
                 "temperature": 0,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system",
+                     "content": system_prompt or SYSTEM_PROMPT},
                     {"role": "user", "content": user},
                 ],
                 "response_format": _RESPONSE_FORMAT,
