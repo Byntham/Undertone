@@ -65,6 +65,62 @@ CASES = [
     ("list commas",
      "we need milk eggs and bread from the store",
      None, {}),
+    ("stutter repeats",
+     "I I think we should we should go with the second option",
+     None, {}),
+    ("trailing filler",
+     "so the deploy is done um yeah",
+     None, {}),
+    ("poll request",
+     "did you get a chance to look at my poll request yet",
+     None, {}),
+    ("weather/whether",
+     "I don't know weather we should ship today or wait for QA",
+     None, {}),
+    ("missing contraction",
+     "we going to need more time the migration keeps failing",
+     None, {}),
+    ("proper nouns",
+     "we talked to sarah and jim from acme about the chicago rollout",
+     None, {}),
+    ("spoken email",
+     "send the invoice to john dot smith at gmail dot com tonight",
+     None, {}),
+    ("their/there/they're mix",
+     "there servers are down but they said there working on it",
+     None, {}),
+    ("keep informal tone",
+     "gonna grab lunch first then I'll look at the ticket",
+     None, {}),
+    ("ctx continues into question",
+     "we still on for the demo at four",
+     "Quick check -", {}),
+    ("keep numbers as spoken",
+     "the response time dropped from two hundred milliseconds to ninety",
+     None, {}),
+    ("no hallucinated expansion",
+     "ship it",
+     None, {}),
+    ("jason -> JSON",
+     "the api returns jason with a list of users",
+     None, {}),
+    ("spelled-out acronym",
+     "check the a p i logs for errors",
+     None, {}),
+    ("double homophone",
+     "I'll get back two you buy end of day",
+     None, {}),
+    ("cloud stays cloud",
+     "we should deploy it to the cloud instead of on prem",
+     None, {}),
+    ("rambling filler-heavy",
+     "okay so um basically the thing is uh we tested the new flow and it "
+     "works but but there's one edge case you know where the user hits back "
+     "and the form clears",
+     None, {}),
+    ("standalone i",
+     "i'll be there in five i just need to wrap up this call",
+     None, {}),
 ]
 
 DEFAULT = cleanup.SYSTEM_PROMPT
@@ -80,17 +136,28 @@ except ImportError:
 
 def main():
     args = sys.argv[1:]
-    provider, key = "local", ""
+    provider, key, model = "local", "", ""
     if "--xai" in args:
         args.remove("--xai")
         import config
         provider = "xai"
         key = config.provider_key(config.load_config(), "xai")
         assert key, "no xAI key in config"
+    if "--model" in args:   # alternate GGUF filename in the models dir
+        model = args[args.index("--model") + 1]
+        args.remove("--model")
+        args.remove(model)
+    if "--prompts" in args:  # comma-separated subset of PROMPTS to run
+        names = args[args.index("--prompts") + 1]
+        args.remove("--prompts")
+        args.remove(names)
+        for k in [k for k in PROMPTS if k not in names.split(",")]:
+            del PROMPTS[k]
     picks = [int(a) for a in args] or range(len(CASES))
     if provider == "local":
-        base = localllm.ensure_ready()
-        print(f"server: {base} build={localllm.active_build()}")
+        base = localllm.ensure_ready(model)
+        print(f"server: {base} build={localllm.active_build()} "
+              f"model={model or localllm.MODEL_FILENAME}")
     for i in picks:
         label, transcript, ctx, corr = CASES[i]
         print(f"\n[{i}] {label}")
@@ -98,7 +165,7 @@ def main():
         for name, prompt in PROMPTS.items():
             t0 = time.perf_counter()
             out = cleanup.cleanup(transcript, ctx, "notepad.exe", corr,
-                                  key, "", provider=provider, timeout=60,
+                                  key, model, provider=provider, timeout=60,
                                   system_prompt=prompt)
             ms = (time.perf_counter() - t0) * 1000
             print(f"    {name:<12}{ms:5.0f}ms  {out!r}")

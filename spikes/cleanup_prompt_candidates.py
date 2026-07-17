@@ -17,19 +17,26 @@ its keys.
 _PROOFREAD = """\
 - Speech-to-text mishears words: when a word makes no sense in its \
 sentence but sounds like one that does, write the word the speaker meant \
-(their/they're, its/it's, "here back" -> "hear back", "the bill step" -> \
+(their/they're, its/it's, "here back" -> "hear back", "there servers" -> \
+"their servers", "poll request" -> "pull request", "the bill step" -> \
 "the build step", "get hub" -> "GitHub").
+- Restore small words dictation dropped when the sentence is ungrammatical \
+without them: "we going to need" -> "we're going to need".
+- Spoken addresses become symbols: "john dot smith at gmail dot com" -> \
+"john.smith@gmail.com".
 """
 
 _PUNCT_SOFT = """\
 - Punctuate to fit what text_before_cursor is continuing.
-- End a question with a question mark, including requests: "can you send it" -> "Can you send it?".
+- End a question with a question mark, even informal ones: "can you send \
+it" -> "Can you send it?", "we still on" -> "we still on?".
 """
 
 _PUNCT_FULL = """\
 - Punctuate like edited prose: sentences end with periods, commas where \
 needed, and run-on speech splits into separate sentences.
-- End a question with a question mark, including requests: "can you send it" -> "Can you send it?".
+- End a question with a question mark, even informal ones: "can you send \
+it" -> "Can you send it?", "we still on" -> "we still on?".
 """
 
 _CASE = """\
