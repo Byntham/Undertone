@@ -1,17 +1,21 @@
 """Speech-to-text transcription for Undertone.
 
 Providers: xAI (native /v1/stt with keyterm biasing), OpenAI (multipart
-/v1/audio/transcriptions with a vocabulary prompt), OpenRouter (JSON
-base64 path so vocabulary can ride provider-specific options — its
-multipart path accepts but ignores `prompt`), and Local (keyless, POSTs
-to the on-device whisper.cpp server managed by localstt.py). transcribe()
-dispatches via PROVIDERS; an empty model means the provider's default.
+/v1/audio/transcriptions), OpenRouter (JSON base64 path), and Local
+(keyless, POSTs to the on-device whisper.cpp server managed by
+localstt.py). transcribe() dispatches via PROVIDERS; an empty model means
+the provider's default.
+
+Vocabulary biasing is xAI-only (structured `keyterm` fields). Prompt-based
+biasing for the other providers was removed 2026-07-17: whisper-style
+models condition on the prompt as prior transcript and echoed mangled term
+lists into transcripts on marginal audio, regardless of prompt wording —
+don't reintroduce. Those providers get dictionary support downstream
+(corrections regex + AI cleanup).
 """
 
 import base64
 import json
-import logging
-import re
 
 import requests
 
@@ -33,53 +37,7 @@ _TIMEOUT = (10, 120)
 
 
 class TranscriptionError(Exception):
-    """Carries a user-friendly message describing what went wrong.
-
-    dev_only marks diagnostic outcomes: the pill shows them verbatim only
-    in dev mode and falls back to a generic notice otherwise (the log
-    always gets the real message).
-    """
-
-    def __init__(self, message: str, dev_only: bool = False):
-        super().__init__(message)
-        self.dev_only = dev_only
-
-
-def _vocab_prompt(vocabulary: list) -> "str | None":
-    # Prose, not a "Vocabulary:" list header: whisper-style models condition
-    # on this as prior transcript, and a labeled list invited list-shaped
-    # echo (mangled term runs) at the start of marginal-audio transcripts.
-    terms = [str(t).strip() for t in (vocabulary or []) if str(t).strip()]
-    return ("These are some words I like to Use: "
-            + ", ".join(terms[:100])) if terms else None
-
-
-def _strip_prompt_echo(text: str, vocabulary: list) -> "str | None":
-    """Remove an echoed vocabulary prompt from a transcript.
-
-    STT models handed silence sometimes leak the biasing prompt verbatim,
-    wrapped in OpenAI's server-side template ("context: ###\\n<prompt>
-    \\n###"). Detection requires the EXACT prompt text — dictating ABOUT
-    the vocabulary feature ("add Claude
-    and Codex to the vocabulary") must never match. Returns the transcript
-    with the echo and its scaffolding removed (may be empty), or None when
-    no echo is present.
-    """
-    prompt = _vocab_prompt(vocabulary)
-    if not prompt or not text:
-        return None
-    pattern = re.sub(r"\\\s", r"\\s+", re.escape(prompt))
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match is None:
-        return None
-    cleaned = text[:match.start()] + text[match.end():]
-    cleaned = re.sub(r"context:\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.replace("#", " ")
-    cleaned = " ".join(cleaned.split())
-    # Punctuation/whitespace-only residue (e.g. a trailing "." from the
-    # template) is not surviving speech — collapse it to a pure echo so
-    # transcribe() raises loudly instead of pasting a stray period.
-    return cleaned if re.search(r"\w", cleaned) else ""
+    """Carries a user-friendly message describing what went wrong."""
 
 
 def _check_response(resp, provider: str) -> None:
@@ -153,9 +111,6 @@ def transcribe_openai(wav_bytes: bytes, api_key: str, language: str = "en",
     """OpenAI /v1/audio/transcriptions (multipart, OpenAI-style)."""
     data = {"model": model or DEFAULT_STT_MODELS["openai"],
             "language": language}
-    prompt = _vocab_prompt(vocabulary)
-    if prompt:
-        data["prompt"] = prompt
     payload = _post(
         "https://api.openai.com/v1/audio/transcriptions", "OpenAI",
         headers={"Authorization": f"Bearer {api_key}"},
@@ -168,13 +123,7 @@ def transcribe_openai(wav_bytes: bytes, api_key: str, language: str = "en",
 def transcribe_openrouter(wav_bytes: bytes, api_key: str,
                           language: str = "en", vocabulary: list = None,
                           model: str = "") -> str:
-    """OpenRouter /api/v1/audio/transcriptions via the base64 JSON path.
-
-    The JSON path is used (not multipart) because vocabulary biasing only
-    works through provider-specific options there — the multipart path
-    accepts `prompt` but ignores it. Options are keyed by provider slug and
-    forwarded only to whichever provider serves the request.
-    """
+    """OpenRouter /api/v1/audio/transcriptions via the base64 JSON path."""
     body = {
         "model": model or DEFAULT_STT_MODELS["openrouter"],
         "input_audio": {
@@ -183,12 +132,6 @@ def transcribe_openrouter(wav_bytes: bytes, api_key: str,
         },
         "language": language,
     }
-    prompt = _vocab_prompt(vocabulary)
-    if prompt:
-        body["provider"] = {"options": {
-            "openai": {"prompt": prompt},
-            "groq": {"prompt": prompt},
-        }}
     payload = _post(
         "https://openrouter.ai/api/v1/audio/transcriptions", "OpenRouter",
         headers={"Authorization": f"Bearer {api_key}",
@@ -206,9 +149,6 @@ def transcribe_local(wav_bytes: bytes, api_key: str, language: str = "en",
     except localstt.LocalSTTError as exc:
         raise TranscriptionError(str(exc)) from exc
     data = {"response_format": "json", "language": language}
-    prompt = _vocab_prompt(vocabulary)
-    if prompt:
-        data["prompt"] = prompt
     try:
         resp = requests.post(
             f"{base_url}/inference",
@@ -244,8 +184,8 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
                model: str = "") -> str:
     """Transcribe WAV audio bytes, returning the recognized text.
 
-    vocabulary is an optional list of terms the model should recognize;
-    each provider translates it into its own biasing mechanism.
+    vocabulary is an optional list of terms the model should recognize —
+    only xAI uses it (keyterm hints); other providers ignore it.
     Raises TranscriptionError with a friendly message on any failure.
     """
     fn = PROVIDERS.get(provider)
@@ -261,20 +201,4 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
             raise TranscriptionError(
                 "No API key configured for the transcription provider. "
                 "Open Settings → Providers and enter one.")
-    text = fn(wav_bytes, api_key, language, vocabulary, model)
-    stripped = _strip_prompt_echo(text, vocabulary)
-    if stripped is not None:
-        if stripped:
-            # Real speech survived alongside the echo: keep it, note it.
-            logging.warning("STT leaked the vocabulary prompt into a "
-                            "transcript; echo stripped (%d chars kept)",
-                            len(stripped))
-            return stripped
-        # Loud on purpose: a pure echo means the model returned our
-        # vocabulary hint instead of speech — worth investigating, not a
-        # silent no-op. Raising keeps the WAV in history for retries.
-        raise TranscriptionError(
-            "STT echoed the vocabulary hint instead of transcribing — "
-            "likely silence + a model without no-speech rejection.",
-            dev_only=True)
-    return text
+    return fn(wav_bytes, api_key, language, vocabulary, model)

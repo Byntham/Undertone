@@ -39,8 +39,9 @@ def capture(module, payload):
 
 WAV = b"RIFF" + b"\x00" * 64
 VOCAB = ["Undertone", "Kubernetes"]
-# Expected prompt derives from _vocab_prompt so wording tweaks
-# in transcriber.py don't break the request-shape pins.
+# Vocabulary biasing is xAI-only (keyterm fields). The other providers
+# must NOT receive the terms in any form — prompt biasing echoed term
+# lists into transcripts and was removed 2026-07-17.
 
 
 def test_xai_shape():
@@ -61,13 +62,12 @@ def test_openai_shape():
     url, kw = calls[0]
     assert url == "https://api.openai.com/v1/audio/transcriptions"
     assert kw["data"]["model"] == transcriber.DEFAULT_STT_MODELS["openai"]
-    assert kw["data"]["prompt"] == transcriber._vocab_prompt(VOCAB)
+    assert "prompt" not in kw["data"]  # vocabulary must not reach OpenAI
     assert kw["data"]["language"] == "en"
     assert "files" in kw
     # Explicit model override wins.
     transcriber.transcribe(WAV, "k", "en", None, "openai", "whisper-1")
     assert calls[1][1]["data"]["model"] == "whisper-1"
-    assert "prompt" not in calls[1][1]["data"]
 
 
 def test_openrouter_shape():
@@ -80,10 +80,7 @@ def test_openrouter_shape():
     assert body["input_audio"]["format"] == "wav"
     import base64
     assert base64.b64decode(body["input_audio"]["data"]) == WAV
-    # Vocabulary rides provider options (multipart `prompt` is ignored there).
-    opts = body["provider"]["options"]
-    assert opts["groq"]["prompt"] == transcriber._vocab_prompt(VOCAB)
-    assert opts["openai"]["prompt"] == transcriber._vocab_prompt(VOCAB)
+    assert "provider" not in body  # vocabulary must not reach OpenRouter
 
 
 def test_local_shape():
@@ -96,11 +93,8 @@ def test_local_shape():
     assert url == "http://127.0.0.1:9/inference"
     assert kw["data"]["response_format"] == "json"
     assert kw["data"]["language"] == "en"
-    assert kw["data"]["prompt"] == transcriber._vocab_prompt(VOCAB)
+    assert "prompt" not in kw["data"]  # vocabulary must not reach local
     assert "files" in kw
-    # No vocabulary -> no prompt field.
-    transcriber.transcribe(WAV, "", "en", None, "local")
-    assert "prompt" not in calls[1][1]["data"]
 
 
 def test_missing_key_message():

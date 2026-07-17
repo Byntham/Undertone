@@ -372,10 +372,7 @@ class App:
         except TranscriptionError as e:
             logging.error("Transcription failed: %s", e)
             self._register_failure(str(e), wav)
-            if e.dev_only and not cfg.get("dev_mode"):
-                self.overlay.show_message("No speech detected", error=True)
-            else:
-                self.overlay.show_message(str(e), duration_ms=5000, error=True)
+            self.overlay.show_message(str(e), duration_ms=5000, error=True)
             return
         except Exception as e:  # pragma: no cover - safety net
             logging.exception("Unexpected transcription error")

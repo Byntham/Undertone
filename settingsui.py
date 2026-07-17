@@ -1246,9 +1246,9 @@ class SettingsWindow(QObject):
 
         col.addWidget(self._toggle_card(
             "Send terms to the transcription model", "stt_vocab_hints",
-            "Terms bias recognition, but models can echo them back on "
-            "unclear audio. Off: terms still apply through corrections "
-            "and AI cleanup."))
+            "xAI receives your terms as key-term recognition hints; other "
+            "providers never see them. Terms always apply through "
+            "corrections and AI cleanup."))
         return box
 
     def _dict_row(self, text, on_remove):
