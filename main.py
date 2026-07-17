@@ -158,6 +158,10 @@ class App:
         # Dev mode (About section): WARNING+ log records also show on the
         # pill. Always attached; emission is gated on the live config.
         logging.getLogger().addHandler(_DevNoticeHandler(self))
+        # Degraded-but-working local STT outcomes (CUDA→CPU fallback)
+        # deserve a pill regardless of dev mode.
+        localstt.on_notice = lambda msg: self.overlay.show_message(
+            msg, 6000, warn=True)
         self.ptt = PushToTalk(self.cfg["hotkey"], self._on_press,
                               self._on_release,
                               on_other_key=self._on_other_key)
@@ -332,7 +336,12 @@ class App:
                     self._wait_modifiers_lifted()
                     self._paste_now(payload, cfg)
             except Exception:
+                # Every expected failure path shows its own pill; reaching
+                # this net means a dictation vanished — say so.
                 logging.exception("Pipeline step failed")
+                self.overlay.show_message(
+                    "Something went wrong — see the log (About → View log).",
+                    5000, error=True)
 
     def _wait_modifiers_lifted(self, budget: float = 1.0):
         """Let the user release the hotkey's modifiers before sending Ctrl+V."""
@@ -644,6 +653,7 @@ class App:
             localstt.load(config_mod.model_override(self.cfg, "stt", "local"))
         except localstt.LocalSTTError as e:
             logging.warning("Local STT warm load failed: %s", e)
+            self.overlay.show_message(str(e), 6000, warn=True)
             return
         self.overlay.show_message("Local model loaded")
 
@@ -674,6 +684,9 @@ class App:
                     keyboard.add_hotkey(combo, callback))
             except Exception:
                 logging.exception("Could not register hotkey %r", combo)
+                self.overlay.show_message(
+                    f"Couldn't register the {pretty_combo(combo)} shortcut",
+                    5000, warn=True)
                 continue
             # These keys are Undertone's own — they must not count as
             # "typing" for insertion-memory invalidation.

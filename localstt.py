@@ -387,6 +387,11 @@ def _spawn(build: str, model_name: str) -> None:
         "in the Undertone data folder.")
 
 
+# Optional UI hook for degraded-but-working outcomes (set by the app,
+# called from worker threads — the target must be thread-safe).
+on_notice = None
+
+
 def ensure_ready(model_name: str = "") -> str:
     """Return the running server's base URL, starting it if needed.
 
@@ -423,6 +428,9 @@ def ensure_ready(model_name: str = "") -> str:
                     "local STT CUDA build failed to start; falling back "
                     "to CPU (re-enable by deleting runtime.json)")
                 _save_state(cuda_disabled=True)
+                if on_notice:
+                    on_notice("GPU transcription failed — using CPU "
+                              "(slower). See the log for details.")
 
 
 def set_idle_timeout(seconds: int) -> None:
