@@ -106,6 +106,10 @@ def test_missing_key_message():
 
 
 def test_cleanup_endpoints():
+    assert cleanup.SYSTEM_PROMPT.startswith("COPYEDIT ONLY.")
+    assert cleanup.DEPRECATED_SYSTEM_PROMPT.startswith(
+        "You polish dictation transcripts.")
+    assert cleanup.SYSTEM_PROMPT != cleanup.DEPRECATED_SYSTEM_PROMPT
     reply = {"choices": [{"message": {"content": json.dumps({"text": "ok"})}}]}
     calls = capture(cleanup, reply)
     for provider, url in cleanup.API_URLS.items():
