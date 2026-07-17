@@ -19,13 +19,14 @@ import webbrowser
 import keyboard
 import pyperclip
 
-from PySide6.QtCore import QObject, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import (QEasingCurve, QObject, QRect, QRectF, Qt, QTimer,
+                            QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QFontMetrics, QIcon, QPainter, QPixmap,
                            QGuiApplication)
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QComboBox, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
-    QVBoxLayout, QWidget)
+    QStyledItemDelegate, QVBoxLayout, QWidget)
 
 import autostart
 import localstt
@@ -40,8 +41,9 @@ MIN_W, MIN_H = 660, 560
 SIDEBAR_W = 200
 
 QSS = f"""
-QWidget {{ font-family: "Segoe UI"; font-size: 10pt; color: {theme.TEXT};
-           background: {theme.BASE}; }}
+QWidget {{ font-family: "Segoe UI"; font-size: 10pt;
+           color: {theme.TEXT}; }}
+QWidget#settingsWindow {{ background: {theme.BASE}; }}
 QLabel {{ background: transparent; }}
 QLabel#heading {{ font-family: "Segoe UI Semibold"; font-size: 15pt; }}
 QLabel#group {{ font-family: "Segoe UI Semibold"; font-size: 9pt;
@@ -58,7 +60,7 @@ QFrame#card QLabel, QFrame#banner QLabel {{ background: transparent; }}
 QFrame#listPanel {{ background: {theme.MANTLE};
                     border: 1px solid {theme.CARD_BORDER};
                     border-radius: 8px; }}
-QWidget#listRow {{ background: {theme.MANTLE}; }}
+QWidget#listRow {{ background: transparent; border-radius: 6px; }}
 QWidget#listRow[hover="true"] {{ background: {theme.ROW_HOVER}; }}
 QLineEdit {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
@@ -69,17 +71,12 @@ QLineEdit {{
 QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
 QComboBox {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    border-radius: 6px; padding: 4px 10px;
+    border-radius: 13px; padding: 4px 12px;
 }}
 QComboBox:focus {{ border-color: {theme.ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{ image: url(__CHEVRON__); width: 10px;
                          height: 6px; }}
-QComboBox QAbstractItemView {{
-    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    selection-background-color: {theme.ACCENT};
-    selection-color: {theme.INK}; outline: 0;
-}}
 QPushButton {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
     border-radius: 13px; padding: 4px 14px; font-size: 9pt;
@@ -88,6 +85,7 @@ QPushButton:hover {{ background: {theme.SURFACE1}; }}
 QPushButton:disabled {{ color: {theme.MUTED}; }}
 QPushButton[variant="accent"] {{
     background: {theme.ACCENT}; color: {theme.INK}; border: none;
+    border-radius: 13px;  /* border:none drops the inherited radius */
     font-family: "Segoe UI Semibold";
 }}
 QPushButton[variant="accent"]:hover {{ background: {theme.ACCENT_HOVER}; }}
@@ -99,6 +97,7 @@ QLabel#chip {{
     border-radius: 12px; padding: 3px 12px; font-size: 9pt;
 }}
 QScrollArea {{ border: none; background: {theme.BASE}; }}
+QScrollArea#panelScroll {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{
     background: {theme.SURFACE1}; border-radius: 5px; min-height: 30px; }}
@@ -149,7 +148,8 @@ def _ellipsize(text, limit=24):
 # --- Small building blocks ---------------------------------------------------
 
 class Toggle(QAbstractButton):
-    """Painted on/off switch (accent track when on)."""
+    """Painted on/off switch (accent track when on); the knob slides and
+    the colors cross-fade along an animated 0..1 progress."""
 
     def __init__(self, on=False, on_change=None):
         super().__init__()
@@ -158,8 +158,13 @@ class Toggle(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(40, 22)
         self.on_change = on_change
-        self.toggled.connect(self._changed)
         self._block = False
+        self._pos = 1.0 if on else 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(self._step)
+        self.toggled.connect(self._changed)
 
     def set(self, on):
         self._block = True
@@ -167,19 +172,80 @@ class Toggle(QAbstractButton):
         self._block = False
 
     def _changed(self, on):
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
         if not self._block and self.on_change is not None:
             self.on_change(bool(on))
+
+    def _step(self, value):
+        self._pos = value
+        self.update()
+
+    @staticmethod
+    def _blend(color_a, color_b, t):
+        a, b = QColor(color_a), QColor(color_b)
+        return QColor(round(a.red() + (b.red() - a.red()) * t),
+                      round(a.green() + (b.green() - a.green()) * t),
+                      round(a.blue() + (b.blue() - a.blue()) * t))
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        track = QColor(theme.ACCENT if self.isChecked() else theme.SURFACE1)
+        t = self._pos
         p.setPen(Qt.NoPen)
-        p.setBrush(track)
+        p.setBrush(self._blend(theme.SURFACE1, theme.ACCENT, t))
         p.drawRoundedRect(0, 0, 40, 22, 11, 11)
-        p.setBrush(QColor(theme.INK if self.isChecked() else theme.TEXT))
-        x = 20 if self.isChecked() else 2
-        p.drawEllipse(x, 2, 18, 18)
+        p.setBrush(self._blend(theme.TEXT, theme.INK, t))
+        p.drawEllipse(QRectF(2 + 18 * t, 2, 18, 18))
+
+
+# The popup is a top-level window, out of reach of the main QSS — the
+# theme never made it there (it rendered unstyled Fusion gray).
+POPUP_QSS = f"""
+QWidget {{ background: transparent; }}
+QListView {{
+    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
+    border-radius: 8px; padding: 4px; outline: 0;
+}}
+QListView::item {{
+    background: transparent; color: {theme.TEXT};
+    padding: 3px 8px; border-radius: 4px; min-height: 20px;
+}}
+QListView::item:hover {{ background: {theme.SURFACE1}; }}
+QListView::item:selected {{ background: {theme.ACCENT};
+                            color: {theme.INK}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0;
+                       border: none; }}
+QScrollBar::handle:vertical {{ background: {theme.SURFACE1};
+                               border-radius: 5px; min-height: 24px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent; }}
+"""
+
+
+class Combo(QComboBox):
+    """Themed drop-down. Three things need code, not just QSS: wheel events
+    are ignored (scrolling the page over a combo must not change the
+    setting), ::item hover/selected styling requires a styled delegate,
+    and rounded popup corners need the popup window translucent."""
+
+    def __init__(self):
+        super().__init__()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setItemDelegate(QStyledItemDelegate(self))
+        # Stock combo popups ship ScrollBarAlwaysOff and hard-clip lists
+        # taller than the screen; show the (themed) scrollbar instead.
+        self.view().setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        popup = self.view().window()
+        popup.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+        popup.setAttribute(Qt.WA_TranslucentBackground, True)
+        popup.setStyleSheet(POPUP_QSS)
+
+    def wheelEvent(self, event):
+        event.ignore()  # let the section scroll instead
 
 
 def pill_button(text, variant="neutral", on_click=None):
@@ -340,25 +406,23 @@ def list_panel(rows_visible=None):
     panel = QFrame(objectName="listPanel")
     outer = QVBoxLayout(panel)
     outer.setContentsMargins(1, 2, 1, 2)
-    scroll = QScrollArea(widgetResizable=True)
-    scroll.setStyleSheet(
-        f"QScrollArea {{ background: {theme.MANTLE}; border: none; }}"
-        "QScrollBar:vertical { background: transparent; width: 10px;"
-        "margin: 0; border: none; }"
-        f"QScrollBar::handle:vertical {{ background: {theme.SURFACE1};"
-        "border-radius: 5px; min-height: 24px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
-        "{ height: 0; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
-        "{ background: transparent; }")
+    # Everything inside the panel stays transparent so the panel's own
+    # rounded MANTLE face is the only backdrop — a square-cornered child
+    # would paint over the rounded border at the corners. Transparency
+    # comes from the window QSS (#panelScroll; plain wrapper widgets are
+    # unpainted since no generic background rule exists), NEVER a local
+    # setStyleSheet: a local sheet on any ancestor silently disables
+    # attribute-selector rules ([hover="true"], [variant="accent"]) for
+    # every widget beneath it.
+    scroll = QScrollArea(widgetResizable=True, objectName="panelScroll")
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     inner = QWidget()
-    inner.setStyleSheet(f"background: {theme.MANTLE};")
     column = QVBoxLayout(inner)
     column.setContentsMargins(0, 0, 0, 0)
     column.setSpacing(0)
     column.addStretch(1)
     scroll.setWidget(inner)
+    inner.setAutoFillBackground(False)  # setWidget() flips it on
     outer.addWidget(scroll)
     if rows_visible:
         panel.setFixedHeight(ROW_H * rows_visible + 6)
@@ -449,6 +513,7 @@ class SettingsWindow(QObject):
             self._raise()
             return
         win = QWidget(None, Qt.Window)
+        win.setObjectName("settingsWindow")
         self._win = win
         win.setWindowTitle("Undertone")
         win.setWindowIcon(QIcon(str(ICON_ICO)))
@@ -534,7 +599,6 @@ class SettingsWindow(QObject):
         lay.setSpacing(0)
 
         brand = QWidget()
-        brand.setStyleSheet("background: transparent;")
         brand_lay = QHBoxLayout(brand)
         brand_lay.setContentsMargins(18, 16, 8, 16)
         icon = QLabel()
@@ -644,7 +708,7 @@ class SettingsWindow(QObject):
             "is now."))
 
         col.addWidget(self._group_label("Dictation"))
-        language = QComboBox()
+        language = Combo()
         for label, code in LANGUAGES:
             language.addItem(label, code)
         language.setCurrentIndex(max(0, [code for _l, code in LANGUAGES]
@@ -674,7 +738,7 @@ class SettingsWindow(QObject):
     def _mic_combo(self):
         window = self
 
-        class MicCombo(QComboBox):
+        class MicCombo(Combo):
             def showPopup(self):
                 window._fill_mic_options(self)
                 super().showPopup()
@@ -711,7 +775,6 @@ class SettingsWindow(QObject):
         change = pill_button("Change", "neutral",
                              lambda key=config_key: self._start_capture(key))
         control = QWidget()
-        control.setStyleSheet("background: transparent;")
         control_lay = QHBoxLayout(control)
         control_lay.setContentsMargins(0, 0, 0, 0)
         control_lay.setSpacing(8)
@@ -872,7 +935,7 @@ class SettingsWindow(QObject):
         title1.setProperty("class", "cardTitle")
         lay1.addWidget(title1)
         lay1.addSpacing(8)
-        provider = QComboBox()
+        provider = Combo()
         for label, pid in PROVIDERS_UI:
             provider.addItem(label, pid)
         provider.setCurrentIndex(
@@ -1154,7 +1217,6 @@ class SettingsWindow(QObject):
         lay = QHBoxLayout(row)
         lay.setContentsMargins(10, 6, 10, 6)
         label = QLabel(text)
-        label.setStyleSheet("background: transparent;")
         lay.addWidget(label, 1)
         row.setFixedHeight(ROW_H)
         remove = QPushButton("✕")
@@ -1298,7 +1360,6 @@ class SettingsWindow(QObject):
         outer.setSpacing(0)
 
         head = QWidget()
-        head.setStyleSheet("background: transparent;")
         head.setFixedHeight(34)
         head_lay = QHBoxLayout(head)
         head_lay.setContentsMargins(0, 0, 0, 0)
@@ -1327,13 +1388,11 @@ class SettingsWindow(QObject):
 
         if expanded:
             detail = QWidget()
-            detail.setStyleSheet("background: transparent;")
             detail_lay = QVBoxLayout(detail)
             detail_lay.setContentsMargins(52, 0, 0, 10)
             detail_lay.setSpacing(4)
             full = QLabel(entry.get("text", ""))
             full.setWordWrap(True)
-            full.setStyleSheet("background: transparent;")
             full.setTextInteractionFlags(Qt.TextSelectableByMouse)
             detail_lay.addWidget(full)
             raw = entry.get("raw")
@@ -1396,7 +1455,7 @@ class SettingsWindow(QObject):
         self._model_hints = {}
 
         col.addWidget(self._group_label("Services"))
-        stt_combo = QComboBox()
+        stt_combo = Combo()
         for label, pid in STT_PROVIDERS_UI:
             stt_combo.addItem(label, pid)
         stt_combo.setCurrentIndex([pid for _l, pid in STT_PROVIDERS_UI]
@@ -1409,7 +1468,7 @@ class SettingsWindow(QObject):
         col.addWidget(row_card("Transcription", "Turns your speech into text.",
                                self._inline(stt_combo, self._test_stt_btn)))
 
-        cleanup_combo = QComboBox()
+        cleanup_combo = Combo()
         for label, pid in PROVIDERS_UI:
             cleanup_combo.addItem(label, pid)
         cleanup_combo.setCurrentIndex(
@@ -1434,7 +1493,7 @@ class SettingsWindow(QObject):
             "Load model on startup", "local_stt_loaded",
             "Load the local model when Undertone starts, so the first "
             "dictation is instant."))
-        idle_combo = QComboBox()
+        idle_combo = Combo()
         for label, minutes in [("Never", 0), ("After 5 min", 5),
                                ("After 15 min", 15), ("After 30 min", 30),
                                ("After 1 hour", 60)]:
@@ -1486,7 +1545,6 @@ class SettingsWindow(QObject):
     @staticmethod
     def _inline(*widgets):
         holder = QWidget()
-        holder.setStyleSheet("background: transparent;")
         lay = QHBoxLayout(holder)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
@@ -1554,7 +1612,6 @@ class SettingsWindow(QObject):
 
     def _model_control(self, label, kind):
         holder = QWidget()
-        holder.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(holder)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
