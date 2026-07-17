@@ -1813,18 +1813,27 @@ class SettingsWindow(QObject):
                          daemon=True).start()
 
     def _cleanup_prompt_control(self):
-        # Dev mode only: the system prompt the cleanup model runs with.
-        # The editor always shows the effective prompt (override or the
-        # built-in default), so tweaks start from the real text.
+        # Dev mode only: the system prompt the cleanup model runs with,
+        # plus a library of named saves. The editor always shows the
+        # effective prompt (override or the built-in default), so tweaks
+        # start from the real text. Picking a save loads it AND makes it
+        # live; Save applies the editor and updates the selected save.
         from cleanup import SYSTEM_PROMPT
         holder = QWidget()
         lay = QVBoxLayout(holder)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
+
+        head = QHBoxLayout()
         name = QLabel("Cleanup system prompt (dev)")
         name.setStyleSheet(f"color: {theme.SUBTEXT};"
                            "background: transparent;")
-        lay.addWidget(name)
+        head.addWidget(name, 1)
+        combo = Combo()
+        combo.setFixedWidth(160)
+        head.addWidget(combo)
+        lay.addLayout(head)
+
         editor = QPlainTextEdit()
         editor.setPlainText(self._config.get("cleanup_prompt")
                             or SYSTEM_PROMPT)
@@ -1833,23 +1842,91 @@ class SettingsWindow(QObject):
         lay.addSpacing(4)
         status = hint_label("")
 
+        def presets():
+            return dict(self._config.get("cleanup_prompts") or {})
+
+        def active_name():
+            """Initial guess only — thereafter the acted-on save is
+            tracked explicitly (text-matching mislabels twins: two saves
+            with identical text are indistinguishable by content)."""
+            override = self._config.get("cleanup_prompt")
+            if not override:
+                return "Default"
+            for key, text in presets().items():
+                if text == override:
+                    return key
+            return None   # custom, unsaved
+
+        state = {"key": active_name()}
+
+        def rebuild_combo():
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Default")
+            for key in sorted(presets(), key=str.lower):
+                combo.addItem(key)
+            combo.setCurrentIndex(
+                combo.findText(state["key"]) if state["key"] else -1)
+            combo.blockSignals(False)
+
         def refresh():
-            custom = bool(self._config.get("cleanup_prompt"))
-            status.setText("Using a custom prompt."
-                           if custom else "Using the default prompt.")
+            key = state["key"]
+            status.setText(
+                "Using the default prompt." if key == "Default"
+                else f"Using save “{key}”." if key
+                else "Using a custom prompt (not saved).")
+
+        def apply_text(text):
+            # The default text (or nothing) means "no override".
+            override = (text if text and text != SYSTEM_PROMPT.strip()
+                        else "")
+            return override
+
+        def load(_index):
+            key = combo.currentText()
+            state["key"] = key
+            text = SYSTEM_PROMPT if key == "Default" \
+                else presets().get(key, SYSTEM_PROMPT)
+            editor.setPlainText(text)
+            self._apply(cleanup_prompt=apply_text(text.strip()))
+            refresh()
+
+        combo.currentIndexChanged.connect(load)
 
         def save():
             text = editor.toPlainText().strip()
-            # Saving the default (or nothing) means "no override".
-            override = text if text and text != SYSTEM_PROMPT.strip() else ""
-            if not override:
+            changes = {"cleanup_prompt": apply_text(text)}
+            key = state["key"]
+            if key and key != "Default":
+                saved = presets()
+                saved[key] = text          # editing an existing save
+                changes["cleanup_prompts"] = saved
+            if not changes["cleanup_prompt"]:
                 editor.setPlainText(SYSTEM_PROMPT)
-            self._apply(cleanup_prompt=override)
+            self._apply(**changes)
+            rebuild_combo()
             refresh()
 
         def reset():
+            state["key"] = "Default"
             editor.setPlainText(SYSTEM_PROMPT)
             self._apply(cleanup_prompt="")
+            rebuild_combo()
+            refresh()
+
+        def save_as():
+            key = name_entry.text().strip()
+            if not key or key.lower() == "default":
+                status.setText("Enter a name for the new save first.")
+                return
+            text = editor.toPlainText().strip()
+            saved = presets()
+            saved[key] = text
+            state["key"] = key
+            name_entry.clear()
+            self._apply(cleanup_prompts=saved,
+                        cleanup_prompt=apply_text(text))
+            rebuild_combo()
             refresh()
 
         btn_row = QHBoxLayout()
@@ -1857,7 +1934,16 @@ class SettingsWindow(QObject):
         btn_row.addWidget(pill_button("Reset to default", "neutral", reset))
         btn_row.addStretch(1)
         lay.addLayout(btn_row)
+        lay.addSpacing(4)
+        saveas_row = QHBoxLayout()
+        name_entry = QLineEdit()
+        name_entry.setPlaceholderText("New save name")
+        name_entry.returnPressed.connect(save_as)
+        saveas_row.addWidget(name_entry, 1)
+        saveas_row.addWidget(pill_button("Save as new", "neutral", save_as))
+        lay.addLayout(saveas_row)
         lay.addWidget(status)
+        rebuild_combo()
         refresh()
         return holder
 

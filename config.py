@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
     "cleanup_timeout": 2.5,  # seconds before cleanup falls back (dev knob)
     "cleanup_prompt": "",    # cleanup system prompt override (dev knob;
                              # "" = the built-in cleanup.SYSTEM_PROMPT)
+    "cleanup_prompts": {},   # named saves of the prompt (dev): {name: text}
     "dev_mode": False,   # About toggle: mirror log warnings/errors on the pill
 }
 
