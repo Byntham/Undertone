@@ -71,7 +71,7 @@ QLineEdit {{
 QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
 QComboBox {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    border-radius: 13px; padding: 4px 12px;
+    border-radius: 11px; padding: 4px 12px;
 }}
 QComboBox:focus {{ border-color: {theme.ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
@@ -79,13 +79,16 @@ QComboBox::down-arrow {{ image: url(__CHEVRON__); width: 10px;
                          height: 6px; }}
 QPushButton {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    border-radius: 13px; padding: 4px 14px; font-size: 9pt;
+    border-radius: 11px; padding: 4px 14px; font-size: 9pt;
 }}
 QPushButton:hover {{ background: {theme.SURFACE1}; }}
 QPushButton:disabled {{ color: {theme.MUTED}; }}
 QPushButton[variant="accent"] {{
-    background: {theme.ACCENT}; color: {theme.INK}; border: none;
-    border-radius: 13px;  /* border:none drops the inherited radius */
+    background: {theme.ACCENT}; color: {theme.INK};
+    border: 1px solid transparent;  /* same height as bordered neutrals —
+        Qt DROPS a radius exceeding height/2 (24px tall borderless accents
+        rendered square while 26px neutrals were pills) */
+    border-radius: 11px;
     font-family: "Segoe UI Semibold";
 }}
 QPushButton[variant="accent"]:hover {{ background: {theme.ACCENT_HOVER}; }}
@@ -94,10 +97,12 @@ QPushButton[variant="accent"]:disabled {{
     background: {theme.SURFACE1}; color: {theme.MUTED}; }}
 QLabel#chip {{
     background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    border-radius: 12px; padding: 3px 12px; font-size: 9pt;
+    border-radius: 10px; padding: 3px 12px; font-size: 9pt;
 }}
 QScrollArea {{ border: none; background: {theme.BASE}; }}
-QScrollArea#panelScroll {{ background: transparent; }}
+QScrollArea > QWidget {{ background: {theme.BASE}; }}
+QScrollArea#panelScroll,
+QScrollArea#panelScroll > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{
     background: {theme.SURFACE1}; border-radius: 5px; min-height: 30px; }}
@@ -202,12 +207,14 @@ class Toggle(QAbstractButton):
 
 
 # The popup is a top-level window, out of reach of the main QSS — the
-# theme never made it there (it rendered unstyled Fusion gray).
+# theme never made it there (it rendered unstyled Fusion gray). It is
+# OPAQUE by design: a translucent popup left unpainted container strips
+# showing whatever lay behind it. Rounding comes from DWM, not QSS.
 POPUP_QSS = f"""
-QWidget {{ background: transparent; }}
+QWidget#comboPopup {{ background: {theme.SURFACE0};
+                      border: 1px solid {theme.CARD_BORDER}; }}
 QListView {{
-    background: {theme.SURFACE0}; border: 1px solid {theme.CARD_BORDER};
-    border-radius: 8px; padding: 4px; outline: 0;
+    background: {theme.SURFACE0}; border: none; padding: 4px; outline: 0;
 }}
 QListView::item {{
     background: transparent; color: {theme.TEXT};
@@ -226,11 +233,21 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 """
 
 
+def _round_corners(widget):
+    """Win11 DWM corner rounding for a top-level widget (no-op on Win10)."""
+    import ctypes
+    dwm = ctypes.WinDLL("dwmapi")   # private instance per AGENTS.md rule
+    pref = ctypes.c_int(3)          # DWMWCP_ROUNDSMALL
+    dwm.DwmSetWindowAttribute(int(widget.winId()), 33,   # CORNER_PREFERENCE
+                              ctypes.byref(pref), ctypes.sizeof(pref))
+
+
 class Combo(QComboBox):
     """Themed drop-down. Three things need code, not just QSS: wheel events
     are ignored (scrolling the page over a combo must not change the
     setting), ::item hover/selected styling requires a styled delegate,
-    and rounded popup corners need the popup window translucent."""
+    and the popup gets its theme from POPUP_QSS and its rounded corners
+    from DWM."""
 
     def __init__(self):
         super().__init__()
@@ -240,9 +257,18 @@ class Combo(QComboBox):
         # taller than the screen; show the (themed) scrollbar instead.
         self.view().setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         popup = self.view().window()
-        popup.setWindowFlag(Qt.NoDropShadowWindowHint, True)
-        popup.setAttribute(Qt.WA_TranslucentBackground, True)
+        popup.setObjectName("comboPopup")
         popup.setStyleSheet(POPUP_QSS)
+        self._popup_rounded = False
+
+    def showPopup(self):
+        super().showPopup()
+        if not self._popup_rounded:
+            self._popup_rounded = True
+            try:
+                _round_corners(self.view().window())
+            except OSError:
+                pass
 
     def wheelEvent(self, event):
         event.ignore()  # let the section scroll instead
@@ -667,6 +693,9 @@ class SettingsWindow(QObject):
         lay.addWidget(inner)
         lay.addStretch(1)
         scroll.setWidget(holder)
+        # setWidget() flips autoFillBackground on — that paints the Qt
+        # dark-mode PALETTE color, not the theme, over the whole page.
+        holder.setAutoFillBackground(False)
         return scroll
 
     def _section_column(self, heading):
