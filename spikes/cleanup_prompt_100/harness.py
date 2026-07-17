@@ -61,7 +61,10 @@ def check(output, case):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--prompt", type=Path)
+    source.add_argument("--current", action="store_true",
+                        help="evaluate cleanup.SYSTEM_PROMPT")
     parser.add_argument("--server", default="http://127.0.0.1:18080")
     parser.add_argument("--cases", help="comma-separated zero-based indices")
     parser.add_argument("--quiet-passes", action="store_true")
@@ -69,7 +72,13 @@ def main():
     url_file = Path(__file__).with_name("server_url.txt")
     if args.server == "http://127.0.0.1:18080" and url_file.is_file():
         args.server = url_file.read_text(encoding="utf-8").strip()
-    prompt = args.prompt.read_text(encoding="utf-8-sig").strip()
+    if args.current:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        import cleanup
+        prompt = cleanup.SYSTEM_PROMPT.strip()
+    else:
+        prompt = args.prompt.read_text(encoding="utf-8-sig").strip()
     assert prompt
     picks = ([int(i) for i in args.cases.split(",")]
              if args.cases else list(range(len(CASES))))
