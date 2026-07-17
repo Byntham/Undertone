@@ -646,14 +646,11 @@ class App:
             if combo != old_cfg.get("repaste_hotkey"):
                 self.overlay.show_message(
                     f"Re-paste shortcut set to {pretty_combo(combo)}")
-        if (new_cfg.get("local_stt_idle_minutes")
-                != old_cfg.get("local_stt_idle_minutes")):
-            localstt.set_idle_timeout(
-                int(new_cfg.get("local_stt_idle_minutes") or 0) * 60)
-        if (new_cfg.get("local_llm_idle_minutes")
-                != old_cfg.get("local_llm_idle_minutes")):
-            localllm.set_idle_timeout(
-                int(new_cfg.get("local_llm_idle_minutes") or 0) * 60)
+        if (new_cfg.get("local_idle_minutes")
+                != old_cfg.get("local_idle_minutes")):
+            seconds = int(new_cfg.get("local_idle_minutes") or 0) * 60
+            localstt.set_idle_timeout(seconds)
+            localllm.set_idle_timeout(seconds)
 
     def _warm_local_stt(self):
         try:
@@ -749,20 +746,20 @@ class App:
                 f"Ready — hold {pretty_combo(self.cfg['hotkey'])} to dictate",
                 duration_ms=2500,
             )
-        localstt.set_idle_timeout(
-            int(self.cfg.get("local_stt_idle_minutes") or 0) * 60)
-        localllm.set_idle_timeout(
-            int(self.cfg.get("local_llm_idle_minutes") or 0) * 60)
-        if provider == "local" and self.cfg.get("local_stt_loaded"):
-            # "Load on startup" is on: warm the local server off-thread
-            # so the first dictation is instant.
-            threading.Thread(
-                target=self._warm_local_stt, daemon=True).start()
-        if (self.cfg.get("cleanup_provider") == "local"
-                and self.cfg.get("ai_cleanup", True)
-                and self.cfg.get("local_llm_loaded")):
-            threading.Thread(
-                target=self._warm_local_llm, daemon=True).start()
+        idle_seconds = int(self.cfg.get("local_idle_minutes") or 0) * 60
+        localstt.set_idle_timeout(idle_seconds)
+        localllm.set_idle_timeout(idle_seconds)
+        if self.cfg.get("local_loaded"):
+            # "Load on startup" is on: warm each local engine the user has
+            # actually selected, off-thread, so the first dictation is
+            # instant.
+            if provider == "local":
+                threading.Thread(
+                    target=self._warm_local_stt, daemon=True).start()
+            if (self.cfg.get("cleanup_provider") == "local"
+                    and self.cfg.get("ai_cleanup", True)):
+                threading.Thread(
+                    target=self._warm_local_llm, daemon=True).start()
         self.qapp.exec()
 
 

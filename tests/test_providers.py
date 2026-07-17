@@ -230,6 +230,36 @@ def test_legacy_model_fold():
     assert config.model_override(cfg, "stt", "xai") == ""
 
 
+def test_legacy_local_fold():
+    # Per-engine residency keys fold into the unified pair: either engine
+    # warming on startup keeps warming; STT's idle window wins when both
+    # were set (it predates); the legacy keys vanish.
+    cfg = {**config.DEFAULT_CONFIG, "local_stt_loaded": False,
+           "local_llm_loaded": True, "local_stt_idle_minutes": 60,
+           "local_llm_idle_minutes": 15}
+    config._fold_legacy_local(cfg)
+    assert cfg["local_loaded"] is True
+    assert cfg["local_idle_minutes"] == 60
+    for key in ("local_stt_loaded", "local_llm_loaded",
+                "local_stt_idle_minutes", "local_llm_idle_minutes"):
+        assert key not in cfg
+
+    # STT "never" + a cleanup window: the nonzero window carries over.
+    cfg = {**config.DEFAULT_CONFIG, "local_stt_idle_minutes": 0,
+           "local_llm_idle_minutes": 30}
+    config._fold_legacy_local(cfg)
+    assert cfg["local_idle_minutes"] == 30
+
+    # Already-unified values win over stragglers; no legacy keys = no-op.
+    cfg = {**config.DEFAULT_CONFIG, "local_loaded": True,
+           "local_idle_minutes": 5, "local_stt_idle_minutes": 60}
+    config._fold_legacy_local(cfg)
+    assert cfg["local_loaded"] is True and cfg["local_idle_minutes"] == 5
+    cfg = dict(config.DEFAULT_CONFIG)
+    config._fold_legacy_local(cfg)
+    assert cfg["local_loaded"] is False and cfg["local_idle_minutes"] == 0
+
+
 def main():
     test_xai_shape()
     test_openai_shape()
@@ -242,6 +272,7 @@ def main():
     test_unknown_provider_fails_loudly()
     test_key_encryption_roundtrip()
     test_legacy_model_fold()
+    test_legacy_local_fold()
     print("ALL TESTS PASSED")
 
 

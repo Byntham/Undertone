@@ -1544,17 +1544,12 @@ class SettingsWindow(QObject):
 
         col.addWidget(self._group_label("On-device"))
         col.addWidget(self._local_card(box, "stt"))
-        col.addWidget(self._toggle_card(
-            "Load model on startup", "local_stt_loaded",
-            "Load the local model when Undertone starts, so the first "
-            "dictation is instant."))
-        col.addWidget(self._idle_card("local_stt_idle_minutes"))
         col.addWidget(self._local_card(box, "llm"))
         col.addWidget(self._toggle_card(
-            "Load cleanup model on startup", "local_llm_loaded",
-            "Load the local cleanup model when Undertone starts, so the "
-            "first dictation gets AI cleanup."))
-        col.addWidget(self._idle_card("local_llm_idle_minutes"))
+            "Load models on startup", "local_loaded",
+            "Load your selected local models when Undertone starts, so "
+            "the first dictation is instant."))
+        col.addWidget(self._idle_card("local_idle_minutes"))
 
         col.addWidget(self._group_label("API keys"))
         for provider, field in KEY_FIELDS.items():

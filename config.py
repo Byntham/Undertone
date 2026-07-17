@@ -40,10 +40,9 @@ DEFAULT_CONFIG = {
     "stt_vocab_hints": True,  # send dictionary terms to the STT model at all
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
-    "local_stt_loaded": False,        # load the local model on startup
-    "local_stt_idle_minutes": 0,      # auto-eject after idle; 0 = never
-    "local_llm_loaded": False,        # local cleanup model: load on startup
-    "local_llm_idle_minutes": 0,      # auto-eject after idle; 0 = never
+    "local_loaded": False,       # load selected local models on startup
+    "local_idle_minutes": 0,     # auto-eject after idle; 0 = never
+                                 # (both keys drive STT and cleanup alike)
     "cleanup_timeout": 2.5,  # seconds before cleanup falls back (dev knob)
     "cleanup_prompt": "",    # cleanup system prompt override (dev knob;
                              # "" = the built-in cleanup.SYSTEM_PROMPT)
@@ -149,6 +148,22 @@ def _fold_legacy_models(cfg: dict) -> None:
             cfg.get("cleanup_provider", "xai"), cleanup)
 
 
+def _fold_legacy_local(cfg: dict) -> None:
+    """Fold the per-engine residency keys (local_stt_*/local_llm_*) into
+    the unified local_loaded/local_idle_minutes pair (2026-07).
+
+    Either engine warming on startup keeps warming; the STT idle window
+    wins over the cleanup one when both were set (it predates)."""
+    loaded = bool(cfg.pop("local_stt_loaded", False))
+    loaded = bool(cfg.pop("local_llm_loaded", False)) or loaded
+    stt_idle = cfg.pop("local_stt_idle_minutes", 0)
+    llm_idle = cfg.pop("local_llm_idle_minutes", 0)
+    if loaded and not cfg.get("local_loaded"):
+        cfg["local_loaded"] = True
+    if (stt_idle or llm_idle) and not cfg.get("local_idle_minutes"):
+        cfg["local_idle_minutes"] = stt_idle or llm_idle
+
+
 def _migrate_legacy_dir() -> None:
     """One-time move of old PushToTalkSTT settings into the Undertone dir.
 
@@ -190,6 +205,7 @@ def load_config() -> dict:
         if isinstance(value, (dict, list)):
             cfg[key] = type(value)(value)
     _fold_legacy_models(cfg)
+    _fold_legacy_local(cfg)
     for field in KEY_FIELDS.values():
         if isinstance(cfg.get(field), str):
             cfg[field] = _unprotect_key(cfg[field])

@@ -17,7 +17,7 @@ import config
 
 _cfg = config.load_config()
 _cfg.update({"hotkey": "f13", "toggle_hotkey": "", "repaste_hotkey": "",
-             "sound_cues": False, "local_stt_loaded": False,
+             "sound_cues": False, "local_loaded": False,
              "onboarded": True})
 config.load_config = lambda: dict(_cfg)
 config.save_config = lambda cfg: None   # never touch the real config
