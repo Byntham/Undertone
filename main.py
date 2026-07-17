@@ -345,6 +345,8 @@ class App:
         vocabulary = list(cfg.get("vocabulary", []))
         vocabulary += [v for v in cfg.get("corrections", {}).values()
                        if v not in vocabulary]
+        if not cfg.get("stt_vocab_hints", True):
+            vocabulary = []
         provider = cfg.get("provider", "xai")
         cold_local = provider == "local" and not localstt.is_loaded()
         if cold_local:

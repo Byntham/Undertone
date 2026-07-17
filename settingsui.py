@@ -1206,8 +1206,7 @@ class SettingsWindow(QObject):
         col.addWidget(self._group_label("Vocabulary"))
         vocab_card, vlay = card()
         vlay.addWidget(hint_label(
-            "Words and names the transcriber should recognize — sent as "
-            "hints with every request."))
+            "Words and names the transcriber should recognize."))
         vlay.addSpacing(8)
         vocab_row = QHBoxLayout()
         self._vocab_entry = QLineEdit()
@@ -1244,6 +1243,12 @@ class SettingsWindow(QObject):
         clay.addWidget(panel2)
         col.addWidget(corr_card)
         self._render_corrections()
+
+        col.addWidget(self._toggle_card(
+            "Send terms to the transcription model", "stt_vocab_hints",
+            "Terms bias recognition, but models can echo them back on "
+            "unclear audio. Off: terms still apply through corrections "
+            "and AI cleanup."))
         return box
 
     def _dict_row(self, text, on_remove):

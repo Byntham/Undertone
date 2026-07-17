@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "sound_cues": True,
     "vocabulary": [],       # terms sent to the STT API as recognition hints
     "corrections": {},      # {"heard": "replacement"} applied after transcription
+    "stt_vocab_hints": True,  # send dictionary terms to the STT model at all
     "toggle_hotkey": "",    # optional dedicated start/stop key ("" = disabled)
     "repaste_hotkey": "ctrl+alt+v",
     "local_stt_loaded": False,        # load the local model on startup
