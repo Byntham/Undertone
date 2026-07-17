@@ -33,7 +33,16 @@ _TIMEOUT = (10, 120)
 
 
 class TranscriptionError(Exception):
-    """Carries a user-friendly message describing what went wrong."""
+    """Carries a user-friendly message describing what went wrong.
+
+    dev_only marks diagnostic outcomes: the pill shows them verbatim only
+    in dev mode and falls back to a generic notice otherwise (the log
+    always gets the real message).
+    """
+
+    def __init__(self, message: str, dev_only: bool = False):
+        super().__init__(message)
+        self.dev_only = dev_only
 
 
 def _vocab_prompt(vocabulary: list) -> "str | None":
@@ -266,5 +275,6 @@ def transcribe(wav_bytes: bytes, api_key: str, language: str = "en",
         # silent no-op. Raising keeps the WAV in history for retries.
         raise TranscriptionError(
             "STT echoed the vocabulary hint instead of transcribing — "
-            "likely silence + a model without no-speech rejection.")
+            "likely silence + a model without no-speech rejection.",
+            dev_only=True)
     return text

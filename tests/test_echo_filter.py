@@ -54,6 +54,7 @@ try:
         transcribe(b"RIFF", "key", "en", VOCAB, "_t")
     except TranscriptionError as e:
         assert "echoed the vocabulary hint" in str(e)
+        assert e.dev_only  # pill shows this verbatim only in dev mode
     else:
         raise AssertionError("pure echo did not raise")
     transcriber.PROVIDERS["_t"] = lambda *a: LIVE_ECHO + " real words here"
@@ -68,6 +69,8 @@ try:
         raise AssertionError("punctuation-residue echo did not raise")
     transcriber.PROVIDERS["_t"] = lambda *a: "normal speech"
     assert transcribe(b"RIFF", "key", "en", VOCAB, "_t") == "normal speech"
+    # ordinary failures stay user-facing (dev_only defaults False)
+    assert not TranscriptionError("x").dev_only
 finally:
     transcriber.PROVIDERS.pop("_t", None)
 
