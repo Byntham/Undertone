@@ -1,7 +1,7 @@
 """Start/stop sound cues for Undertone.
 
-Two short, quiet ticks generated once into assets/ (see the repo's asset
-notes) and played asynchronously via winsound so the caller never blocks.
+Short, quiet cues generated once into assets/ (see the repo's asset notes)
+and played asynchronously via winsound so the caller never blocks.
 Failures are silent — a missing file or busy audio device must never
 break dictation.
 """

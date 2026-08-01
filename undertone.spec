@@ -4,7 +4,7 @@
 Build:  .venv\\Scripts\\python.exe -m PyInstaller undertone.spec --noconfirm
 Output: dist\\Undertone.exe
 
-Only main.py's import graph and the assets/ directory are bundled.
+Only main.py's import graph and the runtime image/sound assets are bundled.
 Never add repo-root globs to datas — the repo root contains a gitignored
 personal API key file that must not end up inside the exe.
 """
@@ -48,9 +48,16 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    # Bundle ONLY assets/ (icon + sound cues). Code resolves it as
-    # Path(__file__).parent / "assets", which lands in _MEIPASS when frozen.
-    datas=[("assets", "assets")],
+    # Bundle only runtime assets. Keep source artwork and other design files
+    # in the repo without carrying them into the one-file executable.
+    datas=[
+        ("assets/icon.png", "assets"),
+        ("assets/icon.ico", "assets"),
+        ("assets/sound_start.wav", "assets"),
+        ("assets/sound_stop.wav", "assets"),
+        ("assets/sound_lock.wav", "assets"),
+        ("assets/sound_cancel.wav", "assets"),
+    ],
     hiddenimports=[
         # comtypes.client.GetModule() imports generated modules from
         # comtypes.gen at runtime; the package must exist in the bundle.
