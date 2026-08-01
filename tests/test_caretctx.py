@@ -89,6 +89,7 @@ def test_notepad_foreground_and_report():
             ["taskkill", "/F", "/IM", "notepad.exe"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        proc.wait(timeout=2)
         time.sleep(0.6)
 
 
