@@ -51,6 +51,18 @@ $win.Add_ContentRendered({ $win.Activate() | Out-Null; $pb.Focus() | Out-Null })
 [void]$win.ShowDialog()
 """
 
+WINFORMS_SCRIPT = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "CaretCtxEmptyValue"
+$form.Width = 400; $form.Height = 200; $form.TopMost = $true
+$tb = New-Object System.Windows.Forms.TextBox
+$tb.Dock = [System.Windows.Forms.DockStyle]::Fill
+$form.Controls.Add($tb)
+$form.Add_Shown({ $form.Activate(); $tb.Focus() })
+[void]$form.ShowDialog()
+"""
+
 
 def force_foreground(title: str) -> int:
     """Find a top-level window by title and drag it to the foreground."""
@@ -131,6 +143,32 @@ def test_wpf_password(script_path):
         time.sleep(0.6)
 
 
+def test_winforms_empty_value(script_path):
+    """ValuePattern can prove an otherwise-unreadable field is empty."""
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-STA",
+         "-ExecutionPolicy", "Bypass", "-File", script_path]
+    )
+    job = localproc.attach_job(proc)
+    time.sleep(3.0)
+    try:
+        hwnd = force_foreground("CaretCtxEmptyValue")
+        assert hwnd, "WinForms target window never appeared"
+        time.sleep(0.8)
+        keyboard.send("esc")
+        got = caretctx.text_around_caret(50, 50)
+        print("text_around_caret over empty WinForms TextBox:", repr(got))
+        assert got == ("", ""), repr(got)
+    finally:
+        localproc.close_job(job)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+        time.sleep(0.6)
+
+
 def test_none_cases():
     # No text pattern under focus (desktop) -> None, not an exception.
     keyboard.send("windows+d")
@@ -165,12 +203,18 @@ def main():
     with open(pw_script_path, "w", encoding="utf-8") as fh:
         fh.write(PWBOX_SCRIPT)
 
+    fd3, value_script_path = tempfile.mkstemp(suffix=".ps1", text=True)
+    os.close(fd3)
+    with open(value_script_path, "w", encoding="utf-8") as fh:
+        fh.write(WINFORMS_SCRIPT)
+
     try:
         test_wpf_caret(script_path)
         test_wpf_password(pw_script_path)
+        test_winforms_empty_value(value_script_path)
         test_none_cases()
     finally:
-        for p in (script_path, pw_script_path):
+        for p in (script_path, pw_script_path, value_script_path):
             try:
                 os.remove(p)
             except OSError:
