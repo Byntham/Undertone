@@ -21,10 +21,9 @@ import pyperclip
 
 from PySide6.QtCore import (QEasingCurve, QObject, QRect, QRectF, Qt, QTimer,
                             QVariantAnimation, Signal)
-from PySide6.QtGui import (QColor, QFontMetrics, QIcon, QPainter, QPixmap,
-                           QGuiApplication)
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QComboBox, QFrame, QHBoxLayout, QLabel,
+    QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
     QStackedWidget, QStyledItemDelegate, QVBoxLayout, QWidget)
 
@@ -655,8 +654,6 @@ class SettingsWindow(QObject):
                               "background: transparent;")
         version.setContentsMargins(18, 0, 0, 12)
         lay.addWidget(version)
-        self._sidebar = bar
-        self._sidebar_lay = lay
         return bar
 
     def _visible_sections(self, hide_get_started=False):
@@ -1572,7 +1569,7 @@ class SettingsWindow(QObject):
         advanced_link = link_label(disclosure,
                                    self._toggle_providers_advanced)
         advanced_link.setStyleSheet(
-            f'font-family: "Segoe UI Semibold"; font-size: 9pt;')
+            'font-family: "Segoe UI Semibold"; font-size: 9pt;')
         col.addWidget(advanced_link)
         if self._providers_advanced:
             adv_card, adv_lay = card()
@@ -1873,9 +1870,7 @@ class SettingsWindow(QObject):
 
         def apply_text(text):
             # The default text (or nothing) means "no override".
-            override = (text if text and text != SYSTEM_PROMPT.strip()
-                        else "")
-            return override
+            return text if text and text != SYSTEM_PROMPT.strip() else ""
 
         def load(_index):
             key = combo.currentText()
@@ -2071,7 +2066,7 @@ class SettingsWindow(QObject):
         self._refresh_local_card(engine)
 
     def _on_local_done(self, result):
-        engine, action, ok, message = result
+        engine, _action, ok, message = result
         self._local_busy[engine] = None
         self._local_progress[engine] = ""
         self._local_error[engine] = "" if ok else message

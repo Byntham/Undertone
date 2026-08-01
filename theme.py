@@ -7,7 +7,6 @@ measures elsewhere are logical pixels.)
 BASE = "#282c34"
 MANTLE = "#21252c"
 CARD = "#333842"         # +5 lightness points from BASE
-CARD_HOVER = "#373d48"
 SURFACE0 = "#3b414d"     # +8 lightness points from BASE
 SURFACE1 = "#49515f"     # +14 lightness points from BASE
 CARD_BORDER = "#3f4652"

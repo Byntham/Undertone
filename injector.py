@@ -22,7 +22,6 @@ _generation = 0
 
 def _restore_later(previous: str, generation: int, delay: float = 0.5) -> None:
     time.sleep(delay)
-    global _generation
     with _lock:
         if generation != _generation:
             return  # a newer paste owns the clipboard now

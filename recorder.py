@@ -65,7 +65,7 @@ class Recorder:
         self._lock = threading.Lock()
         self._level = 0.0
 
-    def _callback(self, indata, frames, time_info, status):
+    def _callback(self, indata, _frames, _time_info, _status):
         # indata is a buffer of raw int16 bytes; copy it into our frame list.
         chunk = bytes(indata)
         self._frames.append(chunk)
@@ -140,10 +140,6 @@ class Recorder:
             wav.setframerate(self.sample_rate)
             wav.writeframes(audio)
         return buffer.getvalue()
-
-    @property
-    def is_recording(self) -> bool:
-        return self._recording
 
     @property
     def level(self) -> float:
