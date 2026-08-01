@@ -1,9 +1,9 @@
 """Caret context via Windows UI Automation for Undertone.
 
-Reads the text immediately before the caret in the focused control so
-dictation can be aware of what the user was already typing. UIA lives on a
-single long-lived daemon worker that keeps COM initialized; public calls hand
-it a job and wait with a timeout, so they are safe to call from any thread and
+Reads the text immediately before and after the caret in the focused control
+so dictation can join cleanly with existing text. UIA lives on a single
+long-lived daemon worker that keeps COM initialized; public calls hand it a
+job and wait with a timeout, so they are safe to call from any thread and
 never block longer than the timeout. Also exposes the foreground process name
 via plain ctypes.
 """
@@ -29,10 +29,11 @@ _STOP = object()
 
 
 class _Job:
-    __slots__ = ("n", "event", "result", "cancelled")
+    __slots__ = ("before_n", "after_n", "event", "result", "cancelled")
 
-    def __init__(self, n: int):
-        self.n = n
+    def __init__(self, before_n: int, after_n: int):
+        self.before_n = before_n
+        self.after_n = after_n
         self.event = threading.Event()
         self.result = None
         self.cancelled = False
@@ -64,15 +65,15 @@ def _make_uia():
         return None, None
 
 
-def _query_before_caret(UIA, automation, n: int):
-    """Do the actual UIA caret walk. Returns str or None. May raise."""
+def _query_caret_context(UIA, automation, before_n: int, after_n: int):
+    """Return text around the UIA caret/selection. May raise."""
     element = automation.GetFocusedElement()
     if not element:
         return None
 
-    # Never read a masked field: this context is sent to a cleanup API, so a
-    # password must not leak. A property failure falls through to the normal
-    # path rather than aborting the read.
+    # Never read a masked field: the left context may be sent to a cleanup
+    # API, and neither side should expose a password. A property failure falls
+    # through to the normal path rather than aborting the read.
     try:
         if element.CurrentIsPassword:
             return None
@@ -99,39 +100,71 @@ def _query_before_caret(UIA, automation, n: int):
     except Exception:
         caret = None
 
-    # Fallback: TextPattern -> GetSelection(); degenerate range == caret,
-    # otherwise collapse the selection to its start.
-    if not caret:
+    # A non-empty selection will be replaced by the paste, so its start and
+    # end are the two insertion boundaries. A degenerate selection is also a
+    # fallback caret when TextPattern2 is unavailable.
+    left_edge = None
+    right_edge = None
+    try:
         raw = element.GetCurrentPattern(UIA.UIA_TextPatternId)
-        if not raw:
-            return None
-        tp = raw.QueryInterface(UIA.IUIAutomationTextPattern)
-        selection = tp.GetSelection()
-        if not selection or selection.Length < 1:
-            return None
-        caret = selection.GetElement(0)
-        collapsed = caret.CompareEndpoints(
-            UIA.TextPatternRangeEndpoint_Start,
-            caret,
-            UIA.TextPatternRangeEndpoint_End,
-        )
-        if collapsed != 0:
-            # Non-empty selection: pull the End endpoint back to Start.
-            caret.MoveEndpointByRange(
-                UIA.TextPatternRangeEndpoint_End,
-                caret,
-                UIA.TextPatternRangeEndpoint_Start,
-            )
+        if raw:
+            tp = raw.QueryInterface(UIA.IUIAutomationTextPattern)
+            selection = tp.GetSelection()
+            if selection and selection.Length >= 1:
+                selected = selection.GetElement(0)
+                collapsed = selected.CompareEndpoints(
+                    UIA.TextPatternRangeEndpoint_Start,
+                    selected,
+                    UIA.TextPatternRangeEndpoint_End,
+                )
+                if collapsed != 0:
+                    left_edge = selected.Clone()
+                    left_edge.MoveEndpointByRange(
+                        UIA.TextPatternRangeEndpoint_End,
+                        left_edge,
+                        UIA.TextPatternRangeEndpoint_Start,
+                    )
+                    right_edge = selected.Clone()
+                    right_edge.MoveEndpointByRange(
+                        UIA.TextPatternRangeEndpoint_Start,
+                        right_edge,
+                        UIA.TextPatternRangeEndpoint_End,
+                    )
+                elif not caret:
+                    caret = selected
+    except Exception:
+        pass
 
-    if not caret:
+    if left_edge is None:
+        if not caret:
+            return None
+        left_edge = caret
+        right_edge = caret
+
+    before_range = left_edge.Clone()
+    before_range.MoveEndpointByUnit(
+        UIA.TextPatternRangeEndpoint_Start,
+        UIA.TextUnit_Character,
+        -before_n,
+    )
+    before = before_range.GetText(-1)
+    if before is None:
         return None
 
-    walk = caret.Clone()
-    walk.MoveEndpointByUnit(
-        UIA.TextPatternRangeEndpoint_Start, UIA.TextUnit_Character, -n
-    )
-    text = walk.GetText(-1)
-    return text if text is not None else None
+    # Preserve the established left context if a provider fails only while
+    # expanding the range to the right.
+    after = None
+    try:
+        after_range = right_edge.Clone()
+        after_range.MoveEndpointByUnit(
+            UIA.TextPatternRangeEndpoint_End,
+            UIA.TextUnit_Character,
+            after_n,
+        )
+        after = after_range.GetText(-1)
+    except Exception:
+        pass
+    return before, after
 
 
 def _worker_loop(jobs: "queue.Queue"):
@@ -147,7 +180,8 @@ def _worker_loop(jobs: "queue.Queue"):
         if automation is not None:
             _busy_since = time.monotonic()
             try:
-                result = _query_before_caret(UIA, automation, job.n)
+                result = _query_caret_context(
+                    UIA, automation, job.before_n, job.after_n)
             except Exception:
                 result = None
             finally:
@@ -199,19 +233,21 @@ def warm() -> None:
         pass
 
 
-def text_before_caret(n: int = 120, timeout: float = 0.15) -> "str | None":
-    """Up to n characters immediately before the caret in the focused control.
+def text_around_caret(before_n: int = 120, after_n: int = 120,
+                      timeout: float = 0.15):
+    """Bounded text immediately before and after the caret.
 
     Tries UIA TextPattern first, then the Win32 Edit-control protocol
     (EM_GETSEL/WM_GETTEXT — covers Notepad-class apps whose edit controls
-    predate UIA). Returns None if unavailable (no text pattern, timeout, or
-    any error). Callable from any thread, never raises, never blocks beyond
-    ~timeout.
+    predate UIA). A selection is excluded because paste replaces it. Returns
+    ``(before, after)`` or None if unavailable. ``after`` may be None if only
+    the established left-side read succeeds. Callable from any thread, never
+    raises, and never blocks beyond approximately timeout.
     """
     result = None
     try:
         if _ensure_worker():
-            job = _Job(n)
+            job = _Job(before_n, after_n)
             _queue.put(job)
             if job.event.wait(timeout):
                 result = job.result
@@ -223,8 +259,14 @@ def text_before_caret(n: int = 120, timeout: float = 0.15) -> "str | None":
     except Exception:
         result = None
     if result is None:
-        result = _win32_before_caret(n)
+        result = _win32_caret_context(before_n, after_n)
     return result
+
+
+def text_before_caret(n: int = 120, timeout: float = 0.15) -> "str | None":
+    """Backward-compatible left-side-only caret context."""
+    context = text_around_caret(n, 0, timeout)
+    return context[0] if context is not None else None
 
 
 # --- Win32 Edit-control fallback (pure ctypes) -------------------------------
@@ -267,8 +309,8 @@ def _send(hwnd, msg, wparam=0, lparam=0, timeout_ms=100):
     return out.value if ok else None
 
 
-def _win32_before_caret(n: int) -> "str | None":
-    """Caret context from a classic Edit/RichEdit control, or None.
+def _win32_caret_context(before_n: int, after_n: int):
+    """Caret/selection context from a classic Edit/RichEdit control.
 
     EM_GETSEL packs the selection into LO/HIWORD of the return value, so
     only controls holding < 64k characters are trusted (plenty for text
@@ -294,13 +336,18 @@ def _win32_before_caret(n: int) -> "str | None":
         sel = _send(hwnd, _EM_GETSEL)
         if sel is None:
             return None
-        caret = min(sel & 0xFFFF, length)
+        start = min(sel & 0xFFFF, length)
+        end = min((sel >> 16) & 0xFFFF, length)
+        if start > end:
+            start, end = end, start
 
         buf = ctypes.create_unicode_buffer(length + 1)
         if _send(hwnd, _WM_GETTEXT, length + 1,
                  ctypes.addressof(buf)) is None:
             return None
-        return buf.value[max(0, caret - n):caret]
+        text = buf.value
+        return (text[max(0, start - before_n):start],
+                text[end:min(length, end + after_n)])
     except Exception:
         return None
 

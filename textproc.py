@@ -1,11 +1,11 @@
 """Smart formatting of transcripts before they are pasted at the caret.
 
-Given the raw STT text plus the text immediately before the caret (`ctx`, from
-caretctx), this decides whether to prepend a leading space and whether to
-adjust the first word's capitalization, so dictation reads as if it were typed
-in place. It is deliberately conservative: when the context is unknown (None)
-nothing risky is done, and mid-sentence casing is only lowered for a closed set
-of English function words.
+Given the raw STT text plus bounded text on either side of the caret, this
+joins both insertion seams and adjusts the first word's capitalization so
+dictation reads as if it were typed in place. It is deliberately conservative:
+when context on a side is unknown (None), nothing risky is done on that side,
+and mid-sentence casing is only lowered for a closed set of English function
+words.
 
 Both pipeline branches (AI cleanup and the deterministic fallback) funnel
 through finalize(), so the dictionary and the boundary rules behave the same
@@ -91,44 +91,77 @@ def _match_case(matched: str, right: str) -> str:
 
 
 def finalize(text: str, ctx: "str | None", corrections: dict,
-             smart: bool = True, model_cased: bool = False) -> str:
+             smart: bool = True, model_cased: bool = False,
+             after_ctx: "str | None" = None) -> str:
     """The one dictionary + boundary pass both pipeline branches share.
 
     Corrections are (re-)applied here so the dictionary stays authoritative
     even when the cleanup model rewrote a term. model_cased=True means an AI
     cleanup pass owns the body casing: the first word may still be capitalized
     at a sentence start, but is never lowercased. Unknown context (None) means
-    do nothing risky: no leading space and no capitalization change.
+    do nothing risky on that side of the insertion.
     """
     text = apply_corrections(text, corrections)
     if model_cased:
         text = text.lstrip()
-    if not smart or ctx is None or not text:
+    if not smart or not text:
         return text
 
-    mid_token = _in_url_like(ctx)
-    if not mid_token:
-        text = _adjust_capitalization(ctx, text, allow_lower=not model_cased)
-    space = _needs_leading_space(ctx, text, mid_token)
-    return (" " if space else "") + text
+    if ctx is not None:
+        mid_token = _in_url_like(ctx)
+        if not mid_token:
+            text = _adjust_capitalization(ctx, text,
+                                          allow_lower=not model_cased)
+        if _needs_leading_space(ctx, text, mid_token):
+            text = " " + text
+        text = _drop_mid_sentence_period(text, ctx, after_ctx, mid_token)
+    return _add_right_seam(text, ctx, after_ctx)
 
 
 def format_transcript(
-    text: str, ctx: "str | None", corrections: dict, smart: bool = True
+    text: str, ctx: "str | None", corrections: dict, smart: bool = True,
+    after_ctx: "str | None" = None,
 ) -> str:
     """Deterministic-path formatting (no AI cleanup): the full pass."""
-    return finalize(text, ctx, corrections, smart=smart)
+    return finalize(text, ctx, corrections, smart=smart, after_ctx=after_ctx)
 
 
-def seam(text: str, ctx: "str | None") -> str:
+def seam(text: str, ctx: "str | None",
+         after_ctx: "str | None" = None) -> str:
     """Boundary-only pass for AI-cleaned text.
 
     The cleanup model handles the transcript body (including mid-sentence
     lowercasing, which needs proper-noun judgment); this fixes only the
-    mechanical seam against ctx, which rules get right more reliably than
-    the model does.
+    mechanical seams, which rules get right more reliably than the model.
     """
-    return finalize(text, ctx, {}, model_cased=True)
+    return finalize(text, ctx, {}, model_cased=True, after_ctx=after_ctx)
+
+
+def _add_right_seam(text: str, ctx: "str | None",
+                    after_ctx: "str | None") -> str:
+    """Add a separator between inserted text and known text to its right."""
+    if (after_ctx is None or not after_ctx or not text
+            or after_ctx[0].isspace()):
+        return text
+    combined_left = (ctx or "") + text
+    mid_token = _in_url_like(combined_left)
+    if _needs_leading_space(combined_left, after_ctx, mid_token):
+        return text + " "
+    return text
+
+
+def _drop_mid_sentence_period(text: str, ctx: str,
+                              after_ctx: "str | None",
+                              mid_token: bool) -> str:
+    """Drop STT's final period when known text continues the sentence."""
+    if (after_ctx is None or not after_ctx.strip() or mid_token
+            or _is_sentence_start(ctx)):
+        return text
+    stripped = text.rstrip()
+    if (not stripped.endswith(".") or stripped.endswith("..")
+            or _abbrev_period(stripped)):
+        return text
+    return stripped[:-1] + text[len(stripped):]
 
 
 def _needs_leading_space(ctx: str, text: str, mid_token: bool) -> bool:
@@ -272,7 +305,7 @@ def strip_chat_period(text: str) -> str:
         return text  # the period belongs to "etc.", "Dr.", an initial, ...
     if _count_sentences(stripped) > 2:
         return text
-    return stripped[:-1]
+    return stripped[:-1] + text[len(stripped):]
 
 
 def _count_sentences(text: str) -> int:

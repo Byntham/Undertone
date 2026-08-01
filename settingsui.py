@@ -855,7 +855,8 @@ class SettingsWindow(QObject):
         text_col.addWidget(title)
         text_col.addWidget(hint_label(
             "Clean up fillers and false starts with a fast grok model. "
-            "Sends the text near your cursor to your cleanup provider."))
+            "Sends up to 300 characters before your cursor to your "
+            "cleanup provider; text after it stays local."))
         warning = hint_label(self._cleanup_warning(), theme.AMBER)
         warning.setVisible(bool(self._cleanup_warning()))
         text_col.addWidget(warning)

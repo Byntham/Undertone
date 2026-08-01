@@ -454,7 +454,7 @@ class App:
         context-aware spacing/capitalization."""
         smart = cfg.get("smart_formatting", True)
         corrections = cfg.get("corrections", {})
-        ctx = self._acquire_context() if smart else None
+        ctx, after_ctx = self._acquire_context() if smart else (None, None)
         exe = caretctx.get_foreground_exe()
 
         final = None
@@ -476,27 +476,32 @@ class App:
             )
             if cleaned is not None:
                 # The model handled the transcript body; rules re-apply the
-                # exact dictionary and decide the seam.
+                # exact dictionary and decide both insertion seams.
                 final = textproc.finalize(cleaned, ctx, corrections,
-                                          smart=smart, model_cased=True)
+                                          smart=smart, model_cased=True,
+                                          after_ctx=after_ctx)
         if final is None:
-            final = textproc.finalize(text, ctx, corrections, smart=smart)
+            final = textproc.finalize(
+                text, ctx, corrections, smart=smart, after_ctx=after_ctx)
         if smart and exe in textproc.CHAT_APPS:
             final = textproc.strip_chat_period(final)
         return final
 
-    def _acquire_context(self) -> "str | None":
-        """Text before the caret: UIA/Win32 read, else insertion memory."""
-        ctx = caretctx.text_before_caret(300)
-        if ctx is None:
-            # Fall back to what we last pasted, but only while the same
-            # window is focused and nothing was typed since.
-            lp = self._last_paste
-            if (lp and not self._typed_since_paste
-                    and lp[0] == _foreground_hwnd()
-                    and time.monotonic() - lp[2] < 300):
-                ctx = textproc.tail_context(lp[1], 300)
-        return ctx
+    def _acquire_context(self):
+        """Text around the caret; insertion memory can supply only the left."""
+        context = caretctx.text_around_caret(300, 300)
+        if context is not None:
+            return context
+
+        ctx = None
+        # Fall back to what we last pasted, but only while the same window is
+        # focused and nothing was typed since. This cannot reveal the right.
+        lp = self._last_paste
+        if (lp and not self._typed_since_paste
+                and lp[0] == _foreground_hwnd()
+                and time.monotonic() - lp[2] < 300):
+            ctx = textproc.tail_context(lp[1], 300)
+        return ctx, None
 
     def _register_paste(self, text: str, raw=None, pasted=True):
         """Record a successful dictation. raw is the corrected transcript
