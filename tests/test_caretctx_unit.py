@@ -78,6 +78,11 @@ class FakeTextPattern:
         return FakeCollection(self.selected)
 
 
+class FakeValuePattern:
+    def __init__(self, value):
+        self.CurrentValue = value
+
+
 class FakeElement:
     CurrentIsPassword = False
 
@@ -102,8 +107,10 @@ class FakeAutomation:
 UIA = SimpleNamespace(
     UIA_TextPattern2Id=2,
     UIA_TextPatternId=1,
+    UIA_ValuePatternId=3,
     IUIAutomationTextPattern2=object(),
     IUIAutomationTextPattern=object(),
+    IUIAutomationValuePattern=object(),
     TextPatternRangeEndpoint_Start=0,
     TextPatternRangeEndpoint_End=1,
     TextUnit_Character=0,
@@ -134,9 +141,36 @@ def test_selection_is_excluded():
         ("I ", " apples.")
 
 
+def test_value_pattern_proves_empty():
+    class ValueElement:
+        CurrentIsPassword = False
+
+        def __init__(self, value):
+            self.value = value
+
+        def GetCurrentPattern(self, pattern_id):
+            if pattern_id == UIA.UIA_ValuePatternId:
+                return FakeRaw(FakeValuePattern(self.value))
+            return None
+
+    empty = ValueElement("")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(empty), 120, 120) == ("", "")
+    # A non-empty ValuePattern is not enough to locate its caret, and its
+    # contents must not be returned as context.
+    nonempty = ValueElement("private existing text")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(nonempty), 120, 120) is None
+    password = ValueElement("")
+    password.CurrentIsPassword = True
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(password), 120, 120) is None
+
+
 def main():
     test_caret_sides()
     test_selection_is_excluded()
+    test_value_pattern_proves_empty()
     print("ALL TESTS PASSED")
 
 

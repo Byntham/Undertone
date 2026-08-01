@@ -137,6 +137,20 @@ def _query_caret_context(UIA, automation, before_n: int, after_n: int):
 
     if left_edge is None:
         if not caret:
+            # ValuePattern cannot locate a caret in non-empty text, but an
+            # exactly empty value proves both sides are empty. This catches
+            # controls (notably some WinForms/Electron fields) that expose a
+            # value but no TextPattern, and prevents stale insertion memory
+            # from formatting a fresh field as a continuation.
+            try:
+                raw = element.GetCurrentPattern(UIA.UIA_ValuePatternId)
+                if raw:
+                    value = raw.QueryInterface(
+                        UIA.IUIAutomationValuePattern).CurrentValue
+                    if value == "":
+                        return "", ""
+            except Exception:
+                pass
             return None
         left_edge = caret
         right_edge = caret

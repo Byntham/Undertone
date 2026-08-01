@@ -200,8 +200,11 @@ class App:
         # for smart formatting when the caret can't be read (terminals).
         self._history: deque = deque(maxlen=HISTORY_SIZE)
         self._history_lock = threading.Lock()
-        self._last_paste = None          # (foreground hwnd, text, monotonic time)
-        self._typed_since_paste = False
+        # (foreground hwnd, text, monotonic time, input generation at paste
+        # start). A generation token cannot lose a key/click race to the
+        # pipeline's post-paste bookkeeping the way a resettable bool can.
+        self._last_paste = None
+        self._input_generation = 0
 
         # Everything that transcribes or pastes runs on this single worker,
         # strictly in order — the clipboard, insertion memory, and history
@@ -312,12 +315,12 @@ class App:
                 sounds.play_cancel()
             return  # a cancel is not typing; keep insertion memory
         if scan_code not in self._extra_hotkey_scancodes:
-            self._typed_since_paste = True
+            self._input_generation += 1
 
     def _on_mouse_down(self):
         """Any click has likely moved the caret (the keyboard hook can't see
         that), so insertion memory is stale."""
-        self._typed_since_paste = True
+        self._input_generation += 1
 
     # ---- transcription pipeline (single worker thread) -----------------------
 
@@ -406,12 +409,13 @@ class App:
             self._clipboard_fallback(final, raw, cfg)
             return
         try:
+            paste_generation = self._input_generation
             paste_text(final, cfg.get("restore_clipboard", True))
         except Exception:
             logging.exception("Paste failed")
             self._clipboard_fallback(final, raw, cfg)
             return
-        self._register_paste(final, raw)
+        self._register_paste(final, raw, input_generation=paste_generation)
         self._confirm_paste(final, 1600)
 
     def _confirm_paste(self, final: str, duration_ms: int):
@@ -495,26 +499,31 @@ class App:
 
         ctx = None
         # Fall back to what we last pasted, but only while the same window is
-        # focused and nothing was typed since. This cannot reveal the right.
+        # focused and no key/click has occurred since paste began. This cannot
+        # reveal the right side.
         lp = self._last_paste
-        if (lp and not self._typed_since_paste
+        if (lp and lp[3] == self._input_generation
                 and lp[0] == _foreground_hwnd()
                 and time.monotonic() - lp[2] < 300):
             ctx = textproc.tail_context(lp[1], 300)
         return ctx, None
 
-    def _register_paste(self, text: str, raw=None, pasted=True):
+    def _register_paste(self, text: str, raw=None, pasted=True,
+                        input_generation=None):
         """Record a successful dictation. raw is the corrected transcript
         before cleanup/formatting (None when it matches the final text).
         Only a real paste updates insertion memory — clipboard-fallback text
         is not in the window, so remembering it would format the next
-        dictation against phantom context."""
+        dictation against phantom context. input_generation is captured before
+        Ctrl+V so input racing the paste invalidates the memory token."""
         with self._history_lock:
             self._history.append(
                 {"ts": time.time(), "text": text, "raw": raw, "ok": True})
         if pasted:
-            self._last_paste = (_foreground_hwnd(), text, time.monotonic())
-            self._typed_since_paste = False
+            if input_generation is None:
+                input_generation = self._input_generation
+            self._last_paste = (
+                _foreground_hwnd(), text, time.monotonic(), input_generation)
 
     def _register_failure(self, error: str, wav: bytes):
         """Record a failed dictation, keeping its audio for a retry.
@@ -555,8 +564,9 @@ class App:
         self._pipeline_q.put(("retry", wav))
 
     def _paste_now(self, text: str, cfg: dict):
+        paste_generation = self._input_generation
         paste_text(text, cfg.get("restore_clipboard", True))
-        self._register_paste(text)
+        self._register_paste(text, input_generation=paste_generation)
         self._confirm_paste(text, 1200)
 
     def _repaste_last(self):

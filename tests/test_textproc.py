@@ -29,6 +29,20 @@ def test_spacing():
     assert fmt("4 apples", "I have 3") == " 4 apples"
 
 
+def test_boundary_normalization():
+    # Provider/model whitespace must never leak into the paste or compound
+    # with a seam added by the formatter.
+    assert fmt("  hello world.  ", "") == "Hello world."
+    assert fmt("  The update.  ", "I reviewed") == " the update."
+    # Unknown context stays conservative about casing, but outer whitespace
+    # is still never meaningful transcription content.
+    assert fmt("  keep this  ", None) == "keep this"
+    # Some accessibility providers expose an empty editor with an invisible
+    # boundary marker. It must format like an actually empty context.
+    assert fmt("hello.", "\u200b") == "Hello."
+    assert fmt("hello.", "\ufeff") == "Hello."
+
+
 def test_right_seam():
     # A caret after the existing space needs a trailing separator before the
     # following word; a caret before that space must not add another one.
@@ -73,6 +87,111 @@ def test_right_seam():
     assert textproc.finalize(
         "Dr.", "I called ", {}, after_ctx="Smith."
     ) == "Dr. "
+    # Do not duplicate punctuation already present at the right boundary.
+    assert textproc.finalize(
+        "red,", "I like ", {}, after_ctx=", green, and blue."
+    ) == "red"
+    assert textproc.finalize(
+        "really?", "Is that ", {}, after_ctx="?"
+    ) == "really"
+    # Multi-mark punctuation may be deliberate; never erode it one pass at a
+    # time merely because the existing suffix starts with the same mark.
+    assert textproc.finalize(
+        "Wait...", "They said ", {}, after_ctx="."
+    ) == "Wait..."
+    assert textproc.finalize(
+        "Really??", "You mean ", {}, after_ctx="?"
+    ) == "Really??"
+    # A capitalized suffix is ambiguous and may be a following sentence;
+    # preserve the dictated sentence terminator instead of flattening it.
+    assert textproc.finalize(
+        "First sentence.", "Intro: ", {}, after_ctx="Next sentence."
+    ) == "First sentence. "
+
+
+def test_document_reconstruction_matrix():
+    # Each row models the actual document produced by before + paste + after.
+    cases = [
+        ("empty field", "", "  hello world.  ", "", "Hello world."),
+        ("append to word", "Hello", "world.", "", "Hello world."),
+        ("append after space", "Hello ", "world.", "", "Hello world."),
+        ("after sentence", "Done. ", "next step.", "",
+         "Done. Next step."),
+        ("after paragraph", "Done.\n", "next step.", "",
+         "Done.\nNext step."),
+        ("middle no spaces", "I like", "red.", "apples.",
+         "I like red apples."),
+        ("middle left space", "I like ", "red.", "apples.",
+         "I like red apples."),
+        ("middle right space", "I like", "red.", " apples.",
+         "I like red apples."),
+        ("middle both spaces", "I like ", "red.", " apples.",
+         "I like red apples."),
+        ("replace word", "I eat ", "oranges.", " every day.",
+         "I eat oranges every day."),
+        ("before comma", "It is ", "ripe.", ", but bruised.",
+         "It is ripe, but bruised."),
+        ("opening quote", "She ", "said", '"hello."',
+         'She said "hello."'),
+        ("contraction", "I think ", "it", "'s ready.",
+         "I think it's ready."),
+        ("URL token", "Visit https://exa", "mple", ".com",
+         "Visit https://example.com"),
+        ("path token", "Open C:\\Us", "ers", "\\graham",
+         "Open C:\\Users\\graham"),
+    ]
+    for name, before, raw, after, expected in cases:
+        insertion = textproc.finalize(raw, before, {}, after_ctx=after)
+        actual = before + insertion + after
+        assert actual == expected, (name, actual, expected, insertion)
+        # Boundary formatting should be stable if an already formatted
+        # insertion is passed through again (retry/repaste robustness).
+        assert textproc.finalize(
+            insertion, before, {}, after_ctx=after) == insertion, name
+
+    for mark in ",.!?;:":
+        insertion = textproc.finalize(
+            f"word{mark}", "Say ", {}, after_ctx=f"{mark} next")
+        assert "Say " + insertion + mark + " next" == \
+            f"Say word{mark} next", mark
+
+    # Outer whitespace is transport noise for every boundary combination.
+    for before in ("", "I like", "I like "):
+        for after in ("", "apples", " apples"):
+            clean = textproc.finalize("red.", before, {}, after_ctx=after)
+            padded = textproc.finalize(
+                " \tred.\r\n", before, {}, after_ctx=after)
+            assert padded == clean, (before, after, clean, padded)
+
+
+def test_boundary_invariants():
+    # Exhaust the cross-product of representative left contexts, transcript
+    # shapes, and right contexts. Formatting must be stable and may add at
+    # most one ordinary seam space on either edge.
+    befores = [
+        None, "", "\u200b", "word", "word ", "Done.", "Done. ",
+        "Done\n", "(", 'he said "', "https://exa", "C:\\Us", "I like ",
+        "Intro: ",
+    ]
+    raws = [
+        " hello. ", " The update. ", "red.", "red,", "really?",
+        '"hello"', "'s ready", "mple", "ers", "Dr.", "Wait...",
+        "Really??", "  iPhone works  ",
+    ]
+    afters = [
+        None, "", "\u200b", "word", " word", "apples.", " apples.",
+        ", next", ".", "?", "Next sentence.", '"hello"', "'s ready",
+        ".com", "\\graham",
+    ]
+    for before in befores:
+        for raw in raws:
+            for after in afters:
+                out = textproc.finalize(raw, before, {}, after_ctx=after)
+                again = textproc.finalize(
+                    out, before, {}, after_ctx=after)
+                assert again == out, (before, raw, after, out, again)
+                assert not out.startswith(("\t", "\r", "\n", "  "))
+                assert not out.endswith(("\t", "\r", "\n", "  "))
 
 
 def test_url_detection():
@@ -199,7 +318,10 @@ def test_finalize():
 
 def main():
     test_spacing()
+    test_boundary_normalization()
     test_right_seam()
+    test_document_reconstruction_matrix()
+    test_boundary_invariants()
     test_url_detection()
     test_caps()
     test_quotes()

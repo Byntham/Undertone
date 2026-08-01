@@ -22,6 +22,9 @@ _OPENING_DELIMS = set("([{\"'“‘")  # ( [ { " ' “ ‘
 # When text starts with one of these it hugs the preceding word.
 _CLOSING_PUNCT = set(",.!?;:)]}…'\"”’")  # , . ! ? ; : ) ] } … ' " ” ’
 _STRAIGHT_QUOTES = "\"'"
+# Invisible markers some accessibility providers expose at an otherwise empty
+# text boundary. They affect neither visible spacing nor sentence casing.
+_CARET_ARTIFACTS = "\u200b\ufeff"
 
 # Abbreviations whose trailing period does not end a sentence.
 _ABBREVIATIONS = {
@@ -101,21 +104,28 @@ def finalize(text: str, ctx: "str | None", corrections: dict,
     at a sentence start, but is never lowercased. Unknown context (None) means
     do nothing risky on that side of the insertion.
     """
-    text = apply_corrections(text, corrections)
-    if model_cased:
-        text = text.lstrip()
+    # Providers normally trim already, but boundary formatting must be robust
+    # to model overrides and retry inputs too. Outer whitespace is never
+    # meaningful dictated content; leaving it here creates double seams.
+    text = apply_corrections(text, corrections).strip()
     if not smart or not text:
         return text
 
     if ctx is not None:
-        mid_token = _in_url_like(ctx)
+        seam_ctx = ctx.rstrip(_CARET_ARTIFACTS)
+        seam_after = (after_ctx.lstrip(_CARET_ARTIFACTS)
+                      if after_ctx is not None else None)
+        mid_token = _in_url_like(seam_ctx)
         if not mid_token:
-            text = _adjust_capitalization(ctx, text,
+            text = _adjust_capitalization(seam_ctx, text,
                                           allow_lower=not model_cased)
-        if _needs_leading_space(ctx, text, mid_token):
+        if _needs_leading_space(seam_ctx, text, mid_token):
             text = " " + text
-        text = _drop_mid_sentence_period(text, ctx, after_ctx, mid_token)
-    return _add_right_seam(text, ctx, after_ctx)
+        text = _dedupe_right_punctuation(text, seam_after)
+        text = _drop_mid_sentence_period(
+            text, seam_ctx, seam_after, mid_token)
+        return _add_right_seam(text, seam_ctx, seam_after)
+    return _add_right_seam(text, None, after_ctx)
 
 
 def format_transcript(
@@ -154,14 +164,38 @@ def _drop_mid_sentence_period(text: str, ctx: str,
                               after_ctx: "str | None",
                               mid_token: bool) -> str:
     """Drop STT's final period when known text continues the sentence."""
-    if (after_ctx is None or not after_ctx.strip() or mid_token
-            or _is_sentence_start(ctx)):
+    if (after_ctx is None or mid_token or _is_sentence_start(ctx)
+            or not _right_continues_sentence(after_ctx)):
         return text
     stripped = text.rstrip()
     if (not stripped.endswith(".") or stripped.endswith("..")
             or _abbrev_period(stripped)):
         return text
     return stripped[:-1] + text[len(stripped):]
+
+
+def _dedupe_right_punctuation(text: str,
+                              after_ctx: "str | None") -> str:
+    """Let an identical punctuation mark already on the right win once."""
+    if after_ctx is None:
+        return text
+    right = after_ctx.lstrip()
+    stripped = text.rstrip()
+    if (not stripped or not right or stripped[-1] != right[0]
+            or stripped[-1] not in ",.!?;:"
+            or (len(stripped) >= 2 and stripped[-2] == stripped[-1])):
+        return text
+    return stripped[:-1] + text[len(stripped):]
+
+
+def _right_continues_sentence(after_ctx: str) -> bool:
+    """Strong local evidence that right-side text resumes this sentence."""
+    right = after_ctx.lstrip()
+    if not right:
+        return False
+    first = right[0]
+    return (first.islower() or first.isdigit()
+            or first in ",.!?;:)]}\u2026'\u2019\u201d")
 
 
 def _needs_leading_space(ctx: str, text: str, mid_token: bool) -> bool:
