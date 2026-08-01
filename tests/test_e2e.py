@@ -1,7 +1,7 @@
 """End-to-end pipeline test: hotkey → record → (faked) STT → smart paste.
 
 Runs the real App wiring (keyboard hook, recorder, overlay, caret context,
-formatting) against a live Notepad window, with transcribe() replaced by
+formatting) against a disposable WPF text box, with transcribe() replaced by
 canned responses so no API key or network is needed. AI cleanup is disabled
 so results are deterministic; the cleanup module has its own live test.
 
@@ -12,35 +12,53 @@ in-process keyboard.press() would never reach the app's hook.
 NEEDS AN IDLE DESKTOP: pastes land in the foreground window, so touching
 the mouse/keyboard while this runs steals focus and fails the run (the
 clipboard sentinel catches it honestly rather than false-passing).
+Set UNDERTONE_DESKTOP_E2E=1 to acknowledge and run this manual test.
 
-Two phases:
-- A: real caret context (Notepad's Edit control via the Win32
-  EM_GETSEL/WM_GETTEXT tier) — empty field means sentence start, so the
-  first dictation is capitalized.
-- B: caret reading stubbed to None, forcing the insertion-memory fallback
+Three phases:
+- A: real caret context (WPF's UI Automation TextPattern) — an empty field
+  means sentence start, so the first dictation is capitalized.
+- B: a single dictation inserted before an existing word — both caret sides
+  supply exactly one space around the insertion.
+- C: caret reading stubbed to None, forcing the insertion-memory fallback
   (the terminal-like path) — unknown first context leaves the transcript
   untouched; the second dictation is spaced/lowercased from memory alone.
 """
 
+import os
 import subprocess
 import sys
 import threading
 import time
 
-sys.path.insert(0, r"C:\Users\graham\Projects\Undertone")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import pyperclip
 
+import localproc
 import main as main_mod
 
-PY = r"C:\Users\graham\Projects\Undertone\.venv\Scripts\python.exe"
+PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+TARGET_TITLE = f"Undertone E2E {os.getpid()}"
+WPF_SCRIPT = rf"""
+Add-Type -AssemblyName PresentationFramework
+$win = New-Object System.Windows.Window
+$win.Title = '{TARGET_TITLE}'
+$win.Width = 500; $win.Height = 220; $win.Topmost = $true
+$tb = New-Object System.Windows.Controls.TextBox
+$tb.AcceptsReturn = $true
+$win.Content = $tb
+$win.Add_ContentRendered({{ $win.Activate() | Out-Null; $tb.Focus() | Out-Null }})
+[void]$win.ShowDialog()
+"""
 
 CANNED = [
     "hello world this is a test",
     "The second part continues",
 ]
 EXPECTED_A = "Hello world this is a test the second part continues"
-EXPECTED_B = "hello world this is a test the second part continues"
+EXPECTED_B = "I like hello world this is a test apples."
+EXPECTED_C = "hello world this is a test the second part continues"
 
 _i = [0]
 failures = []
@@ -76,35 +94,15 @@ def read_back():
     return pyperclip.paste()
 
 
-def _notepad_hwnds():
-    """All visible top-level Notepad windows. Win11 Notepad is single-
-    instance: a spawned notepad.exe hands its window to an already-running
-    process, so windows must be tracked by class, never by spawned pid."""
+def wait_target(timeout=6.0):
+    """Wait for the disposable WPF target window."""
     import ctypes
-    import ctypes.wintypes as wt
     user32 = ctypes.windll.user32
-    found = []
-
-    @ctypes.WINFUNCTYPE(ctypes.c_int, wt.HWND, wt.LPARAM)
-    def enum(hwnd, _):
-        if user32.IsWindowVisible(hwnd):
-            buf = ctypes.create_unicode_buffer(32)
-            user32.GetClassNameW(hwnd, buf, 32)
-            if buf.value == "Notepad":
-                found.append(hwnd)
-        return True
-
-    user32.EnumWindows(enum, 0)
-    return set(found)
-
-
-def wait_new_notepad(before, timeout=6.0):
-    """The one Notepad window that appeared since the `before` snapshot."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        new = _notepad_hwnds() - before
-        if new:
-            return new.pop()
+        hwnd = user32.FindWindowW(None, TARGET_TITLE)
+        if hwnd:
+            return hwnd
         time.sleep(0.3)
     return None
 
@@ -134,20 +132,29 @@ def focus_window(hwnd, timeout=5.0):
     return False
 
 
-def phase(app, expected, label):
-    before = _notepad_hwnds()
-    notepad = subprocess.Popen(["notepad.exe"])
+def phase(app, expected, label, initial_text=None, dictations=2):
+    _i[0] = 0
+    target = subprocess.Popen(
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-STA",
+         "-Command", WPF_SCRIPT]
+    )
+    job = localproc.attach_job(target)
     hwnd = None
     try:
-        hwnd = wait_new_notepad(before)
-        assert hwnd, f"{label}: no new Notepad window appeared"
-        assert focus_window(hwnd), f"{label}: could not focus Notepad"
-        time.sleep(0.6)  # let Notepad's input queue settle (first-paste flake)
-        for _ in range(2):
+        hwnd = wait_target()
+        assert hwnd, f"{label}: target window did not appear"
+        assert focus_window(hwnd), f"{label}: could not focus target"
+        time.sleep(0.6)  # let the target's input queue settle
+        if initial_text:
+            inject(f"keyboard.write({initial_text!r}); time.sleep(0.2); "
+                   "keyboard.send('ctrl+left')")
+            time.sleep(0.4)
+        for _ in range(dictations):
             inject("keyboard.press('f13'); time.sleep(0.6); "
                    "keyboard.release('f13')")
             time.sleep(2.0)  # transcribe + paste + clipboard restore
         got = read_back()
+        print(f"  [e2e] {label} observed: {got!r}")
         if got != expected:
             failures.append(f"{label}: got {got!r}, want {expected!r}")
         else:
@@ -156,24 +163,34 @@ def phase(app, expected, label):
         failures.append(f"{label}: {type(exc).__name__}: {exc}")
     finally:
         if hwnd:
-            # kill() can't reach the single-instance owner; close the window.
             import ctypes
             ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-        notepad.kill()
+        try:
+            target.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            target.kill()
+            target.wait(timeout=2)
+        localproc.close_job(job)
         time.sleep(0.5)
 
 
 def scenario(app):
     try:
         phase(app, EXPECTED_A, "phase A (caret context)")
-        # Phase B: no caret reading — insertion memory only.
-        main_mod.caretctx.text_before_caret = lambda *a, **k: None
-        phase(app, EXPECTED_B, "phase B (insertion memory)")
+        phase(app, EXPECTED_B, "phase B (middle insertion)",
+              initial_text="I like apples.", dictations=1)
+        # Phase C: no caret reading — insertion memory only.
+        main_mod.caretctx.text_around_caret = lambda *a, **k: None
+        app._last_paste = None
+        phase(app, EXPECTED_C, "phase C (insertion memory)")
     finally:
         app._post(app._quit)
 
 
 def run():
+    if os.environ.get("UNDERTONE_DESKTOP_E2E") != "1":
+        print("SKIPPED: set UNDERTONE_DESKTOP_E2E=1 only on an idle desktop")
+        return
     main_mod.transcribe = fake_transcribe
     main_mod.config_mod.load_config = lambda: dict(TEST_CFG)
 
@@ -183,7 +200,7 @@ def run():
     app.qapp.exec()
 
     if failures:
-        print("FAILED:", *failures, sep="\n  ")
+        print("FAILED:", repr(failures))
         sys.exit(1)
     print("ALL TESTS PASSED")
 
