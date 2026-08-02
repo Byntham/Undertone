@@ -26,6 +26,7 @@ _worker_started = False
 _busy_since = 0.0       # monotonic time the worker entered a COM query; 0 = idle
 _WEDGE_S = 3.0          # a query stuck this long means the provider is hung
 _STOP = object()
+_EMPTY_VALUE_CHARS = " \t\r\n\u200b\ufeff\ufffc"
 
 
 class _Job:
@@ -65,6 +66,25 @@ def _make_uia():
         return None, None
 
 
+def _direct_value_is_empty(UIA, element) -> bool:
+    """Whether Value/Legacy proves the focused editor has no visible text."""
+    for pattern_id, interface in (
+        (UIA.UIA_ValuePatternId, UIA.IUIAutomationValuePattern),
+        (UIA.UIA_LegacyIAccessiblePatternId,
+         UIA.IUIAutomationLegacyIAccessiblePattern),
+    ):
+        try:
+            raw = element.GetCurrentPattern(pattern_id)
+            if not raw:
+                continue
+            value = raw.QueryInterface(interface).CurrentValue
+            if value is not None and not value.strip(_EMPTY_VALUE_CHARS):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _query_caret_context(UIA, automation, before_n: int, after_n: int):
     """Return text around the UIA caret/selection. May raise."""
     element = automation.GetFocusedElement()
@@ -79,6 +99,8 @@ def _query_caret_context(UIA, automation, before_n: int, after_n: int):
             return None
     except Exception:
         pass
+
+    direct_empty = _direct_value_is_empty(UIA, element)
 
     caret = None
 
@@ -137,21 +159,9 @@ def _query_caret_context(UIA, automation, before_n: int, after_n: int):
 
     if left_edge is None:
         if not caret:
-            # ValuePattern cannot locate a caret in non-empty text, but an
-            # exactly empty value proves both sides are empty. This catches
-            # controls (notably some WinForms/Electron fields) that expose a
-            # value but no TextPattern, and prevents stale insertion memory
-            # from formatting a fresh field as a continuation.
-            try:
-                raw = element.GetCurrentPattern(UIA.UIA_ValuePatternId)
-                if raw:
-                    value = raw.QueryInterface(
-                        UIA.IUIAutomationValuePattern).CurrentValue
-                    if value == "":
-                        return "", ""
-            except Exception:
-                pass
-            return None
+            # Value/Legacy cannot locate a caret in non-empty text, but an
+            # empty direct value proves both sides are empty.
+            return ("", "") if direct_empty else None
         left_edge = caret
         right_edge = caret
 
@@ -164,6 +174,14 @@ def _query_caret_context(UIA, automation, before_n: int, after_n: int):
     before = before_range.GetText(-1)
     if before is None:
         return None
+
+    # Chromium contenteditables can expose a parent-document TextPattern
+    # rather than the editor's text. At an empty embedded editor, its direct
+    # value is empty while the bogus range ends at an object-replacement
+    # marker and otherwise contains surrounding application UI.
+    if (direct_empty
+            and before.rstrip(" \t\r\n").endswith("\ufffc")):
+        return "", ""
 
     # Preserve the established left context if a provider fails only while
     # expanding the range to the right.

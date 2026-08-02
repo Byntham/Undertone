@@ -108,9 +108,11 @@ UIA = SimpleNamespace(
     UIA_TextPattern2Id=2,
     UIA_TextPatternId=1,
     UIA_ValuePatternId=3,
+    UIA_LegacyIAccessiblePatternId=4,
     IUIAutomationTextPattern2=object(),
     IUIAutomationTextPattern=object(),
     IUIAutomationValuePattern=object(),
+    IUIAutomationLegacyIAccessiblePattern=object(),
     TextPatternRangeEndpoint_Start=0,
     TextPatternRangeEndpoint_End=1,
     TextUnit_Character=0,
@@ -167,10 +169,66 @@ def test_value_pattern_proves_empty():
         UIA, FakeAutomation(password), 120, 120) is None
 
 
+def test_legacy_pattern_proves_empty():
+    class LegacyElement:
+        CurrentIsPassword = False
+
+        def __init__(self, value):
+            self.value = value
+
+        def GetCurrentPattern(self, pattern_id):
+            if pattern_id == UIA.UIA_LegacyIAccessiblePatternId:
+                return FakeRaw(FakeValuePattern(self.value))
+            return None
+
+    empty = LegacyElement("")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(empty), 120, 120) == ("", "")
+    nonempty = LegacyElement("private existing text")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(nonempty), 120, 120) is None
+
+
+def test_empty_embedded_editor_rejects_parent_context():
+    class EmbeddedElement:
+        CurrentIsPassword = False
+
+        def __init__(self, text, caret, value):
+            self.patterns = {
+                UIA.UIA_TextPatternId: FakeRaw(FakeTextPattern(
+                    FakeRange(text, caret, caret))),
+                UIA.UIA_LegacyIAccessiblePatternId:
+                    FakeRaw(FakeValuePattern(value)),
+            }
+
+        def GetCurrentPattern(self, pattern_id):
+            return self.patterns.get(pattern_id)
+
+    text = "surrounding application UI\n\ufffc\nmore application UI"
+    caret = text.index("\ufffc") + 1
+    empty = EmbeddedElement(text, caret, "\n")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(empty), 120, 120) == ("", "")
+
+    # Typed content makes the direct value non-empty, so the caret range wins.
+    nonempty = EmbeddedElement(text, caret, "typed words")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(nonempty), 120, 120) == (
+            "surrounding application UI\n\ufffc", "\nmore application UI")
+
+    # An empty direct value alone must not override an ordinary TextPattern.
+    ordinary = EmbeddedElement("ordinary text", 8, "")
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(ordinary), 120, 120) == (
+            "ordinary", " text")
+
+
 def main():
     test_caret_sides()
     test_selection_is_excluded()
     test_value_pattern_proves_empty()
+    test_legacy_pattern_proves_empty()
+    test_empty_embedded_editor_rejects_parent_context()
     print("ALL TESTS PASSED")
 
 
