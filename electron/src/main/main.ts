@@ -17,6 +17,7 @@ import { ClipboardPaster } from "../core/clipboardPaster";
 import { normalizeConfig, type UndertoneConfig } from "../core/config";
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
+import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
   DictationPipelineQueue,
   SessionHistory,
@@ -55,6 +56,8 @@ if (!gotLock) {
   let audioReady = false;
   let settingsReady = false;
   let config: UndertoneConfig = normalizeConfig(undefined);
+  let configStore: ConfigStore | null = null;
+  let settingsUpdateChain: Promise<void> = Promise.resolve();
   let pipeline: DictationPipelineQueue | null = null;
   let pendingTarget: Promise<DictationTarget | null> | null = null;
   const insertionMemory = new InsertionMemory();
@@ -219,7 +222,8 @@ if (!gotLock) {
         "config.json",
       );
     }
-    config = await new ConfigStore(storeOptions).load();
+    configStore = new ConfigStore(storeOptions);
+    config = await configStore.load();
 
     const http = new FetchHttpClient();
     const transcriber = new Transcriber(http, {
@@ -334,6 +338,30 @@ if (!gotLock) {
     quitting = true;
     void windowsHost.stop();
   });
+  ipcMain.handle("settings:get", (event) => {
+    if (event.sender !== settingsWindow?.webContents) {
+      throw new Error("Settings request came from an unauthorized renderer");
+    }
+    return settingsSnapshot(config, app.getVersion(), electronPreview);
+  });
+  ipcMain.handle("settings:update", async (event, value: unknown) => {
+    if (event.sender !== settingsWindow?.webContents) {
+      throw new Error("Settings update came from an unauthorized renderer");
+    }
+    let result = settingsSnapshot(config, app.getVersion(), electronPreview);
+    const operation = settingsUpdateChain.then(async () => {
+      const store = configStore;
+      if (store === null) throw new Error("Settings store is not ready");
+      const next = applySettingsPatch(config, value);
+      await store.save(next);
+      config = next;
+      tray?.setToolTip(`Undertone · ${config.hotkey}`);
+      result = settingsSnapshot(config, app.getVersion(), electronPreview);
+    });
+    settingsUpdateChain = operation.catch(() => undefined);
+    await operation;
+    return result;
+  });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
@@ -375,8 +403,6 @@ if (!gotLock) {
     app.setAppUserModelId("com.undertone.desktop");
     await createOverlay();
     await createAudio();
-    createTray();
-    openSettings();
     windowsHost.onKeyboard((event) => {
       if (event.injected) return;
       if (event.virtualKey === 0x1b && event.eventType === "down") {
@@ -398,7 +424,9 @@ if (!gotLock) {
     windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
     await initializePipeline();
+    createTray();
     tray?.setToolTip(`Undertone · ${config.hotkey}`);
+    openSettings();
     await windowsHost.startInput();
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);

@@ -14,8 +14,8 @@ that exists only to be deleted later.
 
 - Windows remains the only supported operating system.
 - Product and domain code moves to strict TypeScript.
-- Settings will use React once the renderer port begins; the small overlay can
-  remain plain TypeScript with Canvas/CSS.
+- Settings uses React; the small overlay remains plain TypeScript with
+  Canvas/CSS.
 - Low-level hooks, UI Automation, focus restoration, input injection, DPAPI
   compatibility, and job objects live behind one small native Windows host.
 - A standalone Windows host is preferred over an in-process addon so a native
@@ -372,3 +372,23 @@ Python entry points and packaging remain unchanged until milestone 7.
 - Red recording icon state, complete tooltip/menu parity, capture-aware pause,
   and long-running no-window behavior remain before the tray parity box can be
   closed.
+
+### Settings checkpoint - React shell and General section - 2026-08-02
+
+- The placeholder renderer is now a React 19.2 settings shell with General and
+  About navigation. The first autosaving fields cover language, smart
+  formatting, AI cleanup, and clipboard restoration; the fixed right-Ctrl
+  shortcut is deliberately read-only until shortcut capture is ported.
+- The preload exposes only a renderer-safe settings DTO. Provider keys and the
+  native/config services stay in the main process; sender authorization,
+  patch whitelisting, value validation, and a serialized atomic-save chain
+  guard all renderer updates.
+- The production renderer passed a screen-based check at 960 x 720 with no
+  horizontal overflow. General/About navigation and switch state updates were
+  exercised in the collaborative browser. This also confirmed that the strict
+  CSP correctly loads the production external stylesheet; Vite's inline
+  development CSS is intentionally rejected by that policy.
+- `npm run verify` passes the strict build and 79 tests across 12 files. The
+  rebuilt unpacked package passes the isolated tray/config/native-host smoke.
+  Remaining settings sections, shortcut capture, DPI checks, and full behavior
+  parity stay open.
