@@ -281,3 +281,18 @@ Python entry points and packaging remain unchanged until milestone 7.
   rather than clearing its timeout as soon as headers arrive.
 - Six mocked, keyless tests bring full Electron verification to 45 tests across
   six files. No provider request was sent over the network.
+
+### Pipeline-core checkpoint - text preparation and insertion memory - 2026-08-02
+
+- The cleanup/deterministic formatting junction now has a dependency-injected
+  TypeScript boundary: cleanup sees corrected transcript plus left context,
+  app identity, and dictionary, while right context stays exclusively in the
+  local finalization pass.
+- Cleanup misses fall back to deterministic formatting, disabled smart
+  formatting never queries the caret, and chat-period removal preserves the
+  right seam exactly as the Python pipeline does.
+- Generation-guarded insertion memory records the paste-start token, supplies
+  only left context, honors explicit empty native context, and rejects changed
+  windows, user input races, and entries at the five-minute boundary.
+- Eight tests mirroring `test_pipeline.py` bring full Electron verification to
+  53 tests across seven files.
