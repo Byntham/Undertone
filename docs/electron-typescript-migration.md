@@ -254,3 +254,17 @@ Python entry points and packaging remain unchanged until milestone 7.
 - The full Electron verification now passes 31 tests across four files. The
   parity checklist remains open until the same fixtures can be executed by
   Python and TypeScript in one verification environment.
+
+### Portable-core checkpoint - configuration - 2026-08-02
+
+- The full current config schema, provider-key/model lookups, and legacy model
+  and unified-local-residency folds are represented in strict TypeScript.
+- A main-process config store tolerates UTF-8 BOMs and corrupt/missing files,
+  preserves unknown fields, encrypts only provider keys through the native
+  DPAPI boundary, sorts serialized JSON, and atomically replaces `config.json`
+  without mutating the in-memory snapshot.
+- Temporary-directory tests cover key secrecy and round-trip behavior, legacy
+  plaintext/invalid blobs, repeated atomic saves, default-container isolation,
+  and the existing-directory legacy move case. The store is not yet wired to
+  the preview app, so this checkpoint does not touch the production config.
+- The full Electron verification now passes 39 tests across five files.
