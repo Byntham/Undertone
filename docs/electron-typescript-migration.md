@@ -240,3 +240,17 @@ Python entry points and packaging remain unchanged until milestone 7.
   runtime or source. `npm audit` reports zero known vulnerabilities.
 - Fresh installer, upgrade, uninstall, and code-signing checks remain cutover
   gates; building an installer is not treated as passing those stateful tests.
+
+### Portable-core checkpoint - transcript formatting - 2026-08-02
+
+- `textproc.py` now has a strict TypeScript counterpart covering one-pass
+  dictionary correction, sentence-aware capitalization, left and right
+  insertion seams, URL/email/path continuation, chat-period removal, and
+  bounded insertion-memory tails.
+- Eleven test groups mirror the Python assertions, including the exhaustive
+  representative before/raw/after matrix and its idempotence invariant.
+  Unicode property escapes preserve Python's Unicode-aware word behavior;
+  symbol-bearing correction keys retain the explicit word-edge rules.
+- The full Electron verification now passes 31 tests across four files. The
+  parity checklist remains open until the same fixtures can be executed by
+  Python and TypeScript in one verification environment.
