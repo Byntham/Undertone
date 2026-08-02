@@ -268,3 +268,16 @@ Python entry points and packaging remain unchanged until milestone 7.
   and the existing-directory legacy move case. The store is not yet wired to
   the preview app, so this checkpoint does not touch the production config.
 - The full Electron verification now passes 39 tests across five files.
+
+### Portable-core checkpoint - speech-to-text providers - 2026-08-02
+
+- Typed adapters now cover xAI multipart STT, OpenAI multipart
+  transcriptions, OpenRouter base64 JSON, and keyless local whisper-server
+  requests with the existing default-model policy and friendly error mapping.
+- Vocabulary terms are structurally limited to xAI `keyterm` fields; tests
+  assert that OpenAI, OpenRouter, and local bodies contain neither prompts nor
+  vocabulary fields. Local output retains newline/whitespace collapsing.
+- The shared fetch adapter bounds both response headers and body consumption,
+  rather than clearing its timeout as soon as headers arrive.
+- Six mocked, keyless tests bring full Electron verification to 45 tests across
+  six files. No provider request was sent over the network.
