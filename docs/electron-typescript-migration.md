@@ -323,3 +323,20 @@ Python entry points and packaging remain unchanged until milestone 7.
   only the three newest failures.
 - Six concurrency/history tests bring full Electron verification to 65 tests
   across nine files.
+
+### Pipeline-core checkpoint - paste safety and job runner - 2026-08-02
+
+- The clipboard boundary writes text, waits for propagation, invokes the native
+  paste operation, and conditionally restores prior content after 500 ms. A
+  generation token cancels stale restores, and an additional value check avoids
+  overwriting something the user copied during that window.
+- The dictation runner composes vocabulary, transcribes, restores the target
+  before local context and again after cleanup, prepares text, pastes, updates
+  history/insertion memory, and emits outcome feedback. Refocus or injection
+  failure copies final text to the clipboard and history without updating
+  phantom insertion memory; transcription failure retains WAV retry data.
+- Input racing the 150 ms clipboard propagation delay leaves insertion memory
+  invalid through the paste-start generation token. Eleven tests bring full
+  Electron verification to 76 tests across eleven files.
+- These components are not yet wired to the preview shell, so the corresponding
+  end-to-end parity boxes remain open despite their isolated coverage.
