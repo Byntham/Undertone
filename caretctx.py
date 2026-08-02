@@ -68,6 +68,13 @@ def _make_uia():
 
 def _direct_value_is_empty(UIA, element) -> bool:
     """Whether Value/Legacy proves the focused editor has no visible text."""
+    try:
+        if element.CurrentControlType not in (
+                UIA.UIA_EditControlTypeId,
+                UIA.UIA_DocumentControlTypeId):
+            return False
+    except Exception:
+        return False
     for pattern_id, interface in (
         (UIA.UIA_ValuePatternId, UIA.IUIAutomationValuePattern),
         (UIA.UIA_LegacyIAccessiblePatternId,

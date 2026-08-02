@@ -20,6 +20,7 @@ internal static class Desktop
     private const ushort VkControl = 0x11;
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
+    private const int SwRestore = 9;
 
     public static ForegroundInfo GetForeground()
     {
@@ -48,25 +49,33 @@ internal static class Desktop
         var foregroundThread = foreground == IntPtr.Zero
             ? 0
             : GetWindowThreadProcessId(foreground, out ignored);
+        var targetThread = GetWindowThreadProcessId(target, out ignored);
         var currentThread = GetCurrentThreadId();
-        var attached = foregroundThread != 0
+        var attachedForeground = foregroundThread != 0
             && foregroundThread != currentThread
             && AttachThreadInput(currentThread, foregroundThread, true);
+        var attachedTarget = targetThread != 0
+            && targetThread != currentThread
+            && targetThread != foregroundThread
+            && AttachThreadInput(currentThread, targetThread, true);
         try
         {
-            SetForegroundWindow(target);
+            ShowWindow(target, SwRestore);
+            for (var attempt = 0; attempt < 10; attempt += 1)
+            {
+                BringWindowToTop(target);
+                SetForegroundWindow(target);
+                if (GetForegroundWindow() == target)
+                    return true;
+                Thread.Sleep(20);
+            }
         }
         finally
         {
-            if (attached)
+            if (attachedTarget)
+                AttachThreadInput(currentThread, targetThread, false);
+            if (attachedForeground)
                 AttachThreadInput(currentThread, foregroundThread, false);
-        }
-
-        for (var attempt = 0; attempt < 10; attempt += 1)
-        {
-            if (GetForegroundWindow() == target)
-                return true;
-            Thread.Sleep(20);
         }
         return false;
     }
@@ -143,7 +152,22 @@ internal static class Desktop
     [StructLayout(LayoutKind.Explicit)]
     private struct InputUnion
     {
+        [FieldOffset(0)] public MouseInput Mouse;
         [FieldOffset(0)] public KeyboardInput Keyboard;
+    }
+
+    // INPUT's native union is sized by MOUSEINPUT (32 bytes on x64), even
+    // when SendInput receives only keyboard members. Omitting this member
+    // makes Marshal.SizeOf<Input>() too small and SendInput rejects the call.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -164,6 +188,12 @@ internal static class Desktop
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr window, int command);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);

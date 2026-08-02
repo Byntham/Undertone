@@ -147,8 +147,12 @@ def phase(app, expected, label, initial_text=None, dictations=2):
         time.sleep(0.6)  # let the target's input queue settle
         if initial_text:
             inject(f"keyboard.write({initial_text!r}); time.sleep(0.2); "
-                   "keyboard.send('ctrl+left')")
+                   "keyboard.send('home'); keyboard.send('ctrl+right'); "
+                   "keyboard.send('ctrl+right')")
             time.sleep(0.4)
+            prepared = main_mod.caretctx.text_around_caret(120, 120)
+            assert prepared == ("I like ", "apples."), \
+                f"{label}: caret setup failed, got {prepared!r}"
         for _ in range(dictations):
             inject("keyboard.press('f13'); time.sleep(0.6); "
                    "keyboard.release('f13')")

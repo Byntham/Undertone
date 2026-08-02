@@ -65,11 +65,11 @@ Reference commit: `a223ee5` (`Recognize empty embedded editors`).
 | Overlay recording tick | 33 ms |
 | Cleanup default timeout | 2.5 s |
 
-The worktree does not currently contain the project `.venv`, and no suitable
-Python 3.11 launcher is installed. Therefore the existing Python test suite and
-live startup measurements cannot be rerun in this checkout yet. This is an
-environment gap, not a changed application result; the tests remain the parity
-source and must be run before any production cutover.
+The project `.venv` was recreated from the installed `uv` CPython 3.11.15
+runtime on 2026-08-02. The routine Python suite, Settings behavior/performance
+checks, live caret integration, full fake-provider desktop E2E, and focus-return
+test now pass in this checkout. The environment gap recorded at migration start
+is closed.
 
 Provisional Electron budgets, to be accepted or revised from the packaged
 vertical spike:
@@ -101,7 +101,7 @@ vertical spike:
 
 - [x] One FIFO worker processes dictate, retry, and re-paste jobs.
 - [x] Each job snapshots config when it leaves the queue.
-- [ ] Target HWND is captured at recording end and restored before context read
+- [x] Target HWND is captured at recording end and restored before context read
       and again after cleanup.
 - [ ] UIA -> Win32 edit control -> insertion-memory fallback order is preserved.
 - [ ] Password controls are never read.
@@ -109,7 +109,7 @@ vertical spike:
 - [ ] Corrections, capitalization, spacing, punctuation seams, chat-period
       removal, and context-echo removal match the Python fixtures.
 - [ ] Clipboard restoration and insertion memory remain generation guarded.
-- [ ] Any paste/refocus failure places text on the clipboard and in history.
+- [x] Any paste/refocus failure places text on the clipboard and in history.
 
 ### Providers and local engines
 
@@ -176,8 +176,9 @@ Python entry points and packaging remain unchanged until milestone 7.
 - Built-renderer preview: expected content, theme colors, and semantic heading
   structure rendered successfully.
 - `npm audit`: zero known vulnerabilities at installation.
-- Python verification remains pending because the required project `.venv`
-  and Python 3.11 launcher are absent from this worktree environment.
+- Python verification was initially pending because this checkout lacked its
+  project `.venv`; that environment gap is closed in the desktop-E2E checkpoint
+  below.
 
 ### Vertical spike checkpoint - Windows host and overlay - 2026-08-02
 
@@ -191,8 +192,9 @@ Python entry points and packaging remain unchanged until milestone 7.
   state machine with injected-event and auto-repeat filtering.
 - Offscreen captures verify neutral recording, accent-blue locked, and message
   overlay states on transparency.
-- A physical/injected desktop key drive remains pending because it is an
-  opt-in desktop E2E check under the project's test policy.
+- The native host's injected desktop drive now passes under the explicit opt-in
+  gate. A complete packaged-Electron hotkey/audio/provider drive remains a
+  later pipeline/cutover gate.
 
 ### Vertical spike checkpoint - audio - 2026-08-02
 
@@ -210,17 +212,18 @@ Python entry points and packaging remain unchanged until milestone 7.
 - The versioned host protocol now exposes foreground HWND/process/title,
   bounded caret context, target focus, `SendInput` paste, DPAPI protection, and
   job-object process supervision through runtime-validated TypeScript methods.
-- Automated checks exercise only non-disruptive paths: foreground inspection,
+- Routine automated checks exercise only non-disruptive paths: foreground inspection,
   a 150 ms UIA request with Win32 fallback, DPAPI round-trips and malformed
   data, and cleanup of a long-running dummy child after graceful and forced
-  host termination. Focus and paste drive remain opt-in desktop E2E checks.
+  host termination. The opt-in desktop gate now additionally drives two WPF
+  targets, restores focus, reads caret context, and pastes through `SendInput`.
 - The installed .NET Framework managed UIA API exposes `TextPattern` but not
   `TextPattern2` or `LegacyIAccessiblePattern`. The spike therefore supports
   selection/caret ranges, `ValuePattern` empty checks, and classic Edit/RichEdit
   fallback now; native COM bindings for the two missing parity tiers remain
   before cutover.
-- `npm run verify` passes the strict build and 20 tests. Existing Python tests
-  are still unavailable in this checkout for the environment reason above.
+- `npm run verify` passed the strict build and 20 tests at this checkpoint.
+  The later desktop-E2E checkpoint records the restored Python environment.
 
 ### Vertical spike checkpoint - packaging - 2026-08-02
 
@@ -357,8 +360,9 @@ Python entry points and packaging remain unchanged until milestone 7.
   Local provider selection fails safely until local lifecycle migration lands.
 - The rebuilt unpacked package passes its isolated service/config smoke, and a
   fresh hardware audio smoke returned a 502 ms, 15,746-byte valid WAV. Physical
-  hotkey/focus/paste driving is still opt-in, so related parity boxes remain
-  open.
+  full packaged-Electron hotkey/audio/provider drive remains pending. Native
+  focus/paste and the Python reference's full fake-provider drive now pass their
+  explicit desktop gates.
 
 ### Shell checkpoint - tray-owned lifecycle - 2026-08-02
 
@@ -410,3 +414,26 @@ Python entry points and packaging remain unchanged until milestone 7.
 - `npm run verify` passes the strict build and 82 tests across 12 files. The
   rebuilt unpacked package passes isolated lifecycle smoke; no network provider
   request or production-config write was performed.
+
+### Desktop-E2E checkpoint - Python reference and Windows host - 2026-08-02
+
+- A fresh project `.venv` on CPython 3.11.15 passes syntax compilation, the
+  routine Python formatting/pipeline/gesture/provider/local-engine/caret suite,
+  Settings behavior checks, and every Settings resize gate (3.2-4.8 ms median
+  against the 18 ms limit).
+- The live caret test caught a classification defect: an empty Value/Legacy
+  pattern on the Windows desktop was being treated as an empty editor. Direct
+  empty evidence is now accepted only from UIA Edit and Document controls;
+  unit coverage and the WPF text/password, WinForms empty-field, desktop, and
+  bounded-timeout live cases all pass.
+- The Python full desktop E2E passes sentence start, middle insertion with both
+  caret seams, and insertion-memory fallback using real F13 hook/record/paste
+  wiring with fake transcription. Its middle-insertion setup now verifies the
+  caret explicitly instead of relying on WPF's inconsistent single
+  `Ctrl+Left` behavior. The separate focus-return scenario also passes.
+- A new opt-in Electron native-host desktop test drives two disposable WPF
+  editors, moves foreground to a thief window, restores the original HWND,
+  reads `I like |apples.`, and pastes through `SendInput`. It exposed and fixed
+  two native defects: the marshalled `INPUT` union lacked `MOUSEINPUT`'s x64
+  size, and focus queue attachments were released before Windows completed the
+  foreground transition. The corrected gate passed four consecutive runs.

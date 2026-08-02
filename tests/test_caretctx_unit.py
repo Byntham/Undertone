@@ -85,6 +85,7 @@ class FakeValuePattern:
 
 class FakeElement:
     CurrentIsPassword = False
+    CurrentControlType = 10
 
     def __init__(self, caret, selected):
         self.patterns = {
@@ -109,6 +110,8 @@ UIA = SimpleNamespace(
     UIA_TextPatternId=1,
     UIA_ValuePatternId=3,
     UIA_LegacyIAccessiblePatternId=4,
+    UIA_EditControlTypeId=10,
+    UIA_DocumentControlTypeId=11,
     IUIAutomationTextPattern2=object(),
     IUIAutomationTextPattern=object(),
     IUIAutomationValuePattern=object(),
@@ -146,6 +149,7 @@ def test_selection_is_excluded():
 def test_value_pattern_proves_empty():
     class ValueElement:
         CurrentIsPassword = False
+        CurrentControlType = UIA.UIA_EditControlTypeId
 
         def __init__(self, value):
             self.value = value
@@ -172,6 +176,7 @@ def test_value_pattern_proves_empty():
 def test_legacy_pattern_proves_empty():
     class LegacyElement:
         CurrentIsPassword = False
+        CurrentControlType = UIA.UIA_EditControlTypeId
 
         def __init__(self, value):
             self.value = value
@@ -192,6 +197,7 @@ def test_legacy_pattern_proves_empty():
 def test_empty_embedded_editor_rejects_parent_context():
     class EmbeddedElement:
         CurrentIsPassword = False
+        CurrentControlType = UIA.UIA_DocumentControlTypeId
 
         def __init__(self, text, caret, value):
             self.patterns = {
@@ -223,12 +229,27 @@ def test_empty_embedded_editor_rejects_parent_context():
             "ordinary", " text")
 
 
+def test_empty_value_on_non_editor_is_unknown():
+    class DesktopElement:
+        CurrentIsPassword = False
+        CurrentControlType = 99
+
+        def GetCurrentPattern(self, pattern_id):
+            if pattern_id == UIA.UIA_ValuePatternId:
+                return FakeRaw(FakeValuePattern(""))
+            return None
+
+    assert caretctx._query_caret_context(
+        UIA, FakeAutomation(DesktopElement()), 120, 120) is None
+
+
 def main():
     test_caret_sides()
     test_selection_is_excluded()
     test_value_pattern_proves_empty()
     test_legacy_pattern_proves_empty()
     test_empty_embedded_editor_rejects_parent_context()
+    test_empty_value_on_non_editor_is_unknown()
     print("ALL TESTS PASSED")
 
 
