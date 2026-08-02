@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -57,6 +57,39 @@ describe("Windows host", () => {
       });
     });
     expect(code).toBe(0);
+  });
+
+  it("extracts only matching runtime files from ZIP archives", async () => {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-zip-"));
+    const source = path.join(temporary, "source");
+    const archive = path.join(temporary, "runtime.zip");
+    const target = path.join(temporary, "target");
+    const host = new WindowsHost();
+    try {
+      await mkdir(source);
+      await writeFile(path.join(source, "whisper-server.exe"), "server", "utf8");
+      await writeFile(path.join(source, "unused-demo.exe"), "unused", "utf8");
+      const zipped = spawnSync("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Compress-Archive -Path '${source}\\*' -DestinationPath '${archive}'`,
+      ], { windowsHide: true, encoding: "utf8" });
+      if (zipped.status !== 0) throw new Error(`Could not create test ZIP: ${zipped.stderr}`);
+
+      await host.start();
+      expect(await host.extractSubset(
+        [archive],
+        ["whisper-server.exe", "ggml-cpu-*.dll"],
+        target,
+      )).toBe(1);
+      expect(await readFile(path.join(target, "whisper-server.exe"), "utf8"))
+        .toBe("server");
+      await expect(readFile(path.join(target, "unused-demo.exe"), "utf8"))
+        .rejects.toThrow();
+    } finally {
+      await host.stop();
+      await rm(temporary, { recursive: true, force: true });
+    }
   });
 
   it("terminates supervised processes when the host exits", async () => {

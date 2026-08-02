@@ -118,7 +118,7 @@ vertical spike:
 - [x] Vocabulary biasing remains xAI-only.
 - [x] Cleanup failure/timeout silently falls back to deterministic rules.
 - [x] Local cleanup never blocks the current dictation on a cold model.
-- [ ] Existing pinned downloads, hashes, CPU/CUDA fallback, VAD, model
+- [x] Existing pinned downloads, hashes, CPU/CUDA fallback, VAD, model
       overrides, idle eject, and unified residency settings are preserved.
 - [x] Local child processes die on normal exit and forced parent termination.
 
@@ -464,5 +464,26 @@ Python entry points and packaging remain unchanged until milestone 7.
   when that engine exists, and exposes Load/Eject plus unified startup and idle
   controls. Production-renderer checks at 960 x 720 cover the Local selectors,
   CUDA status transition, autosave controls, scrolling, and no horizontal
-  overflow. Pinned download/extraction/progress UI remains before the combined
-  local-engine parity box can close.
+  overflow.
+
+### Local-install checkpoint - pinned first install - 2026-08-02
+
+- The Electron main process now installs missing whisper.cpp and llama.cpp
+  engines from the same version-, size-, and SHA-256-pinned manifests as the
+  Python reference. Downloads stream to `.part` files, are promoted only after
+  exact verification, and retain the CPU runtime as the CUDA fallback.
+- The native host extracts only the required server/DLL patterns into a staging
+  directory before replacing a runtime build. Cleanup's split CUDA and cudart
+  archives merge through the same confined flat-file extractor; extraction has
+  a dedicated five-minute IPC allowance for slow disks.
+- Settings shows the remaining download size, an Install action, per-phase
+  progress, and the resulting installed/loaded state. The Local provider stays
+  unavailable for each engine until that engine's required files exist.
+- Unit tests cover verified promotion, failed-hash cleanup, CPU-only and NVIDIA
+  pending-size calculations, and synthetic archive filtering. The opt-in live
+  installer gate additionally fetched and verified the real pinned whisper CPU
+  archive and Silero VAD artifact, then extracted the real server subset.
+- `npm run verify` passes strict compilation, production builds, and 91 tests
+  with three opt-in gates skipped. The rebuilt unpacked package passes both
+  `PACKAGED_SMOKE_OK` and `PACKAGED_LOCAL_RUNTIME_SMOKE_OK`; production-renderer
+  checks at 960 x 720 cover the missing-engine, progress, and post-install UI.

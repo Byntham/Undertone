@@ -54,7 +54,6 @@ function SettingsApp(): React.JSX.Element {
     kind: LocalEngineKind,
     action: LocalEngineAction,
   ): Promise<boolean> => {
-    setSaving(true);
     setError(null);
     try {
       setSettings(await settingsApi.localAction(kind, action));
@@ -62,8 +61,6 @@ function SettingsApp(): React.JSX.Element {
     } catch (reason) {
       setError(errorMessage(reason));
       return false;
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -244,11 +241,6 @@ function Providers({
         </select>
       </SettingRow>
     </div>
-    {(!settings.localEngines.stt.installed || !settings.localEngines.cleanup.installed)
-      && <div className="notice warning">
-        Existing local installations are reused. Download/install controls are still being migrated.
-      </div>}
-
     <h2>API keys</h2>
     <div className="providerGrid">
       <KeyCard
@@ -333,17 +325,25 @@ function LocalEngineCard({
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const running = status.loaded || status.loading;
-  const label = !status.installed
-    ? "Not installed"
-    : status.loading
-      ? "Loading…"
-      : status.loaded
-        ? `Loaded · ${status.build?.toUpperCase() ?? "READY"}`
-        : "Installed · Ejected";
+  const working = busy || status.installing;
+  const nextAction: LocalEngineAction = !status.installed
+    ? "install"
+    : running
+      ? "eject"
+      : "load";
+  const label = status.installing
+    ? `${status.installPhase || "Installing"} · ${Math.round(status.installFraction * 100)}%`
+    : !status.installed
+      ? `Not installed · ${formatDownloadSize(status.installBytes)} download`
+      : status.loading
+        ? "Loading…"
+        : status.loaded
+          ? `Loaded · ${status.build?.toUpperCase() ?? "READY"}`
+          : "Installed · Ejected";
   const invoke = async (): Promise<void> => {
     setBusy(true);
     try {
-      await action(kind, running ? "eject" : "load");
+      await action(kind, nextAction);
     } finally {
       setBusy(false);
     }
@@ -351,17 +351,22 @@ function LocalEngineCard({
   return <div className="localEngineCard">
     <div>
       <strong>{name}</strong>
-      <span data-running={running}>{label}</span>
+      <span data-running={running} data-installing={status.installing}>{label}</span>
     </div>
     <button
       type="button"
       className="smallButton accent"
-      disabled={!status.installed || busy}
+      disabled={working}
       onClick={() => { void invoke(); }}
     >
-      {busy ? "Working…" : running ? "Eject" : "Load"}
+      {working ? "Working…" : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
     </button>
   </div>;
+}
+
+function formatDownloadSize(bytes: number): string {
+  if (bytes <= 0) return "no additional";
+  return `${(bytes / (1 << 30)).toFixed(1)} GB`;
 }
 
 function KeyCard({
@@ -548,8 +553,26 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     localLoaded: false,
     localIdleMinutes: 0,
     localEngines: {
-      stt: { installed: true, loaded: false, loading: false, build: null },
-      cleanup: { installed: true, loaded: false, loading: false, build: null },
+      stt: {
+        installed: true,
+        loaded: false,
+        loading: false,
+        build: null,
+        installing: false,
+        installPhase: "",
+        installFraction: 0,
+        installBytes: 0,
+      },
+      cleanup: {
+        installed: false,
+        loaded: false,
+        loading: false,
+        build: null,
+        installing: false,
+        installPhase: "",
+        installFraction: 0,
+        installBytes: 3_155_769_803,
+      },
     },
   };
   return {
@@ -583,15 +606,35 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       return preview;
     },
     async localAction(kind, action) {
+      if (action === "install") {
+        preview = {
+          ...preview,
+          localEngines: {
+            ...preview.localEngines,
+            [kind]: {
+              ...preview.localEngines[kind],
+              installing: true,
+              installPhase: "Downloading model",
+              installFraction: 0.42,
+            },
+          },
+        };
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
       preview = {
         ...preview,
         localEngines: {
           ...preview.localEngines,
           [kind]: {
             ...preview.localEngines[kind],
+            installed: action === "install" || preview.localEngines[kind].installed,
             loaded: action === "load",
             loading: false,
             build: action === "load" ? "cuda" : null,
+            installing: false,
+            installPhase: "",
+            installFraction: 0,
+            installBytes: action === "install" ? 0 : preview.localEngines[kind].installBytes,
           },
         },
       };

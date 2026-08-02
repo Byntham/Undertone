@@ -20,6 +20,8 @@ New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
     /reference:System.Core.dll `
     /reference:System.Security.dll `
     /reference:System.Web.Extensions.dll `
+    /reference:System.IO.Compression.dll `
+    /reference:System.IO.Compression.FileSystem.dll `
     /reference:"$(Join-Path $frameworkWpf 'UIAutomationClient.dll')" `
     /reference:"$(Join-Path $frameworkWpf 'UIAutomationTypes.dll')" `
     /reference:"$(Join-Path $frameworkWpf 'WindowsBase.dll')" `

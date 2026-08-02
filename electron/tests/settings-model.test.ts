@@ -22,8 +22,26 @@ describe("settings model", () => {
       localLoaded: false,
       localIdleMinutes: 0,
       localEngines: {
-        stt: { installed: false, loaded: false, loading: false, build: null },
-        cleanup: { installed: false, loaded: false, loading: false, build: null },
+        stt: {
+          installed: false,
+          loaded: false,
+          loading: false,
+          build: null,
+          installing: false,
+          installPhase: "",
+          installFraction: 0,
+          installBytes: 0,
+        },
+        cleanup: {
+          installed: false,
+          loaded: false,
+          loading: false,
+          build: null,
+          installing: false,
+          installPhase: "",
+          installFraction: 0,
+          installBytes: 0,
+        },
       },
     });
     expect(snapshot).not.toHaveProperty("api_key");

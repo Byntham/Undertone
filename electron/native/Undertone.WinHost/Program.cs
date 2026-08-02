@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -233,6 +234,17 @@ internal static class Program
                     { "running", _supervisor.IsRunning(processId) }
                 });
             }
+            else if (type == "extractSubset")
+            {
+                var count = ArchiveInstaller.ExtractSubset(
+                    StringList(command, "zipFiles"),
+                    StringList(command, "patterns"),
+                    StringValue(command, "targetDirectory"));
+                Respond(requestId, "subsetExtracted", new Dictionary<string, object>
+                {
+                    { "fileCount", count }
+                });
+            }
             else if (type == "shutdown")
             {
                 _captureInput = false;
@@ -291,6 +303,25 @@ internal static class Program
             || !int.TryParse(Convert.ToString(value), out parsed))
             return fallback;
         return Math.Max(minimum, Math.Min(maximum, parsed));
+    }
+
+    private static List<string> StringList(
+        Dictionary<string, object> values,
+        string key)
+    {
+        object value;
+        var result = new List<string>();
+        if (!values.TryGetValue(key, out value) || value == null || value is string)
+            return result;
+        var items = value as IEnumerable;
+        if (items == null)
+            return result;
+        foreach (var item in items)
+        {
+            if (item != null)
+                result.Add(Convert.ToString(item));
+        }
+        return result;
     }
 
     private static IntPtr OnKeyboard(int code, IntPtr wParam, IntPtr lParam)

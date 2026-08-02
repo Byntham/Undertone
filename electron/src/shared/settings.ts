@@ -1,13 +1,17 @@
 export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
 export type CloudProviderId = Exclude<SettingsProviderId, "local">;
 export type LocalEngineKind = "stt" | "cleanup";
-export type LocalEngineAction = "load" | "eject";
+export type LocalEngineAction = "install" | "load" | "eject";
 
 export interface LocalEngineSnapshot {
   installed: boolean;
   loaded: boolean;
   loading: boolean;
   build: "cpu" | "cuda" | null;
+  installing: boolean;
+  installPhase: string;
+  installFraction: number;
+  installBytes: number;
 }
 
 export interface SettingsSnapshot {

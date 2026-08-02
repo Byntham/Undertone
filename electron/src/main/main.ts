@@ -26,6 +26,7 @@ import {
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
+import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
   createLocalCleanupRuntime,
   createLocalSttRuntime,
@@ -33,6 +34,10 @@ import {
 } from "./localRuntime";
 import { FetchHttpClient } from "../platform/http";
 import { WindowsHost } from "../platform/windowsHost";
+import type {
+  LocalEngineKind,
+  LocalEngineSnapshot,
+} from "../shared/settings";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
@@ -67,6 +72,11 @@ if (!gotLock) {
   let pipeline: DictationPipelineQueue | null = null;
   let localStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
+  let localInstaller: LocalInstaller | null = null;
+  const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
+    stt: { installing: false, phase: "", fraction: 0 },
+    cleanup: { installing: false, phase: "", fraction: 0 },
+  };
   let shutdownComplete = false;
   let shutdownPromise: Promise<void> | null = null;
   let pendingTarget: Promise<DictationTarget | null> | null = null;
@@ -238,6 +248,7 @@ if (!gotLock) {
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
     const localRoot = path.join(localAppData, "Undertone");
+    localInstaller = new LocalInstaller(windowsHost, localRoot);
     localStt = createLocalSttRuntime(windowsHost, localRoot, {
       onNotice: (message) => showFeedback(message, "warning"),
     });
@@ -332,11 +343,23 @@ if (!gotLock) {
 
   function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
     const engineSnapshot = (
+      kind: LocalEngineKind,
       runtime: LocalServerRuntime | null,
       model: string,
-    ): { installed: boolean; loaded: boolean; loading: boolean; build: "cpu" | "cuda" | null } => {
+    ): LocalEngineSnapshot => {
+      const install = localInstallState[kind];
+      const installBytes = localInstaller?.installSize(kind) ?? 0;
       if (runtime === null) {
-        return { installed: false, loaded: false, loading: false, build: null };
+        return {
+          installed: false,
+          loaded: false,
+          loading: false,
+          build: null,
+          installing: install.installing,
+          installPhase: install.phase,
+          installFraction: install.fraction,
+          installBytes,
+        };
       }
       try {
         const status = runtime.status(model);
@@ -345,14 +368,31 @@ if (!gotLock) {
           loaded: status.loaded,
           loading: status.loading,
           build: status.build,
+          installing: install.installing,
+          installPhase: install.phase,
+          installFraction: install.fraction,
+          installBytes,
         };
       } catch {
-        return { installed: false, loaded: false, loading: false, build: null };
+        return {
+          installed: false,
+          loaded: false,
+          loading: false,
+          build: null,
+          installing: install.installing,
+          installPhase: install.phase,
+          installFraction: install.fraction,
+          installBytes,
+        };
       }
     };
     return settingsSnapshot(config, app.getVersion(), electronPreview, {
-      stt: engineSnapshot(localStt, modelOverride(config, "stt", "local")),
-      cleanup: engineSnapshot(localCleanup, modelOverride(config, "cleanup", "local")),
+      stt: engineSnapshot("stt", localStt, modelOverride(config, "stt", "local")),
+      cleanup: engineSnapshot(
+        "cleanup",
+        localCleanup,
+        modelOverride(config, "cleanup", "local"),
+      ),
     });
   }
 
@@ -439,14 +479,30 @@ if (!gotLock) {
     }
     if (!isRecord(value)
       || (value.kind !== "stt" && value.kind !== "cleanup")
-      || (value.action !== "load" && value.action !== "eject")) {
+      || (value.action !== "install"
+        && value.action !== "load"
+        && value.action !== "eject")) {
       throw new Error("Invalid local engine action");
     }
+    const kind = value.kind;
     const runtime = value.kind === "stt" ? localStt : localCleanup;
     if (runtime === null) throw new Error("Local engine service is not ready");
-    const model = modelOverride(config, value.kind, "local");
-    if (value.action === "load") await runtime.ensureReady(model);
-    else await runtime.eject();
+    const model = modelOverride(config, kind, "local");
+    if (value.action === "install") {
+      if (localInstaller === null) throw new Error("Local installer is not ready");
+      localInstallState[kind] = { installing: true, phase: "Preparing", fraction: 0 };
+      try {
+        await localInstaller.install(kind, (progress) => {
+          localInstallState[kind] = { installing: true, ...progress };
+        });
+      } finally {
+        localInstallState[kind] = { installing: false, phase: "", fraction: 0 };
+      }
+    } else if (value.action === "load") {
+      await runtime.ensureReady(model);
+    } else {
+      await runtime.eject();
+    }
     return currentSettingsSnapshot();
   });
   ipcMain.on("audio:event", (event, payload: unknown) => {

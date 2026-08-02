@@ -227,6 +227,27 @@ export class WindowsHost {
     return response.running;
   }
 
+  async extractSubset(
+    zipFiles: readonly string[],
+    patterns: readonly string[],
+    targetDirectory: string,
+  ): Promise<number> {
+    const response = await this.request(
+      "extractSubset",
+      "subsetExtracted",
+      {
+        zipFiles: [...zipFiles],
+        patterns: [...patterns],
+        targetDirectory,
+      },
+      300_000,
+    );
+    if (typeof response.fileCount !== "number") {
+      throw new Error("Windows host returned an invalid extraction result");
+    }
+    return response.fileCount;
+  }
+
   async stopSupervised(processId: number): Promise<boolean> {
     const response = await this.request("stopSupervised", "processStopped", {
       processId,
@@ -253,7 +274,8 @@ export class WindowsHost {
   private async request(
     type: string,
     expectedType: string,
-    values: Record<string, string | number | boolean> = {},
+    values: Record<string, unknown> = {},
+    timeoutMs = this.requestTimeoutMs,
   ): Promise<HostResponse> {
     const child = this.child;
     if (child === null || !child.stdin.writable) {
@@ -264,7 +286,7 @@ export class WindowsHost {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(`Windows host request timed out: ${type}`));
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(requestId, { expectedType, resolve, reject, timer });
       child.stdin.write(`${JSON.stringify({
         ...values,

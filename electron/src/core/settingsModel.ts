@@ -136,6 +136,10 @@ const EMPTY_LOCAL_ENGINE: LocalEngineSnapshot = {
   loaded: false,
   loading: false,
   build: null,
+  installing: false,
+  installPhase: "",
+  installFraction: 0,
+  installBytes: 0,
 };
 
 const EMPTY_LOCAL_ENGINES = {
