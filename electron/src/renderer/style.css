@@ -1,0 +1,25 @@
+:root {
+  color: #abb2bf;
+  background: #282c34;
+  font-family: "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  padding: 48px;
+}
+
+.eyebrow {
+  color: #61afef;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+h1 {
+  color: #e5e9f0;
+  font-size: 28px;
+}

@@ -12,6 +12,11 @@ __pycache__/
 build/
 dist/
 
+# Electron / TypeScript output
+electron/node_modules/
+electron/dist/
+electron/coverage/
+
 # Transient agent worktrees (a second checkout appears here during agent
 # runs — without this, git add -A would sweep in thousands of files)
 .claude/worktrees/
