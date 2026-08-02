@@ -95,7 +95,7 @@ vertical spike:
       typing and mouse clicks do.
 - [x] Audio is 16 kHz, mono, signed 16-bit PCM WAV and the existing minimum
       duration remains enforced.
-- [ ] Device selection is stored and resolved by microphone name.
+- [x] Device selection is stored and resolved by microphone name.
 
 ### Pipeline and formatting
 
@@ -508,3 +508,18 @@ Python entry points and packaging remain unchanged until milestone 7.
 - `npm run verify` passes 97 tests with three opt-in gates skipped. The built
   General page passed its 960 x 720 screen check, interaction update, semantic
   controls, and zero-horizontal-overflow check.
+
+### Audio checkpoint - microphone selection - 2026-08-02
+
+- The hidden audio renderer reports distinct, labeled Windows audio-input
+  devices and refreshes the list on `devicechange`. General Settings stores the
+  selected device name, preserves a disconnected selection visibly, and offers
+  an explicit system-default fallback.
+- Each capture resolves the saved name against the current `enumerateDevices()`
+  result and applies that device ID as an exact media constraint. If the device
+  is absent, capture falls back to the current system default instead of
+  failing on a stale identifier.
+- The real hardware smoke passed after this wiring, capturing 502 ms into a
+  15,746-byte, 16 kHz mono signed-16-bit PCM WAV entirely in memory.
+- The production General renderer passed its 960 x 720 device-list interaction
+  and zero-horizontal-overflow checks.

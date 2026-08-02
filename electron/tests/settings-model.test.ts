@@ -13,6 +13,8 @@ describe("settings model", () => {
       restoreClipboard: true,
       hotkey: "right ctrl",
       repasteHotkey: "ctrl+alt+v",
+      inputDevice: "",
+      microphones: [],
       appVersion: "1.3.0",
       preview: true,
       provider: "xai",
@@ -102,6 +104,7 @@ describe("settings model", () => {
       smartFormatting: false,
       aiCleanup: false,
       restoreClipboard: false,
+      inputDevice: "USB Podcast Mic",
       localLoaded: true,
       localIdleMinutes: 15,
     });
@@ -110,6 +113,7 @@ describe("settings model", () => {
     expect(next.smart_formatting).toBe(false);
     expect(next.ai_cleanup).toBe(false);
     expect(next.restore_clipboard).toBe(false);
+    expect(next.input_device).toBe("USB Podcast Mic");
     expect(next.local_loaded).toBe(true);
     expect(next.local_idle_minutes).toBe(15);
     expect(config.language).toBe("en");

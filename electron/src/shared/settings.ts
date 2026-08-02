@@ -22,6 +22,8 @@ export interface SettingsSnapshot {
   restoreClipboard: boolean;
   hotkey: string;
   repasteHotkey: string;
+  inputDevice: string;
+  microphones: string[];
   appVersion: string;
   preview: boolean;
   provider: SettingsProviderId;
@@ -41,6 +43,7 @@ export interface SettingsPatch {
   restoreClipboard?: boolean;
   hotkey?: string;
   repasteHotkey?: string;
+  inputDevice?: string;
   provider?: SettingsProviderId;
   cleanupProvider?: SettingsProviderId;
   providerKey?: { provider: CloudProviderId; value: string };

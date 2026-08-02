@@ -153,6 +153,18 @@ function General({
           capture={captureShortcut}
         />
       </SettingRow>
+      <SettingRow title="Microphone" description="Select the input device by its Windows name.">
+        <select
+          aria-label="Microphone"
+          value={settings.inputDevice}
+          onChange={(event) => { void update({ inputDevice: event.target.value }); }}
+        >
+          <option value="">System default</option>
+          {settings.inputDevice !== "" && !settings.microphones.includes(settings.inputDevice)
+            && <option value={settings.inputDevice}>{settings.inputDevice} (disconnected)</option>}
+          {settings.microphones.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </SettingRow>
       <SettingRow title="Transcription language" description="Language hint sent to the selected speech provider.">
         <select
           aria-label="Transcription language"
@@ -603,6 +615,8 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     restoreClipboard: true,
     hotkey: "right ctrl",
     repasteHotkey: "ctrl+alt+v",
+    inputDevice: "",
+    microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.3.0-electron.0",
     preview: true,
     provider: "xai",

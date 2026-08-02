@@ -67,6 +67,7 @@ if (!gotLock) {
   let quitting = false;
   let paused = false;
   let audioReady = false;
+  let microphones: string[] = [];
   let settingsReady = false;
   let config: UndertoneConfig = normalizeConfig(undefined);
   let configStore: ConfigStore | null = null;
@@ -165,7 +166,10 @@ if (!gotLock) {
         sendOverlay("message", "Audio service is not ready");
         return false;
       }
-      audioWindow.webContents.send("audio:command", { type: "start" });
+      audioWindow.webContents.send("audio:command", {
+        type: "start",
+        deviceName: config.input_device,
+      });
       sendOverlay("recording");
       return true;
     },
@@ -440,7 +444,7 @@ if (!gotLock) {
         localCleanup,
         modelOverride(config, "cleanup", "local"),
       ),
-    });
+    }, microphones);
   }
 
   async function persistSettingsPatch(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
@@ -604,6 +608,9 @@ if (!gotLock) {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
       audioReady = true;
+      microphones = stringArray(payload.devices);
+    } else if (payload.type === "devices") {
+      microphones = stringArray(payload.devices);
     } else if (payload.type === "stopped") {
       const wav = toByteArray(payload.wav);
       const target = pendingTarget;
@@ -725,6 +732,11 @@ function toByteArray(value: unknown): Uint8Array | null {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
   }
   return null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {

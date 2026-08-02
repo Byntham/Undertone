@@ -1,8 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-export type AudioCommand = { type: "start" | "stop" | "cancel" };
+export type AudioCommand =
+  | { type: "start"; deviceName?: string }
+  | { type: "stop" | "cancel" };
 export type AudioEvent =
-  | { type: "ready" }
+  | { type: "ready"; devices: string[] }
+  | { type: "devices"; devices: string[] }
   | { type: "started"; sampleRate: number }
   | { type: "stopped"; wav: ArrayBuffer; durationMs: number }
   | { type: "cancelled" }

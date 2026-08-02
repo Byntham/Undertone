@@ -21,6 +21,7 @@ const PATCH_FIELDS = new Set([
   "restoreClipboard",
   "hotkey",
   "repasteHotkey",
+  "inputDevice",
   "provider",
   "cleanupProvider",
   "providerKey",
@@ -41,6 +42,7 @@ export function settingsSnapshot(
     stt: LocalEngineSnapshot;
     cleanup: LocalEngineSnapshot;
   } = EMPTY_LOCAL_ENGINES,
+  microphones: readonly string[] = [],
 ): SettingsSnapshot {
   const provider = snapshotProvider(config.provider);
   const cleanupProvider = snapshotProvider(config.cleanup_provider);
@@ -51,6 +53,8 @@ export function settingsSnapshot(
     restoreClipboard: config.restore_clipboard,
     hotkey: config.hotkey,
     repasteHotkey: config.repaste_hotkey,
+    inputDevice: config.input_device,
+    microphones: [...microphones],
     appVersion,
     preview,
     provider,
@@ -118,6 +122,9 @@ export function applySettingsPatch(
     shortcutChanged = true;
   }
   if (shortcutChanged) validateDistinctShortcuts(next);
+  if (value.inputDevice !== undefined) {
+    next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);
+  }
   if (value.provider !== undefined) {
     next.provider = providerField(value.provider, "provider");
   }

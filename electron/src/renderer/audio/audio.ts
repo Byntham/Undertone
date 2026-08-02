@@ -27,7 +27,7 @@ let operations = Promise.resolve();
 
 window.undertoneAudio.onCommand((command) => {
   operations = operations.then(async () => {
-    if (command.type === "start") await startCapture();
+    if (command.type === "start") await startCapture(command.deviceName ?? "");
     else if (command.type === "stop") await stopCapture(false);
     else await stopCapture(true);
   }).catch((error: unknown) => {
@@ -38,16 +38,22 @@ window.undertoneAudio.onCommand((command) => {
   });
 });
 
-window.undertoneAudio.emit({ type: "ready" });
+void reportDevices("ready");
+navigator.mediaDevices.addEventListener("devicechange", () => { void reportDevices("devices"); });
 
-async function startCapture(): Promise<void> {
+async function startCapture(deviceName: string): Promise<void> {
   if (session !== null) return;
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const selected = devices.find((device) => (
+    device.kind === "audioinput" && device.label === deviceName
+  ));
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
+      ...(selected === undefined ? {} : { deviceId: { exact: selected.deviceId } }),
     },
     video: false,
   });
@@ -65,6 +71,15 @@ async function startCapture(): Promise<void> {
   await context.resume();
   session = { context, stream, source, worklet, sink, chunks, startedAt: performance.now() };
   window.undertoneAudio.emit({ type: "started", sampleRate: context.sampleRate });
+  await reportDevices("devices");
+}
+
+async function reportDevices(type: "ready" | "devices"): Promise<void> {
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const names = [...new Set(devices
+    .filter((device) => device.kind === "audioinput" && device.label.trim().length > 0)
+    .map((device) => device.label.trim()))].sort((left, right) => left.localeCompare(right));
+  window.undertoneAudio.emit({ type, devices: names });
 }
 
 async function stopCapture(discard: boolean): Promise<void> {
