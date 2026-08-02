@@ -120,7 +120,7 @@ vertical spike:
 - [ ] Local cleanup never blocks the current dictation on a cold model.
 - [ ] Existing pinned downloads, hashes, CPU/CUDA fallback, VAD, model
       overrides, idle eject, and unified residency settings are preserved.
-- [ ] Local child processes die on normal exit and forced parent termination.
+- [x] Local child processes die on normal exit and forced parent termination.
 
 ### Shell and settings
 
@@ -204,3 +204,20 @@ Python entry points and packaging remain unchanged until milestone 7.
   16 kHz mono signed-16-bit PCM WAV in memory; no audio was saved or uploaded.
 - Integrated startup loads the settings, overlay, and audio renderers plus one
   Windows host, and forced parent termination leaves no child process behind.
+
+### Vertical spike checkpoint - Windows desktop services - 2026-08-02
+
+- The versioned host protocol now exposes foreground HWND/process/title,
+  bounded caret context, target focus, `SendInput` paste, DPAPI protection, and
+  job-object process supervision through runtime-validated TypeScript methods.
+- Automated checks exercise only non-disruptive paths: foreground inspection,
+  a 150 ms UIA request with Win32 fallback, DPAPI round-trips and malformed
+  data, and cleanup of a long-running dummy child after graceful and forced
+  host termination. Focus and paste drive remain opt-in desktop E2E checks.
+- The installed .NET Framework managed UIA API exposes `TextPattern` but not
+  `TextPattern2` or `LegacyIAccessiblePattern`. The spike therefore supports
+  selection/caret ranges, `ValuePattern` empty checks, and classic Edit/RichEdit
+  fallback now; native COM bindings for the two missing parity tiers remain
+  before cutover.
+- `npm run verify` passes the strict build and 20 tests. Existing Python tests
+  are still unavailable in this checkout for the environment reason above.

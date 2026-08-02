@@ -34,6 +34,8 @@ internal static class Program
     private static uint _mainThreadId;
     private static IntPtr _keyboardHook;
     private static IntPtr _mouseHook;
+    private static CaretReader _caret;
+    private static ProcessSupervisor _supervisor;
 
     public static int Main()
     {
@@ -43,6 +45,8 @@ internal static class Program
 
         try
         {
+            _caret = new CaretReader();
+            _supervisor = new ProcessSupervisor();
             _keyboardHook = InstallHook(WhKeyboardLl, KeyboardProc);
             _mouseHook = InstallHook(WhMouseLl, MouseProc);
 
@@ -77,6 +81,10 @@ internal static class Program
                 UnhookWindowsHookEx(_keyboardHook);
             if (_mouseHook != IntPtr.Zero)
                 UnhookWindowsHookEx(_mouseHook);
+            if (_supervisor != null)
+                _supervisor.Dispose();
+            if (_caret != null)
+                _caret.Dispose();
             Output.CompleteAdding();
             writer.Join(1000);
         }
@@ -127,40 +135,153 @@ internal static class Program
         object requestId;
         command.TryGetValue("requestId", out requestId);
 
-        if (type == "ping")
+        try
         {
-            Respond(requestId, "pong");
+            if (type == "ping")
+            {
+                Respond(requestId, "pong");
+            }
+            else if (type == "startInput")
+            {
+                _captureInput = true;
+                Respond(requestId, "inputStarted");
+            }
+            else if (type == "stopInput")
+            {
+                _captureInput = false;
+                Respond(requestId, "inputStopped");
+            }
+            else if (type == "getForeground")
+            {
+                var foreground = Desktop.GetForeground();
+                Respond(requestId, "foreground", new Dictionary<string, object>
+                {
+                    { "window", foreground.Window },
+                    { "processId", foreground.ProcessId },
+                    { "executable", foreground.Executable },
+                    { "title", foreground.Title }
+                });
+            }
+            else if (type == "focusWindow")
+            {
+                long window;
+                var focused = long.TryParse(StringValue(command, "window"), out window)
+                    && Desktop.FocusWindow(new IntPtr(window));
+                Respond(requestId, "focusResult", new Dictionary<string, object>
+                {
+                    { "focused", focused }
+                });
+            }
+            else if (type == "getCaretContext")
+            {
+                var before = BoundedInt(command, "before", 300, 0, 5000);
+                var after = BoundedInt(command, "after", 300, 0, 5000);
+                var context = _caret.Query(before, after, 150);
+                Respond(requestId, "caretContext", new Dictionary<string, object>
+                {
+                    { "available", context != null },
+                    { "before", context == null ? null : context.Before },
+                    { "after", context == null ? null : context.After }
+                });
+            }
+            else if (type == "sendPaste")
+            {
+                Respond(requestId, "pasteResult", new Dictionary<string, object>
+                {
+                    { "sent", Desktop.SendPaste() }
+                });
+            }
+            else if (type == "protectSecret")
+            {
+                Respond(requestId, "secretProtected", new Dictionary<string, object>
+                {
+                    { "value", SecretProtector.Protect(StringValue(command, "value")) }
+                });
+            }
+            else if (type == "unprotectSecret")
+            {
+                Respond(requestId, "secretUnprotected", new Dictionary<string, object>
+                {
+                    { "value", SecretProtector.Unprotect(StringValue(command, "value")) }
+                });
+            }
+            else if (type == "spawnSupervised")
+            {
+                var processId = _supervisor.Start(
+                    StringValue(command, "file"),
+                    StringValue(command, "arguments"),
+                    StringValue(command, "workingDirectory"));
+                Respond(requestId, "processStarted", new Dictionary<string, object>
+                {
+                    { "processId", processId }
+                });
+            }
+            else if (type == "stopSupervised")
+            {
+                var processId = BoundedInt(command, "processId", 0, 1, int.MaxValue);
+                Respond(requestId, "processStopped", new Dictionary<string, object>
+                {
+                    { "stopped", _supervisor.Stop(processId) }
+                });
+            }
+            else if (type == "shutdown")
+            {
+                _captureInput = false;
+                Respond(requestId, "shuttingDown");
+                PostThreadMessage(_mainThreadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
+            }
+            else
+            {
+                EmitError("unknown_command", type ?? "Missing command type", requestId);
+            }
         }
-        else if (type == "startInput")
+        catch (Exception error)
         {
-            _captureInput = true;
-            Respond(requestId, "inputStarted");
-        }
-        else if (type == "stopInput")
-        {
-            _captureInput = false;
-            Respond(requestId, "inputStopped");
-        }
-        else if (type == "shutdown")
-        {
-            _captureInput = false;
-            Respond(requestId, "shuttingDown");
-            PostThreadMessage(_mainThreadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
-        }
-        else
-        {
-            EmitError("unknown_command", type ?? "Missing command type", requestId);
+            EmitError("command_failed", error.Message, requestId);
         }
     }
 
-    private static void Respond(object requestId, string type)
+    private static void Respond(
+        object requestId,
+        string type,
+        Dictionary<string, object> values = null)
     {
-        Emit(new Dictionary<string, object>
+        var response = new Dictionary<string, object>
         {
             { "protocol", ProtocolVersion },
             { "type", type },
             { "requestId", requestId }
-        });
+        };
+        if (values != null)
+        {
+            foreach (var pair in values)
+                response[pair.Key] = pair.Value;
+        }
+        Emit(response);
+    }
+
+    private static string StringValue(Dictionary<string, object> values, string key)
+    {
+        object value;
+        return values.TryGetValue(key, out value) && value != null
+            ? Convert.ToString(value)
+            : string.Empty;
+    }
+
+    private static int BoundedInt(
+        Dictionary<string, object> values,
+        string key,
+        int fallback,
+        int minimum,
+        int maximum)
+    {
+        object value;
+        int parsed;
+        if (!values.TryGetValue(key, out value)
+            || value == null
+            || !int.TryParse(Convert.ToString(value), out parsed))
+            return fallback;
+        return Math.Max(minimum, Math.Min(maximum, parsed));
     }
 
     private static IntPtr OnKeyboard(int code, IntPtr wParam, IntPtr lParam)

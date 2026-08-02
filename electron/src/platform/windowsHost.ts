@@ -31,10 +31,22 @@ export interface MouseEvent {
   button: "left" | "right" | "middle" | "x1" | "x2";
 }
 
-interface HostResponse {
+interface HostResponse extends Record<string, unknown> {
   protocol: number;
   type: string;
   requestId: string;
+}
+
+export interface ForegroundInfo {
+  window: string;
+  processId: number;
+  executable: string | null;
+  title: string | null;
+}
+
+export interface CaretContext {
+  before: string;
+  after: string | null;
 }
 
 interface PendingRequest {
@@ -124,6 +136,95 @@ export class WindowsHost {
     await this.request("stopInput", "inputStopped");
   }
 
+  async getForeground(): Promise<ForegroundInfo> {
+    const response = await this.request("getForeground", "foreground");
+    if (typeof response.window !== "string"
+      || typeof response.processId !== "number"
+      || !isNullableString(response.executable)
+      || !isNullableString(response.title)) {
+      throw new Error("Windows host returned an invalid foreground window");
+    }
+    return {
+      window: response.window,
+      processId: response.processId,
+      executable: response.executable,
+      title: response.title,
+    };
+  }
+
+  async focusWindow(window: string): Promise<boolean> {
+    const response = await this.request("focusWindow", "focusResult", { window });
+    if (typeof response.focused !== "boolean") {
+      throw new Error("Windows host returned an invalid focus result");
+    }
+    return response.focused;
+  }
+
+  async getCaretContext(before = 300, after = 300): Promise<CaretContext | null> {
+    const response = await this.request("getCaretContext", "caretContext", {
+      before,
+      after,
+    });
+    if (typeof response.available !== "boolean") {
+      throw new Error("Windows host returned an invalid caret context");
+    }
+    if (!response.available) return null;
+    if (typeof response.before !== "string" || !isNullableString(response.after)) {
+      throw new Error("Windows host returned an invalid caret context");
+    }
+    return { before: response.before, after: response.after };
+  }
+
+  async sendPaste(): Promise<boolean> {
+    const response = await this.request("sendPaste", "pasteResult");
+    if (typeof response.sent !== "boolean") {
+      throw new Error("Windows host returned an invalid paste result");
+    }
+    return response.sent;
+  }
+
+  async protectSecret(value: string): Promise<string> {
+    const response = await this.request("protectSecret", "secretProtected", { value });
+    if (typeof response.value !== "string") {
+      throw new Error("Windows host returned an invalid protected secret");
+    }
+    return response.value;
+  }
+
+  async unprotectSecret(value: string): Promise<string> {
+    const response = await this.request("unprotectSecret", "secretUnprotected", { value });
+    if (typeof response.value !== "string") {
+      throw new Error("Windows host returned an invalid unprotected secret");
+    }
+    return response.value;
+  }
+
+  async spawnSupervised(
+    file: string,
+    argumentsValue = "",
+    workingDirectory = "",
+  ): Promise<number> {
+    const response = await this.request("spawnSupervised", "processStarted", {
+      file,
+      arguments: argumentsValue,
+      workingDirectory,
+    });
+    if (typeof response.processId !== "number") {
+      throw new Error("Windows host returned an invalid process ID");
+    }
+    return response.processId;
+  }
+
+  async stopSupervised(processId: number): Promise<boolean> {
+    const response = await this.request("stopSupervised", "processStopped", {
+      processId,
+    });
+    if (typeof response.stopped !== "boolean") {
+      throw new Error("Windows host returned an invalid process result");
+    }
+    return response.stopped;
+  }
+
   async stop(): Promise<void> {
     const child = this.child;
     if (child === null) return;
@@ -137,7 +238,11 @@ export class WindowsHost {
     this.child = null;
   }
 
-  private async request(type: string, expectedType: string): Promise<HostResponse> {
+  private async request(
+    type: string,
+    expectedType: string,
+    values: Record<string, string | number | boolean> = {},
+  ): Promise<HostResponse> {
     const child = this.child;
     if (child === null || !child.stdin.writable) {
       throw new Error("Windows host is not running");
@@ -149,7 +254,12 @@ export class WindowsHost {
         reject(new Error(`Windows host request timed out: ${type}`));
       }, this.requestTimeoutMs);
       this.pending.set(requestId, { expectedType, resolve, reject, timer });
-      child.stdin.write(`${JSON.stringify({ protocol: PROTOCOL_VERSION, type, requestId })}\n`);
+      child.stdin.write(`${JSON.stringify({
+        ...values,
+        protocol: PROTOCOL_VERSION,
+        type,
+        requestId,
+      })}\n`);
     });
   }
 
@@ -201,8 +311,9 @@ export class WindowsHost {
       if (message.type === pending.expectedType) {
         pending.resolve(message as unknown as HostResponse);
       } else {
+        const detail = typeof message.message === "string" ? `: ${message.message}` : "";
         pending.reject(new Error(
-          `Windows host returned ${String(message.type)}; expected ${pending.expectedType}`,
+          `Windows host returned ${String(message.type)}; expected ${pending.expectedType}${detail}`,
         ));
       }
     }
@@ -236,6 +347,10 @@ export function resolveWindowsHost(): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
 }
 
 function isReady(value: unknown): value is HostReady {
