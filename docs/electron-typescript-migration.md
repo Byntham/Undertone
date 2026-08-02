@@ -93,7 +93,7 @@ vertical spike:
 - [ ] Shortcut capture suspends all configured shortcuts and rejects duplicates.
 - [ ] Undertone's injected keys do not invalidate insertion memory; genuine
       typing and mouse clicks do.
-- [ ] Audio is 16 kHz, mono, signed 16-bit PCM WAV and the existing minimum
+- [x] Audio is 16 kHz, mono, signed 16-bit PCM WAV and the existing minimum
       duration remains enforced.
 - [ ] Device selection is stored and resolved by microphone name.
 
@@ -193,3 +193,14 @@ Python entry points and packaging remain unchanged until milestone 7.
   overlay states on transparency.
 - A physical/injected desktop key drive remains pending because it is an
   opt-in desktop E2E check under the project's test policy.
+
+### Vertical spike checkpoint - audio - 2026-08-02
+
+- A hidden, sandboxed renderer captures the microphone through an
+  `AudioWorklet`; no Node or filesystem API is exposed to it.
+- Resampling, chunk joining, clamping, and WAV encoding are deterministic core
+  TypeScript with five unit tests.
+- A local-only hardware smoke captured 506 ms and returned a 16,086-byte,
+  16 kHz mono signed-16-bit PCM WAV in memory; no audio was saved or uploaded.
+- Integrated startup loads the settings, overlay, and audio renderers plus one
+  Windows host, and forced parent termination leaves no child process behind.

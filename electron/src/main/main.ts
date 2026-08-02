@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen } from "electron";
+import { app, BrowserWindow, ipcMain, screen, session } from "electron";
 import path from "node:path";
 
 import { GestureState, TapStateMachine } from "../core/gestures";
@@ -11,6 +11,8 @@ if (!gotLock) {
 } else {
   let settingsWindow: BrowserWindow | null = null;
   let overlayWindow: BrowserWindow | null = null;
+  let audioWindow: BrowserWindow | null = null;
+  let audioReady = false;
   const windowsHost = new WindowsHost();
   let rightControlDown = false;
 
@@ -34,14 +36,22 @@ if (!gotLock) {
 
   const gestures = new TapStateMachine({
     onStart: () => {
+      if (!audioReady || audioWindow === null) {
+        sendOverlay("message", "Audio service is not ready");
+        return false;
+      }
+      audioWindow.webContents.send("audio:command", { type: "start" });
       sendOverlay("recording");
       return true;
     },
     onFinish: () => {
-      sendOverlay("message", "Input path verified");
-      setTimeout(() => sendOverlay("hidden"), 1_200);
+      audioWindow?.webContents.send("audio:command", { type: "stop" });
+      sendOverlay("message", "Finalizing audio…");
     },
-    onDiscard: () => sendOverlay("hidden"),
+    onDiscard: () => {
+      audioWindow?.webContents.send("audio:command", { type: "cancel" });
+      sendOverlay("hidden");
+    },
     onLock: () => sendOverlay("locked"),
   });
 
@@ -68,6 +78,28 @@ if (!gotLock) {
     overlayWindow.setIgnoreMouseEvents(true);
     await overlayWindow.loadFile(
       path.join(__dirname, "../../renderer/overlay/index.html"),
+    );
+  };
+
+  const createAudio = async (): Promise<void> => {
+    audioWindow = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+        preload: path.join(__dirname, "../preload/audioPreload.js"),
+      },
+    });
+    session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+      return permission === "media" && webContents === audioWindow?.webContents;
+    });
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      callback(permission === "media" && webContents === audioWindow?.webContents);
+    });
+    await audioWindow.loadFile(
+      path.join(__dirname, "../../renderer/audio/index.html"),
     );
   };
 
@@ -108,8 +140,29 @@ if (!gotLock) {
   app.on("before-quit", () => {
     void windowsHost.stop();
   });
+  ipcMain.on("audio:event", (event, payload: unknown) => {
+    if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
+    if (payload.type === "ready") {
+      audioReady = true;
+    } else if (payload.type === "stopped") {
+      const wav = payload.wav;
+      const byteLength = wav instanceof ArrayBuffer
+        ? wav.byteLength
+        : ArrayBuffer.isView(wav) ? wav.byteLength : 0;
+      sendOverlay("message", `Audio captured · ${Math.round(byteLength / 1024)} KB`);
+      setTimeout(() => sendOverlay("hidden"), 1_500);
+    } else if (payload.type === "error") {
+      gestures.cancel();
+      sendOverlay(
+        "message",
+        typeof payload.message === "string" ? payload.message : "Microphone unavailable",
+      );
+      setTimeout(() => sendOverlay("hidden"), 3_000);
+    }
+  });
   app.whenReady().then(async () => {
     await createOverlay();
+    await createAudio();
     openSettings();
     windowsHost.onKeyboard((event) => {
       if (event.injected) return;
@@ -132,4 +185,8 @@ if (!gotLock) {
     console.error("Electron startup failed", error);
     app.quit();
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

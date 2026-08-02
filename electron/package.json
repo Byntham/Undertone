@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",
     "test": "vitest run --config vitest.config.mts",
-    "start": "npm run build && electron .",
+    "start": "npm run build && node scripts/run-electron.mjs .",
+    "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
     "verify": "npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
