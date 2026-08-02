@@ -1,9 +1,22 @@
 import { app, BrowserWindow, ipcMain, screen, session } from "electron";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { GestureState, TapStateMachine } from "../core/gestures";
 import { WindowsHost } from "../platform/windowsHost";
 
+const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
+const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
+if (packagedSmoke) {
+  const profilePath = process.env.UNDERTONE_PACKAGE_SMOKE_PROFILE;
+  if (profilePath === undefined || !isWithin(profilePath, app.getPath("temp"))) {
+    throw new Error("Packaged smoke profile path is invalid");
+  }
+  app.setPath("userData", profilePath);
+} else if (app.getVersion().includes("-electron.")) {
+  const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
+  app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
+}
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -13,7 +26,10 @@ if (!gotLock) {
   let overlayWindow: BrowserWindow | null = null;
   let audioWindow: BrowserWindow | null = null;
   let audioReady = false;
-  const windowsHost = new WindowsHost();
+  let settingsReady = false;
+  const windowsHost = new WindowsHost(app.isPackaged ? {
+    executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
+  } : {});
   let rightControlDown = false;
 
   const sendOverlay = (state: "recording" | "locked" | "message" | "hidden", text = ""): void => {
@@ -121,7 +137,12 @@ if (!gotLock) {
       void settingsWindow.loadFile(
         path.join(__dirname, "../../renderer/index.html"),
       );
-      settingsWindow.once("ready-to-show", () => settingsWindow?.show());
+      settingsWindow.webContents.once("did-finish-load", () => {
+        settingsReady = true;
+      });
+      settingsWindow.once("ready-to-show", () => {
+        if (!packagedSmoke) settingsWindow?.show();
+      });
       settingsWindow.on("closed", () => {
         settingsWindow = null;
         app.quit();
@@ -181,12 +202,43 @@ if (!gotLock) {
     });
     await windowsHost.start();
     await windowsHost.startInput();
-  }).catch((error: unknown) => {
+    if (packagedSmoke) {
+      await waitUntil(() => audioReady && settingsReady, 5_000);
+      if (packagedSmokeResult === undefined
+        || !isWithin(packagedSmokeResult, app.getPath("temp"))) {
+        throw new Error("Packaged smoke result path is invalid");
+      }
+      await writeFile(packagedSmokeResult, "ok", "utf8");
+      await windowsHost.stop();
+      app.quit();
+    }
+  }).catch(async (error: unknown) => {
     console.error("Electron startup failed", error);
-    app.quit();
+    if (packagedSmokeResult !== undefined
+      && isWithin(packagedSmokeResult, app.getPath("temp"))) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeFile(packagedSmokeResult, `error:${message}`, "utf8").catch(() => undefined);
+    }
+    app.exit(1);
   });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Renderer readiness timed out");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function isWithin(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative !== ""
+    && relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
 }

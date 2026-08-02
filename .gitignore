@@ -16,6 +16,7 @@ dist/
 electron/node_modules/
 electron/dist/
 electron/coverage/
+electron/release/
 
 # Transient agent worktrees (a second checkout appears here during agent
 # runs — without this, git add -A would sweep in thousands of files)

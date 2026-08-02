@@ -221,3 +221,22 @@ Python entry points and packaging remain unchanged until milestone 7.
   before cutover.
 - `npm run verify` passes the strict build and 20 tests. Existing Python tests
   are still unavailable in this checkout for the environment reason above.
+
+### Vertical spike checkpoint - packaging - 2026-08-02
+
+- Electron Builder 26.15.3 produces an unpacked x64 application, a 94.9 MB
+  portable executable, and a 95.2 MB assisted per-user NSIS installer. The
+  production icon and the native host are included; the host is an external
+  resource rather than an executable trapped inside `app.asar`.
+- The unpacked and portable artifacts pass a test-only startup path that waits
+  for settings, audio, and the native host, then exits cleanly. Measured on the
+  reference machine, readiness plus shutdown took about 0.5 seconds unpacked
+  and 2.4 seconds through the self-extracting portable wrapper.
+- Each artifact smoke uses a unique temporary Chromium profile and does not
+  read or write `%APPDATA%\Undertone\config.json`. Normal preview launches use
+  `%LOCALAPPDATA%\Undertone\ElectronPreview` for the same isolation.
+- Inspection of the 66 KB `app.asar` confirms it contains only compiled
+  JavaScript, renderer assets, source maps, and package metadata—no Python
+  runtime or source. `npm audit` reports zero known vulnerabilities.
+- Fresh installer, upgrade, uninstall, and code-signing checks remain cutover
+  gates; building an installer is not treated as passing those stateful tests.

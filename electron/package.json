@@ -1,6 +1,6 @@
 {
   "name": "undertone-electron",
-  "version": "0.0.0",
+  "version": "1.3.0-electron.0",
   "private": true,
   "description": "Electron and TypeScript migration workspace for Undertone",
   "main": "dist/main/main/main.js",
@@ -11,12 +11,18 @@
     "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",
     "test": "vitest run --config vitest.config.mts",
     "start": "npm run build && node scripts/run-electron.mjs .",
+    "package:dir": "npm run build && electron-builder --win --x64 --dir",
+    "package:portable": "npm run build && electron-builder --win portable --x64",
+    "package:nsis": "npm run build && electron-builder --win nsis --x64",
+    "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
     "verify": "npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
     "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "electron-builder": "^26.15.3",
     "typescript": "7.0.2",
     "vite": "8.2.0",
     "vitest": "4.1.10"
@@ -24,5 +30,44 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "packageManager": "npm@10.9.8"
+  "packageManager": "npm@10.9.8",
+  "build": {
+    "appId": "com.undertone.desktop",
+    "productName": "Undertone",
+    "asar": true,
+    "directories": {
+      "buildResources": "../assets",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/native/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/native",
+        "to": "native",
+        "filter": [
+          "Undertone.WinHost.exe"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "Undertone-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "Undertone-${version}-${arch}-portable.${ext}"
+    }
+  }
 }
