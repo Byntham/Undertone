@@ -392,3 +392,21 @@ Python entry points and packaging remain unchanged until milestone 7.
   rebuilt unpacked package passes the isolated tray/config/native-host smoke.
   Remaining settings sections, shortcut capture, DPI checks, and full behavior
   parity stay open.
+
+### Settings checkpoint - cloud providers - 2026-08-02
+
+- Providers now exposes independent speech-to-text and cleanup selection for
+  xAI, OpenAI, and OpenRouter, plus provider-specific model overrides. Local is
+  visible but disabled for new selections until its download/server/residency
+  lifecycle is migrated, so the UI does not advertise a broken path.
+- API-key updates are write-only across the preload boundary. The renderer sees
+  one configured/not-configured bit per cloud provider, while the main process
+  validates an exact patch shape, maps the value to the existing key field, and
+  delegates DPAPI encryption plus atomic replacement to `ConfigStore`.
+- The production renderer passed top and scrolled screen checks at 960 x 720,
+  provider/key/model interaction checks, and a secret non-echo assertion. The
+  page remains free of horizontal overflow and labels the unavailable local
+  option explicitly.
+- `npm run verify` passes the strict build and 82 tests across 12 files. The
+  rebuilt unpacked package passes isolated lifecycle smoke; no network provider
+  request or production-config write was performed.

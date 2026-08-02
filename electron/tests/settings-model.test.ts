@@ -14,8 +14,60 @@ describe("settings model", () => {
       hotkey: "right ctrl",
       appVersion: "1.3.0",
       preview: true,
+      provider: "xai",
+      cleanupProvider: "xai",
+      keyConfigured: { xai: true, openai: false, openrouter: false },
+      sttModel: "",
+      cleanupModel: "",
     });
     expect(snapshot).not.toHaveProperty("api_key");
+  });
+
+  it("updates providers, write-only keys, and provider-specific models", () => {
+    let config = normalizeConfig({ api_key: "x-secret", openai_api_key: "old-secret" });
+    config = applySettingsPatch(config, {
+      provider: "openai",
+      cleanupProvider: "openrouter",
+      providerKey: { provider: "openai", value: "  replacement  " },
+      sttModel: { provider: "openai", value: "custom-stt" },
+      cleanupModel: { provider: "openrouter", value: "custom-cleanup" },
+    });
+    expect(config.provider).toBe("openai");
+    expect(config.cleanup_provider).toBe("openrouter");
+    expect(config.openai_api_key).toBe("replacement");
+    expect(config.api_key).toBe("x-secret");
+    expect(config.stt_models).toEqual({ openai: "custom-stt" });
+    expect(config.cleanup_models).toEqual({ openrouter: "custom-cleanup" });
+    const snapshot = settingsSnapshot(config, "1.3.0", true);
+    expect(snapshot.keyConfigured).toEqual({ xai: true, openai: true, openrouter: false });
+    expect(JSON.stringify(snapshot)).not.toContain("secret");
+    expect(snapshot.sttModel).toBe("custom-stt");
+    expect(snapshot.cleanupModel).toBe("custom-cleanup");
+  });
+
+  it("clears model overrides and rejects malformed provider updates", () => {
+    const config = normalizeConfig({ stt_models: { xai: "custom" } });
+    expect(applySettingsPatch(config, {
+      sttModel: { provider: "xai", value: "" },
+    }).stt_models).toEqual({});
+    expect(() => applySettingsPatch(config, { provider: "unknown" }))
+      .toThrow(/supported provider/u);
+    expect(() => applySettingsPatch(config, {
+      providerKey: { provider: "local", value: "not-valid" },
+    })).toThrow(/unsupported provider/u);
+    expect(() => applySettingsPatch(config, {
+      providerKey: { provider: "xai", value: "ok", leaked: true },
+    })).toThrow(/invalid fields/u);
+    expect(() => applySettingsPatch(config, {
+      cleanupModel: { provider: "xai", value: "bad\nmodel" },
+    })).toThrow(/invalid/u);
+  });
+
+  it("falls back to xAI when a corrupt config contains unknown providers", () => {
+    const config = normalizeConfig({ provider: "broken", cleanup_provider: 42 });
+    const snapshot = settingsSnapshot(config, "1.3.0", true);
+    expect(snapshot.provider).toBe("xai");
+    expect(snapshot.cleanupProvider).toBe("xai");
   });
 
   it("applies supported fields without mutating the existing config", () => {

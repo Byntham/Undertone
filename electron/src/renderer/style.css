@@ -7,8 +7,8 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 720px; min-height: 560px; }
-button, select { font: inherit; }
-button:focus-visible, select:focus-visible { outline: 2px solid #61afef; outline-offset: 2px; }
+button, select, input { font: inherit; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #61afef; outline-offset: 2px; }
 
 .shell { min-height: 100vh; display: grid; grid-template-columns: 238px 1fr; }
 .sidebar {
@@ -61,6 +61,8 @@ h2 { margin: 27px 0 11px; color: #cfd4dc; font-size: 14px; }
 .control { flex: 0 0 auto; }
 .keycap { display: inline-block; min-width: 90px; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 10px; color: #cfd5de; background: #252a31; text-align: center; text-transform: capitalize; }
 select { min-width: 135px; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 30px 7px 10px; color: #d8dde5; background: #252a31; }
+input { min-width: 0; border: 1px solid #4a515e; border-radius: 7px; padding: 8px 10px; color: #e1e5eb; background: #21252b; }
+input::placeholder { color: #69717e; }
 .toggle { position: relative; width: 42px; height: 24px; padding: 0; border: 1px solid #555d69; border-radius: 12px; background: #3d434d; cursor: pointer; transition: .15s ease; }
 .toggle span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #a9b0bb; transition: .15s ease; }
 .toggle[data-checked="true"] { border-color: #61afef; background: #3f7faf; }
@@ -72,4 +74,25 @@ select { min-width: 135px; border: 1px solid #4a515e; border-radius: 7px; paddin
 .aboutCard h2 { margin: 0; color: #eef1f5; font-size: 19px; }
 .aboutCard p { margin: 5px 0 0; color: #858e9c; }
 .notice { margin-top: 18px; border: 1px solid #3b526a; border-radius: 10px; padding: 15px 17px; color: #9cb6ce; background: #253342; font-size: 13px; line-height: 1.5; }
+.notice.warning { border-color: #6f5b34; color: #d7b873; background: #393124; }
 .loading { color: #929aa8; padding: 40px; text-align: center; }
+
+.providerGrid { display: grid; gap: 10px; }
+.keyCard { border: 1px solid #3a3f49; border-radius: 10px; padding: 15px 17px; background: #2c313a; }
+.keyHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
+.keyHead strong { color: #e3e6eb; font-size: 14px; }
+.keyHead span { color: #7d8693; font-size: 11px; }
+.keyHead span[data-configured="true"] { color: #98c379; }
+.keyEntry, .modelEntry { display: flex; gap: 8px; }
+.keyEntry input, .modelEntry input { flex: 1 1 auto; }
+.smallButton { flex: 0 0 auto; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 11px; color: #cbd1da; background: #252a31; cursor: pointer; }
+.smallButton:hover { border-color: #626b78; background: #303640; }
+.smallButton.accent { border-color: #4b8dbc; color: white; background: #3f7faf; }
+.smallButton:disabled { opacity: .45; cursor: default; }
+.clearButton { margin-top: 9px; padding: 0; border: 0; color: #8f98a5; background: transparent; font-size: 11px; cursor: pointer; }
+.clearButton:hover { color: #e06c75; }
+.privacyNote { margin: 10px 2px 0; color: #737c89; font-size: 11px; line-height: 1.45; }
+.modelCard { padding: 17px 19px; }
+.modelControl + .modelControl { margin-top: 18px; padding-top: 18px; border-top: 1px solid #3a3f49; }
+.modelControl label { display: block; margin-bottom: 7px; color: #d7dce4; font-size: 13px; font-weight: 600; }
+.modelControl small { display: block; margin-top: 6px; color: #7d8693; }

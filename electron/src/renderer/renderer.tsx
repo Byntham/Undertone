@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import type { SettingsPatch, SettingsSnapshot } from "../shared/settings";
+import type {
+  CloudProviderId,
+  SettingsPatch,
+  SettingsProviderId,
+  SettingsSnapshot,
+} from "../shared/settings";
 import "./style.css";
 
-type Section = "general" | "about";
+type Section = "general" | "providers" | "about";
 const settingsApi = settingsApiForRenderer();
 
 function SettingsApp(): React.JSX.Element {
@@ -19,13 +24,15 @@ function SettingsApp(): React.JSX.Element {
       .catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
 
-  const update = async (patch: SettingsPatch): Promise<void> => {
+  const update = async (patch: SettingsPatch): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
       setSettings(await settingsApi.update(patch));
+      return true;
     } catch (reason) {
       setError(errorMessage(reason));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -41,6 +48,9 @@ function SettingsApp(): React.JSX.Element {
         <NavItem active={section === "general"} onClick={() => setSection("general")}>
           General
         </NavItem>
+        <NavItem active={section === "providers"} onClick={() => setSection("providers")}>
+          Providers
+        </NavItem>
         <NavItem active={section === "about"} onClick={() => setSection("about")}>
           About
         </NavItem>
@@ -54,7 +64,9 @@ function SettingsApp(): React.JSX.Element {
         ? <div className="loading">{error ?? "Loading settings…"}</div>
         : section === "general"
           ? <General settings={settings} update={update} />
-          : <About settings={settings} />}
+          : section === "providers"
+            ? <Providers settings={settings} update={update} />
+            : <About settings={settings} />}
       <div className={`saveState ${error !== null ? "failed" : ""}`} role="status">
         {error ?? (saving ? "Saving…" : settings === null ? "" : "✓ Saved")}
       </div>
@@ -67,7 +79,7 @@ function General({
   update,
 }: {
   settings: SettingsSnapshot;
-  update: (patch: SettingsPatch) => Promise<void>;
+  update: (patch: SettingsPatch) => Promise<boolean>;
 }): React.JSX.Element {
   return <section>
     <header className="pageHeader">
@@ -119,6 +131,205 @@ function General({
       </SettingRow>
     </div>
   </section>;
+}
+
+const PROVIDERS: readonly { id: SettingsProviderId; label: string; available: boolean }[] = [
+  { id: "xai", label: "xAI", available: true },
+  { id: "openai", label: "OpenAI", available: true },
+  { id: "openrouter", label: "OpenRouter", available: true },
+  { id: "local", label: "Local (migration pending)", available: false },
+];
+
+function Providers({
+  settings,
+  update,
+}: {
+  settings: SettingsSnapshot;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}): React.JSX.Element {
+  return <section>
+    <header className="pageHeader">
+      <p className="eyebrow">SETTINGS</p>
+      <h1>Providers</h1>
+      <p>Choose cloud services and store their credentials with Windows encryption.</p>
+    </header>
+    <h2>Services</h2>
+    <div className="card">
+      <SettingRow title="Transcription" description="Turns your speech into text.">
+        <ProviderSelect
+          label="Transcription provider"
+          value={settings.provider}
+          onChange={(provider) => { void update({ provider }); }}
+        />
+      </SettingRow>
+      <SettingRow title="AI cleanup" description="Polishes the wording before it is pasted.">
+        <ProviderSelect
+          label="Cleanup provider"
+          value={settings.cleanupProvider}
+          onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
+        />
+      </SettingRow>
+    </div>
+    {(settings.provider === "local" || settings.cleanupProvider === "local")
+      && <div className="notice warning">
+        Local provider lifecycle is not migrated yet. Select a cloud provider to run this preview.
+      </div>}
+
+    <h2>API keys</h2>
+    <div className="providerGrid">
+      <KeyCard
+        provider="xai"
+        name="xAI"
+        configured={settings.keyConfigured.xai}
+        update={update}
+      />
+      <KeyCard
+        provider="openai"
+        name="OpenAI"
+        configured={settings.keyConfigured.openai}
+        update={update}
+      />
+      <KeyCard
+        provider="openrouter"
+        name="OpenRouter"
+        configured={settings.keyConfigured.openrouter}
+        update={update}
+      />
+    </div>
+    <p className="privacyNote">
+      Saved keys are DPAPI-encrypted by the main process and are never returned to this page.
+    </p>
+
+    <h2>Model overrides</h2>
+    <div className="card modelCard">
+      <ModelControl
+        key={`stt-${settings.provider}`}
+        label="Transcription model"
+        kind="stt"
+        provider={settings.provider}
+        current={settings.sttModel}
+        update={update}
+      />
+      <ModelControl
+        key={`cleanup-${settings.cleanupProvider}`}
+        label="Cleanup model"
+        kind="cleanup"
+        provider={settings.cleanupProvider}
+        current={settings.cleanupModel}
+        update={update}
+      />
+    </div>
+  </section>;
+}
+
+function ProviderSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: SettingsProviderId;
+  onChange: (value: SettingsProviderId) => void;
+}): React.JSX.Element {
+  return <select
+    aria-label={label}
+    value={value}
+    onChange={(event) => onChange(event.target.value as SettingsProviderId)}
+  >
+    {PROVIDERS.map((provider) => <option
+      key={provider.id}
+      value={provider.id}
+      disabled={!provider.available}
+    >{provider.label}</option>)}
+  </select>;
+}
+
+function KeyCard({
+  provider,
+  name,
+  configured,
+  update,
+}: {
+  provider: CloudProviderId;
+  name: string;
+  configured: boolean;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}): React.JSX.Element {
+  const [value, setValue] = useState("");
+  const [visible, setVisible] = useState(false);
+  const save = async (nextValue: string): Promise<void> => {
+    if (await update({ providerKey: { provider, value: nextValue } })) setValue("");
+  };
+  return <form
+    className="keyCard"
+    onSubmit={(event) => {
+      event.preventDefault();
+      if (value.trim().length > 0) void save(value);
+    }}
+  >
+    <div className="keyHead">
+      <strong>{name}</strong>
+      <span data-configured={configured}>{configured ? "Saved" : "No key"}</span>
+    </div>
+    <div className="keyEntry">
+      <input
+        aria-label={`${name} API key`}
+        type={visible ? "text" : "password"}
+        value={value}
+        placeholder={configured ? "Enter a replacement" : "Enter API key"}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => setValue(event.target.value)}
+      />
+      <button type="button" className="smallButton" onClick={() => setVisible(!visible)}>
+        {visible ? "Hide" : "Show"}
+      </button>
+      <button type="submit" className="smallButton accent" disabled={value.trim().length === 0}>
+        Save
+      </button>
+    </div>
+    {configured && <button type="button" className="clearButton" onClick={() => { void save(""); }}>
+      Clear saved key
+    </button>}
+  </form>;
+}
+
+function ModelControl({
+  label,
+  kind,
+  provider,
+  current,
+  update,
+}: {
+  label: string;
+  kind: "stt" | "cleanup";
+  provider: SettingsProviderId;
+  current: string;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}): React.JSX.Element {
+  const [value, setValue] = useState(current);
+  const save = (): void => {
+    const model = { provider, value };
+    void update(kind === "stt" ? { sttModel: model } : { cleanupModel: model });
+  };
+  return <form className="modelControl" onSubmit={(event) => { event.preventDefault(); save(); }}>
+    <label htmlFor={`${kind}-model`}>{label}</label>
+    <div className="modelEntry">
+      <input
+        id={`${kind}-model`}
+        value={value}
+        placeholder="Provider default"
+        spellCheck={false}
+        onChange={(event) => setValue(event.target.value)}
+      />
+      <button type="submit" className="smallButton accent">Save</button>
+    </div>
+    <small>Empty uses the {providerLabel(provider)} default.</small>
+  </form>;
+}
+
+function providerLabel(provider: SettingsProviderId): string {
+  return PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? provider;
 }
 
 function About({ settings }: { settings: SettingsSnapshot }): React.JSX.Element {
@@ -209,11 +420,40 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     hotkey: "right ctrl",
     appVersion: "1.3.0-electron.0",
     preview: true,
+    provider: "xai",
+    cleanupProvider: "xai",
+    keyConfigured: { xai: false, openai: false, openrouter: false },
+    sttModel: "",
+    cleanupModel: "",
   };
   return {
     async load() { return preview; },
     async update(patch) {
-      preview = { ...preview, ...patch };
+      if (patch.providerKey !== undefined) {
+        preview = {
+          ...preview,
+          keyConfigured: {
+            ...preview.keyConfigured,
+            [patch.providerKey.provider]: patch.providerKey.value.trim().length > 0,
+          },
+        };
+      }
+      if (patch.sttModel !== undefined && patch.sttModel.provider === preview.provider) {
+        preview = { ...preview, sttModel: patch.sttModel.value.trim() };
+      }
+      if (patch.cleanupModel !== undefined
+        && patch.cleanupModel.provider === preview.cleanupProvider) {
+        preview = { ...preview, cleanupModel: patch.cleanupModel.value.trim() };
+      }
+      if (patch.provider !== undefined && patch.provider !== preview.provider) {
+        preview = { ...preview, sttModel: "" };
+      }
+      if (patch.cleanupProvider !== undefined
+        && patch.cleanupProvider !== preview.cleanupProvider) {
+        preview = { ...preview, cleanupModel: "" };
+      }
+      const { providerKey: _providerKey, sttModel: _sttModel, cleanupModel: _cleanupModel, ...plain } = patch;
+      preview = { ...preview, ...plain };
       return preview;
     },
   };

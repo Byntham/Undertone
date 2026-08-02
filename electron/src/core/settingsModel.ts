@@ -1,18 +1,39 @@
-import { normalizeConfig, type UndertoneConfig } from "./config";
-import type { SettingsPatch, SettingsSnapshot } from "../shared/settings";
+import {
+  KEY_FIELDS,
+  modelOverride,
+  normalizeConfig,
+  providerKey,
+  type ProviderId,
+  type UndertoneConfig,
+} from "./config";
+import type {
+  CloudProviderId,
+  SettingsPatch,
+  SettingsSnapshot,
+} from "../shared/settings";
 
 const PATCH_FIELDS = new Set([
   "language",
   "smartFormatting",
   "aiCleanup",
   "restoreClipboard",
+  "provider",
+  "cleanupProvider",
+  "providerKey",
+  "sttModel",
+  "cleanupModel",
 ]);
+
+const PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
+const CLOUD_PROVIDERS = new Set<CloudProviderId>(["xai", "openai", "openrouter"]);
 
 export function settingsSnapshot(
   config: UndertoneConfig,
   appVersion: string,
   preview: boolean,
 ): SettingsSnapshot {
+  const provider = snapshotProvider(config.provider);
+  const cleanupProvider = snapshotProvider(config.cleanup_provider);
   return {
     language: config.language,
     smartFormatting: config.smart_formatting,
@@ -21,7 +42,22 @@ export function settingsSnapshot(
     hotkey: config.hotkey,
     appVersion,
     preview,
+    provider,
+    cleanupProvider,
+    keyConfigured: {
+      xai: providerKey(config, "xai").trim().length > 0,
+      openai: providerKey(config, "openai").trim().length > 0,
+      openrouter: providerKey(config, "openrouter").trim().length > 0,
+    },
+    sttModel: modelOverride(config, "stt", provider),
+    cleanupModel: modelOverride(config, "cleanup", cleanupProvider),
   };
+}
+
+function snapshotProvider(value: unknown): ProviderId {
+  return typeof value === "string" && PROVIDERS.has(value as ProviderId)
+    ? value as ProviderId
+    : "xai";
 }
 
 export function applySettingsPatch(
@@ -51,7 +87,84 @@ export function applySettingsPatch(
   if (value.restoreClipboard !== undefined) {
     next.restore_clipboard = booleanField(value.restoreClipboard, "restoreClipboard");
   }
+  if (value.provider !== undefined) {
+    next.provider = providerField(value.provider, "provider");
+  }
+  if (value.cleanupProvider !== undefined) {
+    next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider");
+  }
+  if (value.providerKey !== undefined) {
+    const update = providerKeyUpdate(value.providerKey);
+    next[KEY_FIELDS[update.provider]] = update.value;
+  }
+  if (value.sttModel !== undefined) {
+    const update = modelUpdate(value.sttModel, "sttModel");
+    setModelOverride(next.stt_models, update.provider, update.value);
+  }
+  if (value.cleanupModel !== undefined) {
+    const update = modelUpdate(value.cleanupModel, "cleanupModel");
+    setModelOverride(next.cleanup_models, update.provider, update.value);
+  }
   return next;
+}
+
+function providerField(value: unknown, name: string): ProviderId {
+  if (typeof value !== "string" || !PROVIDERS.has(value as ProviderId)) {
+    throw new Error(`${name} is not a supported provider`);
+  }
+  return value as ProviderId;
+}
+
+function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: string } {
+  exactObject(value, ["provider", "value"], "providerKey");
+  if (typeof value.provider !== "string"
+    || !CLOUD_PROVIDERS.has(value.provider as CloudProviderId)) {
+    throw new Error("providerKey has an unsupported provider");
+  }
+  const secret = boundedSingleLine(value.value, "providerKey.value", 4_096);
+  return { provider: value.provider as CloudProviderId, value: secret };
+}
+
+function modelUpdate(
+  value: unknown,
+  name: string,
+): { provider: ProviderId; value: string } {
+  exactObject(value, ["provider", "value"], name);
+  return {
+    provider: providerField(value.provider, `${name}.provider`),
+    value: boundedSingleLine(value.value, `${name}.value`, 512),
+  };
+}
+
+function boundedSingleLine(value: unknown, name: string, maxLength: number): string {
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  const result = value.trim();
+  if (result.length > maxLength || /[\r\n\0]/u.test(result)) {
+    throw new Error(`${name} is invalid`);
+  }
+  return result;
+}
+
+function exactObject(
+  value: unknown,
+  fields: readonly string[],
+  name: string,
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${name} must be an object`);
+  const allowed = new Set(fields);
+  if (Object.keys(value).some((key) => !allowed.has(key))
+    || fields.some((key) => !(key in value))) {
+    throw new Error(`${name} has invalid fields`);
+  }
+}
+
+function setModelOverride(
+  models: Record<string, string>,
+  provider: ProviderId,
+  value: string,
+): void {
+  if (value.length === 0) delete models[provider];
+  else models[provider] = value;
 }
 
 function booleanField(value: unknown, name: string): boolean {
