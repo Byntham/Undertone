@@ -113,6 +113,7 @@ export class CleanupClient {
       }
       return withoutEcho;
     } catch {
+      if (provider === "local") this.local.loadAsync(model);
       return null;
     }
   }

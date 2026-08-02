@@ -60,16 +60,22 @@ describe("Windows host", () => {
   });
 
   it("terminates supervised processes when the host exits", async () => {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-log-"));
+    const logFile = path.join(temporary, "child.log");
     const host = new WindowsHost();
-    await host.start();
     let processId: number | undefined;
     try {
+      await host.start();
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       processId = await host.spawnSupervised(
         path.join(windows, "System32", "ping.exe"),
         "127.0.0.1 -n 30",
+        "",
+        logFile,
       );
       expect(isProcessAlive(processId)).toBe(true);
+      expect(await host.isSupervisedRunning(processId)).toBe(true);
+      expect((await waitForTextFile(logFile)).length).toBeGreaterThan(0);
       await host.stop();
       await waitUntilStopped(processId);
       expect(isProcessAlive(processId)).toBe(false);
@@ -78,6 +84,7 @@ describe("Windows host", () => {
       if (processId !== undefined && isProcessAlive(processId)) {
         process.kill(processId);
       }
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 

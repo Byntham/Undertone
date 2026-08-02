@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 
 import type {
   CloudProviderId,
+  LocalEngineAction,
+  LocalEngineKind,
+  LocalEngineSnapshot,
   SettingsPatch,
   SettingsProviderId,
   SettingsSnapshot,
@@ -19,9 +22,18 @@ function SettingsApp(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void settingsApi.load()
-      .then(setSettings)
-      .catch((reason: unknown) => setError(errorMessage(reason)));
+    let active = true;
+    const refresh = (): void => {
+      void settingsApi.load()
+        .then((snapshot) => { if (active) setSettings(snapshot); })
+        .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
+    };
+    refresh();
+    const timer = setInterval(refresh, 1_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, []);
 
   const update = async (patch: SettingsPatch): Promise<boolean> => {
@@ -29,6 +41,23 @@ function SettingsApp(): React.JSX.Element {
     setError(null);
     try {
       setSettings(await settingsApi.update(patch));
+      return true;
+    } catch (reason) {
+      setError(errorMessage(reason));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const localAction = async (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+  ): Promise<boolean> => {
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(await settingsApi.localAction(kind, action));
       return true;
     } catch (reason) {
       setError(errorMessage(reason));
@@ -65,7 +94,7 @@ function SettingsApp(): React.JSX.Element {
         : section === "general"
           ? <General settings={settings} update={update} />
           : section === "providers"
-            ? <Providers settings={settings} update={update} />
+            ? <Providers settings={settings} update={update} localAction={localAction} />
             : <About settings={settings} />}
       <div className={`saveState ${error !== null ? "failed" : ""}`} role="status">
         {error ?? (saving ? "Saving…" : settings === null ? "" : "✓ Saved")}
@@ -133,19 +162,21 @@ function General({
   </section>;
 }
 
-const PROVIDERS: readonly { id: SettingsProviderId; label: string; available: boolean }[] = [
-  { id: "xai", label: "xAI", available: true },
-  { id: "openai", label: "OpenAI", available: true },
-  { id: "openrouter", label: "OpenRouter", available: true },
-  { id: "local", label: "Local (migration pending)", available: false },
+const PROVIDERS: readonly { id: SettingsProviderId; label: string }[] = [
+  { id: "xai", label: "xAI" },
+  { id: "openai", label: "OpenAI" },
+  { id: "openrouter", label: "OpenRouter" },
+  { id: "local", label: "Local" },
 ];
 
 function Providers({
   settings,
   update,
+  localAction,
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
+  localAction: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
 }): React.JSX.Element {
   return <section>
     <header className="pageHeader">
@@ -159,6 +190,7 @@ function Providers({
         <ProviderSelect
           label="Transcription provider"
           value={settings.provider}
+          localAvailable={settings.localEngines.stt.installed}
           onChange={(provider) => { void update({ provider }); }}
         />
       </SettingRow>
@@ -166,13 +198,55 @@ function Providers({
         <ProviderSelect
           label="Cleanup provider"
           value={settings.cleanupProvider}
+          localAvailable={settings.localEngines.cleanup.installed}
           onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
         />
       </SettingRow>
     </div>
-    {(settings.provider === "local" || settings.cleanupProvider === "local")
+
+    <h2>On-device</h2>
+    <div className="providerGrid">
+      <LocalEngineCard
+        kind="stt"
+        name="Transcription model"
+        status={settings.localEngines.stt}
+        action={localAction}
+      />
+      <LocalEngineCard
+        kind="cleanup"
+        name="Cleanup model"
+        status={settings.localEngines.cleanup}
+        action={localAction}
+      />
+    </div>
+    <div className="card localPolicy">
+      <SettingRow
+        title="Load models on startup"
+        description="Warm selected local providers when Undertone starts."
+      >
+        <Toggle
+          label="Load local models on startup"
+          checked={settings.localLoaded}
+          onChange={(localLoaded) => { void update({ localLoaded }); }}
+        />
+      </SettingRow>
+      <SettingRow title="Auto-eject when idle" description="Free model memory after inactivity.">
+        <select
+          aria-label="Local model idle timeout"
+          value={settings.localIdleMinutes}
+          onChange={(event) => { void update({ localIdleMinutes: Number(event.target.value) }); }}
+        >
+          <option value={0}>Never</option>
+          <option value={5}>After 5 min</option>
+          <option value={15}>After 15 min</option>
+          <option value={30}>After 30 min</option>
+          <option value={60}>After 1 hour</option>
+        </select>
+      </SettingRow>
+    </div>
+    {(!settings.localEngines.stt.installed || !settings.localEngines.cleanup.installed)
       && <div className="notice warning">
-        Local provider lifecycle is not migrated yet. Select a cloud provider to run this preview.
+        Existing local installations are reused. Download/install controls are still being migrated.
       </div>}
 
     <h2>API keys</h2>
@@ -225,10 +299,12 @@ function Providers({
 function ProviderSelect({
   label,
   value,
+  localAvailable,
   onChange,
 }: {
   label: string;
   value: SettingsProviderId;
+  localAvailable: boolean;
   onChange: (value: SettingsProviderId) => void;
 }): React.JSX.Element {
   return <select
@@ -239,9 +315,53 @@ function ProviderSelect({
     {PROVIDERS.map((provider) => <option
       key={provider.id}
       value={provider.id}
-      disabled={!provider.available}
+      disabled={provider.id === "local" && !localAvailable}
     >{provider.label}</option>)}
   </select>;
+}
+
+function LocalEngineCard({
+  kind,
+  name,
+  status,
+  action,
+}: {
+  kind: LocalEngineKind;
+  name: string;
+  status: LocalEngineSnapshot;
+  action: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const running = status.loaded || status.loading;
+  const label = !status.installed
+    ? "Not installed"
+    : status.loading
+      ? "Loading…"
+      : status.loaded
+        ? `Loaded · ${status.build?.toUpperCase() ?? "READY"}`
+        : "Installed · Ejected";
+  const invoke = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await action(kind, running ? "eject" : "load");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="localEngineCard">
+    <div>
+      <strong>{name}</strong>
+      <span data-running={running}>{label}</span>
+    </div>
+    <button
+      type="button"
+      className="smallButton accent"
+      disabled={!status.installed || busy}
+      onClick={() => { void invoke(); }}
+    >
+      {busy ? "Working…" : running ? "Eject" : "Load"}
+    </button>
+  </div>;
 }
 
 function KeyCard({
@@ -425,6 +545,12 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     keyConfigured: { xai: false, openai: false, openrouter: false },
     sttModel: "",
     cleanupModel: "",
+    localLoaded: false,
+    localIdleMinutes: 0,
+    localEngines: {
+      stt: { installed: true, loaded: false, loading: false, build: null },
+      cleanup: { installed: true, loaded: false, loading: false, build: null },
+    },
   };
   return {
     async load() { return preview; },
@@ -454,6 +580,21 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       }
       const { providerKey: _providerKey, sttModel: _sttModel, cleanupModel: _cleanupModel, ...plain } = patch;
       preview = { ...preview, ...plain };
+      return preview;
+    },
+    async localAction(kind, action) {
+      preview = {
+        ...preview,
+        localEngines: {
+          ...preview.localEngines,
+          [kind]: {
+            ...preview.localEngines[kind],
+            loaded: action === "load",
+            loading: false,
+            build: action === "load" ? "cuda" : null,
+          },
+        },
+      };
       return preview;
     },
   };

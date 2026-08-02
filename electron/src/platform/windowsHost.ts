@@ -203,16 +203,28 @@ export class WindowsHost {
     file: string,
     argumentsValue = "",
     workingDirectory = "",
+    logFile = "",
   ): Promise<number> {
     const response = await this.request("spawnSupervised", "processStarted", {
       file,
       arguments: argumentsValue,
       workingDirectory,
+      logFile,
     });
     if (typeof response.processId !== "number") {
       throw new Error("Windows host returned an invalid process ID");
     }
     return response.processId;
+  }
+
+  async isSupervisedRunning(processId: number): Promise<boolean> {
+    const response = await this.request("isSupervisedRunning", "processStatus", {
+      processId,
+    });
+    if (typeof response.running !== "boolean") {
+      throw new Error("Windows host returned an invalid process status");
+    }
+    return response.running;
   }
 
   async stopSupervised(processId: number): Promise<boolean> {

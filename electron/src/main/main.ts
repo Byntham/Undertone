@@ -14,7 +14,7 @@ import path from "node:path";
 
 import { CleanupClient } from "../core/cleanup";
 import { ClipboardPaster } from "../core/clipboardPaster";
-import { normalizeConfig, type UndertoneConfig } from "../core/config";
+import { modelOverride, normalizeConfig, type UndertoneConfig } from "../core/config";
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
@@ -26,10 +26,16 @@ import {
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
+import {
+  createLocalCleanupRuntime,
+  createLocalSttRuntime,
+  type LocalServerRuntime,
+} from "./localRuntime";
 import { FetchHttpClient } from "../platform/http";
 import { WindowsHost } from "../platform/windowsHost";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
+const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
 const electronPreview = app.getVersion().includes("-electron.");
 if (packagedSmoke) {
@@ -59,6 +65,10 @@ if (!gotLock) {
   let configStore: ConfigStore | null = null;
   let settingsUpdateChain: Promise<void> = Promise.resolve();
   let pipeline: DictationPipelineQueue | null = null;
+  let localStt: LocalServerRuntime | null = null;
+  let localCleanup: LocalServerRuntime | null = null;
+  let shutdownComplete = false;
+  let shutdownPromise: Promise<void> | null = null;
   let pendingTarget: Promise<DictationTarget | null> | null = null;
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
@@ -225,16 +235,20 @@ if (!gotLock) {
     configStore = new ConfigStore(storeOptions);
     config = await configStore.load();
 
+    const localAppData = process.env.LOCALAPPDATA;
+    if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
+    const localRoot = path.join(localAppData, "Undertone");
+    localStt = createLocalSttRuntime(windowsHost, localRoot, {
+      onNotice: (message) => showFeedback(message, "warning"),
+    });
+    localCleanup = createLocalCleanupRuntime(windowsHost, localRoot, {
+      onNotice: (message) => showFeedback(message, "warning"),
+    });
+    configureLocalResidency();
+
     const http = new FetchHttpClient();
-    const transcriber = new Transcriber(http, {
-      ensureReady() {
-        throw new Error("Local transcription is not available in the Electron preview yet");
-      },
-    });
-    const cleanup = new CleanupClient(http, {
-      baseUrl() { return null; },
-      loadAsync() { /* Local cleanup lifecycle is ported in a later milestone. */ },
-    });
+    const transcriber = new Transcriber(http, localStt);
+    const cleanup = new CleanupClient(http, localCleanup);
     const paster = new ClipboardPaster(
       {
         readText: () => clipboard.readText(),
@@ -269,7 +283,9 @@ if (!gotLock) {
           || await windowsHost.focusWindow(target.window);
       },
       getForegroundWindow: async () => (await windowsHost.getForeground()).window,
-      isLocalSttLoaded: () => false,
+      isLocalSttLoaded: () => localStt?.status(
+        modelOverride(config, "stt", "local"),
+      ).loaded ?? false,
       paster,
       history,
       insertionMemory,
@@ -292,6 +308,53 @@ if (!gotLock) {
       },
     );
   };
+
+  function configureLocalResidency(): void {
+    const idleSeconds = Math.max(0, Number(config.local_idle_minutes) || 0) * 60;
+    localStt?.setIdleTimeout(idleSeconds);
+    localCleanup?.setIdleTimeout(idleSeconds);
+    if (!config.local_loaded) return;
+    if (config.provider === "local") {
+      localStt?.loadAsync(modelOverride(config, "stt", "local"));
+    }
+    if (config.ai_cleanup && config.cleanup_provider === "local") {
+      localCleanup?.loadAsync(modelOverride(config, "cleanup", "local"));
+    }
+  }
+
+  async function shutdownServices(): Promise<void> {
+    await Promise.all([
+      localStt?.shutdown() ?? Promise.resolve(),
+      localCleanup?.shutdown() ?? Promise.resolve(),
+    ]);
+    await windowsHost.stop();
+  }
+
+  function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
+    const engineSnapshot = (
+      runtime: LocalServerRuntime | null,
+      model: string,
+    ): { installed: boolean; loaded: boolean; loading: boolean; build: "cpu" | "cuda" | null } => {
+      if (runtime === null) {
+        return { installed: false, loaded: false, loading: false, build: null };
+      }
+      try {
+        const status = runtime.status(model);
+        return {
+          installed: status.installed,
+          loaded: status.loaded,
+          loading: status.loading,
+          build: status.build,
+        };
+      } catch {
+        return { installed: false, loaded: false, loading: false, build: null };
+      }
+    };
+    return settingsSnapshot(config, app.getVersion(), electronPreview, {
+      stt: engineSnapshot(localStt, modelOverride(config, "stt", "local")),
+      cleanup: engineSnapshot(localCleanup, modelOverride(config, "cleanup", "local")),
+    });
+  }
 
   const openSettings = (): void => {
     if (settingsWindow === null) {
@@ -334,33 +397,57 @@ if (!gotLock) {
   };
 
   app.on("second-instance", openSettings);
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     quitting = true;
-    void windowsHost.stop();
+    if (shutdownComplete) return;
+    event.preventDefault();
+    shutdownPromise ??= shutdownServices()
+      .catch((error: unknown) => console.error("Electron shutdown failed", error))
+      .finally(() => {
+        shutdownComplete = true;
+        app.quit();
+      });
   });
   ipcMain.handle("settings:get", (event) => {
     if (event.sender !== settingsWindow?.webContents) {
       throw new Error("Settings request came from an unauthorized renderer");
     }
-    return settingsSnapshot(config, app.getVersion(), electronPreview);
+    return currentSettingsSnapshot();
   });
   ipcMain.handle("settings:update", async (event, value: unknown) => {
     if (event.sender !== settingsWindow?.webContents) {
       throw new Error("Settings update came from an unauthorized renderer");
     }
-    let result = settingsSnapshot(config, app.getVersion(), electronPreview);
+    let result = currentSettingsSnapshot();
     const operation = settingsUpdateChain.then(async () => {
       const store = configStore;
       if (store === null) throw new Error("Settings store is not ready");
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
+      configureLocalResidency();
       tray?.setToolTip(`Undertone · ${config.hotkey}`);
-      result = settingsSnapshot(config, app.getVersion(), electronPreview);
+      result = currentSettingsSnapshot();
     });
     settingsUpdateChain = operation.catch(() => undefined);
     await operation;
     return result;
+  });
+  ipcMain.handle("local:action", async (event, value: unknown) => {
+    if (event.sender !== settingsWindow?.webContents) {
+      throw new Error("Local action came from an unauthorized renderer");
+    }
+    if (!isRecord(value)
+      || (value.kind !== "stt" && value.kind !== "cleanup")
+      || (value.action !== "load" && value.action !== "eject")) {
+      throw new Error("Invalid local engine action");
+    }
+    const runtime = value.kind === "stt" ? localStt : localCleanup;
+    if (runtime === null) throw new Error("Local engine service is not ready");
+    const model = modelOverride(config, value.kind, "local");
+    if (value.action === "load") await runtime.ensureReady(model);
+    else await runtime.eject();
+    return currentSettingsSnapshot();
   });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
@@ -440,6 +527,15 @@ if (!gotLock) {
       if (packagedSmokeResult === undefined
         || !isWithin(packagedSmokeResult, app.getPath("temp"))) {
         throw new Error("Packaged smoke result path is invalid");
+      }
+      if (localRuntimeSmoke) {
+        if (localStt === null || localCleanup === null) {
+          throw new Error("Local runtimes did not initialize");
+        }
+        await localStt.ensureReady();
+        await localStt.eject();
+        await localCleanup.ensureReady();
+        await localCleanup.eject();
       }
       await writeFile(packagedSmokeResult, "ok", "utf8");
       await windowsHost.stop();

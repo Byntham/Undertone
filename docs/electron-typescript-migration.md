@@ -139,7 +139,7 @@ vertical spike:
 - [ ] Existing config is backed up once, loaded without loss, and saved atomically.
 - [ ] Existing `dpapi:` keys remain readable by both Electron and the rollback
       Python release.
-- [ ] Existing local models are reused without downloading.
+- [x] Existing local models are reused without downloading.
 - [ ] Legacy and current autostart registrations migrate without duplication.
 - [ ] Portable and per-user NSIS artifacts pass fresh-install and upgrade smoke.
 - [ ] The production artifact contains no Python runtime or source.
@@ -437,3 +437,32 @@ Python entry points and packaging remain unchanged until milestone 7.
   two native defects: the marshalled `INPUT` union lacked `MOUSEINPUT`'s x64
   size, and focus queue attachments were released before Windows completed the
   foreground transition. The corrected gate passed four consecutive runs.
+
+### Local-runtime checkpoint - installed engine reuse - 2026-08-02
+
+- The Electron pipeline now uses TypeScript-managed whisper.cpp and llama.cpp
+  runtimes instead of unavailable-local stubs. Both reuse the authoritative
+  `%LOCALAPPDATA%\Undertone` runtime/model/state layout, prefer the installed
+  CUDA build, persist CUDA disablement before CPU fallback, use randomized
+  loopback ports, and run as native-host-supervised children.
+- Local STT block-loads when a dictation arrives cold. Local cleanup preserves
+  the non-blocking contract: the current dictation falls back immediately and
+  single-flight warming prepares the next one. Both share startup residency,
+  idle auto-eject, explicit Load/Eject, filename-confined model overrides, and
+  graceful shutdown before the host job object closes.
+- The native supervisor now reports process liveness and redirects child output
+  to the existing `server.log` / `llm-server.log` files, preventing engine text
+  from corrupting the JSON protocol pipe. Unit tests cover reuse/eject, dead
+  process recovery, CUDA fallback state, warming concurrency, and argument/path
+  safety.
+- The real installed CUDA whisper server passed a VAD-backed silent-WAV request
+  with an empty transcript, and the real CUDA llama server returned valid
+  structured cleanup. Both live gates exited without residual server or host
+  processes. The freshly unpacked Electron package passes both its normal smoke
+  and `PACKAGED_LOCAL_RUNTIME_SMOKE_OK`.
+- Providers now shows installed/loaded/loading/build state, enables Local only
+  when that engine exists, and exposes Load/Eject plus unified startup and idle
+  controls. Production-renderer checks at 960 x 720 cover the Local selectors,
+  CUDA status transition, autosave controls, scrolling, and no horizontal
+  overflow. Pinned download/extraction/progress UI remains before the combined
+  local-engine parity box can close.

@@ -78,6 +78,12 @@ input::placeholder { color: #69717e; }
 .loading { color: #929aa8; padding: 40px; text-align: center; }
 
 .providerGrid { display: grid; gap: 10px; }
+.localEngineCard { display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid #3a3f49; border-radius: 10px; padding: 15px 17px; background: #2c313a; }
+.localEngineCard strong, .localEngineCard span { display: block; }
+.localEngineCard strong { color: #e3e6eb; font-size: 14px; }
+.localEngineCard span { margin-top: 5px; color: #7d8693; font-size: 11px; }
+.localEngineCard span[data-running="true"] { color: #98c379; }
+.localPolicy { margin-top: 10px; }
 .keyCard { border: 1px solid #3a3f49; border-radius: 10px; padding: 15px 17px; background: #2c313a; }
 .keyHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
 .keyHead strong { color: #e3e6eb; font-size: 14px; }

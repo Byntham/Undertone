@@ -19,6 +19,12 @@ describe("settings model", () => {
       keyConfigured: { xai: true, openai: false, openrouter: false },
       sttModel: "",
       cleanupModel: "",
+      localLoaded: false,
+      localIdleMinutes: 0,
+      localEngines: {
+        stt: { installed: false, loaded: false, loading: false, build: null },
+        cleanup: { installed: false, loaded: false, loading: false, build: null },
+      },
     });
     expect(snapshot).not.toHaveProperty("api_key");
   });
@@ -77,12 +83,16 @@ describe("settings model", () => {
       smartFormatting: false,
       aiCleanup: false,
       restoreClipboard: false,
+      localLoaded: true,
+      localIdleMinutes: 15,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
     expect(next.smart_formatting).toBe(false);
     expect(next.ai_cleanup).toBe(false);
     expect(next.restore_clipboard).toBe(false);
+    expect(next.local_loaded).toBe(true);
+    expect(next.local_idle_minutes).toBe(15);
     expect(config.language).toBe("en");
   });
 
@@ -94,6 +104,8 @@ describe("settings model", () => {
       .toThrow(/must be boolean/u);
     expect(() => applySettingsPatch(config, { language: "../bad" }))
       .toThrow(/Invalid transcription language/u);
+    expect(() => applySettingsPatch(config, { localIdleMinutes: 7 }))
+      .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, null)).toThrow(/must be an object/u);
   });
 });

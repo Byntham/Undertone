@@ -1,5 +1,14 @@
 export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
 export type CloudProviderId = Exclude<SettingsProviderId, "local">;
+export type LocalEngineKind = "stt" | "cleanup";
+export type LocalEngineAction = "load" | "eject";
+
+export interface LocalEngineSnapshot {
+  installed: boolean;
+  loaded: boolean;
+  loading: boolean;
+  build: "cpu" | "cuda" | null;
+}
 
 export interface SettingsSnapshot {
   language: string;
@@ -14,6 +23,9 @@ export interface SettingsSnapshot {
   keyConfigured: Record<CloudProviderId, boolean>;
   sttModel: string;
   cleanupModel: string;
+  localLoaded: boolean;
+  localIdleMinutes: number;
+  localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
 }
 
 export interface SettingsPatch {
@@ -26,9 +38,12 @@ export interface SettingsPatch {
   providerKey?: { provider: CloudProviderId; value: string };
   sttModel?: { provider: SettingsProviderId; value: string };
   cleanupModel?: { provider: SettingsProviderId; value: string };
+  localLoaded?: boolean;
+  localIdleMinutes?: number;
 }
 
 export interface SettingsApi {
   load(): Promise<SettingsSnapshot>;
   update(patch: SettingsPatch): Promise<SettingsSnapshot>;
+  localAction(kind: LocalEngineKind, action: LocalEngineAction): Promise<SettingsSnapshot>;
 }

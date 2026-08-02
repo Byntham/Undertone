@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 
 internal sealed class ProcessSupervisor : IDisposable
@@ -9,7 +10,8 @@ internal sealed class ProcessSupervisor : IDisposable
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
 
     private readonly IntPtr _job;
-    private readonly Dictionary<int, Process> _processes = new Dictionary<int, Process>();
+    private readonly Dictionary<int, SupervisedProcess> _processes =
+        new Dictionary<int, SupervisedProcess>();
 
     public ProcessSupervisor()
     {
@@ -34,7 +36,11 @@ internal sealed class ProcessSupervisor : IDisposable
         }
     }
 
-    public int Start(string fileName, string arguments, string workingDirectory)
+    public int Start(
+        string fileName,
+        string arguments,
+        string workingDirectory,
+        string logFile)
     {
         var process = new Process
         {
@@ -46,7 +52,9 @@ internal sealed class ProcessSupervisor : IDisposable
                     ? Environment.CurrentDirectory
                     : workingDirectory,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             },
             EnableRaisingEvents = true
         };
@@ -58,33 +66,57 @@ internal sealed class ProcessSupervisor : IDisposable
             process.Dispose();
             throw new InvalidOperationException("Could not assign process to the Undertone job");
         }
-        lock (_processes)
+        SupervisedProcess supervised;
+        try
         {
-            _processes[process.Id] = process;
+            supervised = new SupervisedProcess(process, logFile);
         }
+        catch
+        {
+            try { process.Kill(); } catch { }
+            process.Dispose();
+            throw;
+        }
+        process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args)
+        {
+            supervised.Write(args.Data);
+        };
+        process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args)
+        {
+            supervised.Write(args.Data);
+        };
+        lock (_processes) { _processes[process.Id] = supervised; }
         process.Exited += delegate
         {
-            lock (_processes)
-            {
-                _processes.Remove(process.Id);
-            }
-            process.Dispose();
+            lock (_processes) { _processes.Remove(process.Id); }
+            supervised.Dispose();
         };
+        try { process.BeginOutputReadLine(); } catch (InvalidOperationException) { }
+        try { process.BeginErrorReadLine(); } catch (InvalidOperationException) { }
+        try
+        {
+            if (process.HasExited)
+            {
+                lock (_processes) { _processes.Remove(process.Id); }
+                supervised.Dispose();
+            }
+        }
+        catch { }
         return process.Id;
     }
 
     public bool Stop(int processId)
     {
-        Process process;
+        SupervisedProcess supervised;
         lock (_processes)
         {
-            if (!_processes.TryGetValue(processId, out process))
+            if (!_processes.TryGetValue(processId, out supervised))
                 return false;
         }
         try
         {
-            if (!process.HasExited)
-                process.Kill();
+            if (!supervised.Process.HasExited)
+                supervised.Process.Kill();
             return true;
         }
         catch
@@ -93,10 +125,74 @@ internal sealed class ProcessSupervisor : IDisposable
         }
     }
 
+    public bool IsRunning(int processId)
+    {
+        SupervisedProcess supervised;
+        lock (_processes)
+        {
+            if (!_processes.TryGetValue(processId, out supervised))
+                return false;
+        }
+        try { return !supervised.Process.HasExited; }
+        catch { return false; }
+    }
+
     public void Dispose()
     {
         if (_job != IntPtr.Zero)
             CloseHandle(_job);
+    }
+
+    private sealed class SupervisedProcess : IDisposable
+    {
+        private readonly object _logLock = new object();
+        private StreamWriter _log;
+        private bool _disposed;
+
+        public readonly Process Process;
+
+        public SupervisedProcess(Process process, string logFile)
+        {
+            Process = process;
+            if (!string.IsNullOrEmpty(logFile))
+            {
+                var directory = Path.GetDirectoryName(logFile);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+                _log = new StreamWriter(logFile, false) { AutoFlush = true };
+            }
+        }
+
+        public void Write(string line)
+        {
+            if (line == null)
+                return;
+            lock (_logLock)
+            {
+                try
+                {
+                    if (_log != null)
+                        _log.WriteLine(line);
+                }
+                catch { }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_logLock)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                if (_log != null)
+                {
+                    try { _log.Dispose(); } catch { }
+                    _log = null;
+                }
+            }
+            try { Process.Dispose(); } catch { }
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]

@@ -210,7 +210,8 @@ internal static class Program
                 var processId = _supervisor.Start(
                     StringValue(command, "file"),
                     StringValue(command, "arguments"),
-                    StringValue(command, "workingDirectory"));
+                    StringValue(command, "workingDirectory"),
+                    StringValue(command, "logFile"));
                 Respond(requestId, "processStarted", new Dictionary<string, object>
                 {
                     { "processId", processId }
@@ -222,6 +223,14 @@ internal static class Program
                 Respond(requestId, "processStopped", new Dictionary<string, object>
                 {
                     { "stopped", _supervisor.Stop(processId) }
+                });
+            }
+            else if (type == "isSupervisedRunning")
+            {
+                var processId = BoundedInt(command, "processId", 0, 1, int.MaxValue);
+                Respond(requestId, "processStatus", new Dictionary<string, object>
+                {
+                    { "running", _supervisor.IsRunning(processId) }
                 });
             }
             else if (type == "shutdown")

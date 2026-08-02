@@ -15,6 +15,7 @@
     "package:portable": "npm run build && electron-builder --win portable --x64",
     "package:nsis": "npm run build && electron-builder --win nsis --x64",
     "smoke:package": "node scripts/package-smoke.mjs",
+    "smoke:package:local": "node scripts/package-smoke.mjs --local",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
     "verify": "npm run typecheck && npm run build && npm test"
   },

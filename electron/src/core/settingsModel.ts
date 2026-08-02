@@ -8,6 +8,7 @@ import {
 } from "./config";
 import type {
   CloudProviderId,
+  LocalEngineSnapshot,
   SettingsPatch,
   SettingsSnapshot,
 } from "../shared/settings";
@@ -22,6 +23,8 @@ const PATCH_FIELDS = new Set([
   "providerKey",
   "sttModel",
   "cleanupModel",
+  "localLoaded",
+  "localIdleMinutes",
 ]);
 
 const PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
@@ -31,6 +34,10 @@ export function settingsSnapshot(
   config: UndertoneConfig,
   appVersion: string,
   preview: boolean,
+  localEngines: {
+    stt: LocalEngineSnapshot;
+    cleanup: LocalEngineSnapshot;
+  } = EMPTY_LOCAL_ENGINES,
 ): SettingsSnapshot {
   const provider = snapshotProvider(config.provider);
   const cleanupProvider = snapshotProvider(config.cleanup_provider);
@@ -51,6 +58,12 @@ export function settingsSnapshot(
     },
     sttModel: modelOverride(config, "stt", provider),
     cleanupModel: modelOverride(config, "cleanup", cleanupProvider),
+    localLoaded: config.local_loaded,
+    localIdleMinutes: config.local_idle_minutes,
+    localEngines: {
+      stt: { ...localEngines.stt },
+      cleanup: { ...localEngines.cleanup },
+    },
   };
 }
 
@@ -105,8 +118,30 @@ export function applySettingsPatch(
     const update = modelUpdate(value.cleanupModel, "cleanupModel");
     setModelOverride(next.cleanup_models, update.provider, update.value);
   }
+  if (value.localLoaded !== undefined) {
+    next.local_loaded = booleanField(value.localLoaded, "localLoaded");
+  }
+  if (value.localIdleMinutes !== undefined) {
+    if (typeof value.localIdleMinutes !== "number"
+      || ![0, 5, 15, 30, 60].includes(value.localIdleMinutes)) {
+      throw new Error("localIdleMinutes is invalid");
+    }
+    next.local_idle_minutes = value.localIdleMinutes;
+  }
   return next;
 }
+
+const EMPTY_LOCAL_ENGINE: LocalEngineSnapshot = {
+  installed: false,
+  loaded: false,
+  loading: false,
+  build: null,
+};
+
+const EMPTY_LOCAL_ENGINES = {
+  stt: EMPTY_LOCAL_ENGINE,
+  cleanup: EMPTY_LOCAL_ENGINE,
+};
 
 function providerField(value: unknown, name: string): ProviderId {
   if (typeof value !== "string" || !PROVIDERS.has(value as ProviderId)) {
