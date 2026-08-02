@@ -99,8 +99,8 @@ vertical spike:
 
 ### Pipeline and formatting
 
-- [ ] One FIFO worker processes dictate, retry, and re-paste jobs.
-- [ ] Each job snapshots config when it leaves the queue.
+- [x] One FIFO worker processes dictate, retry, and re-paste jobs.
+- [x] Each job snapshots config when it leaves the queue.
 - [ ] Target HWND is captured at recording end and restored before context read
       and again after cleanup.
 - [ ] UIA -> Win32 edit control -> insertion-memory fallback order is preserved.
@@ -311,3 +311,15 @@ Python entry points and packaging remain unchanged until milestone 7.
 - Context-echo removal retains whole-word boundary guards and the reply-length
   sanity check. Six tests bring full Electron verification to 59 tests across
   eight files.
+
+### Pipeline-core checkpoint - serialization and history - 2026-08-02
+
+- A concrete dictate/retry/re-paste queue now drains one job at a time in FIFO
+  order. It clones mutable audio/target inputs and takes a deep-enough config
+  snapshot only when each job leaves the queue; a rejected job cannot stall
+  later work.
+- Session history is bounded, returns newest-first copies, locates the latest
+  successful paste, consumes a retry exactly once, and retains WAV data for
+  only the three newest failures.
+- Six concurrency/history tests bring full Electron verification to 65 tests
+  across nine files.
