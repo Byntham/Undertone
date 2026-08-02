@@ -113,11 +113,11 @@ vertical spike:
 
 ### Providers and local engines
 
-- [ ] xAI, OpenAI, OpenRouter, and local request shapes match
+- [x] xAI, OpenAI, OpenRouter, and local request shapes match
       `tests/test_providers.py`.
-- [ ] Vocabulary biasing remains xAI-only.
-- [ ] Cleanup failure/timeout silently falls back to deterministic rules.
-- [ ] Local cleanup never blocks the current dictation on a cold model.
+- [x] Vocabulary biasing remains xAI-only.
+- [x] Cleanup failure/timeout silently falls back to deterministic rules.
+- [x] Local cleanup never blocks the current dictation on a cold model.
 - [ ] Existing pinned downloads, hashes, CPU/CUDA fallback, VAD, model
       overrides, idle eject, and unified residency settings are preserved.
 - [x] Local child processes die on normal exit and forced parent termination.
@@ -296,3 +296,18 @@ Python entry points and packaging remain unchanged until milestone 7.
   windows, user input races, and entries at the five-minute boundary.
 - Eight tests mirroring `test_pipeline.py` bring full Electron verification to
   53 tests across seven files.
+
+### Portable-core checkpoint - AI cleanup - 2026-08-02
+
+- All cloud cleanup endpoints and the keyless llama-server dialect now use the
+  exact structured-output schema, defaults, override fields, and quoted user
+  payload from `cleanup.py` through the bounded shared HTTP adapter.
+- The benchmarked system prompt was mechanically copied rather than rewritten;
+  a migration-only test extracts the Python literal and requires exact string
+  equality (with source line endings normalized as Python's parser does).
+- Cold local cleanup starts background warming and skips the current dictation.
+  Unknown providers, HTTP/non-JSON/schema failures, exceptions, and timeouts all
+  return `null` for deterministic fallback.
+- Context-echo removal retains whole-word boundary guards and the reply-length
+  sanity check. Six tests bring full Electron verification to 59 tests across
+  eight files.
