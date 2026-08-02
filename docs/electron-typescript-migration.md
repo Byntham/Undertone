@@ -359,3 +359,16 @@ Python entry points and packaging remain unchanged until milestone 7.
   fresh hardware audio smoke returned a 502 ms, 15,746-byte valid WAV. Physical
   hotkey/focus/paste driving is still opt-in, so related parity boxes remain
   open.
+
+### Shell checkpoint - tray-owned lifecycle - 2026-08-02
+
+- The preview now retains a real `Tray`, uses packaged production icon assets,
+  opens Settings on demand/second instance, hides rather than exits when
+  Settings closes, and exposes Pause dictation plus Quit actions. Pause/resume
+  stops and restarts native input capture and cancels an active gesture.
+- The packaged smoke requires tray creation and programmatically closes the
+  Settings window, failing unless the tray-owned app and window survive. It
+  then verifies normal shutdown and native-host cleanup as before.
+- Red recording icon state, complete tooltip/menu parity, capture-aware pause,
+  and long-running no-window behavior remain before the tray parity box can be
+  closed.

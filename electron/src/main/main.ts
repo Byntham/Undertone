@@ -1,4 +1,14 @@
-import { app, BrowserWindow, clipboard, ipcMain, screen, session } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  Menu,
+  nativeImage,
+  screen,
+  session,
+  Tray,
+} from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -39,6 +49,9 @@ if (!gotLock) {
   let settingsWindow: BrowserWindow | null = null;
   let overlayWindow: BrowserWindow | null = null;
   let audioWindow: BrowserWindow | null = null;
+  let tray: Tray | null = null;
+  let quitting = false;
+  let paused = false;
   let audioReady = false;
   let settingsReady = false;
   let config: UndertoneConfig = normalizeConfig(undefined);
@@ -156,6 +169,44 @@ if (!gotLock) {
     );
   };
 
+  const createTray = (): void => {
+    const icon = nativeImage.createFromPath(resolveAsset("icon.png"));
+    tray = new Tray(icon);
+    tray.setToolTip("Undertone");
+    const menu = Menu.buildFromTemplate([
+      { label: "Open Settings", click: () => openSettings() },
+      { type: "separator" },
+      {
+        label: "Pause dictation",
+        type: "checkbox",
+        checked: false,
+        click: (item) => {
+          paused = item.checked;
+          if (paused) gestures.cancel();
+          void (paused ? windowsHost.stopInput() : windowsHost.startInput())
+            .catch((error: unknown) => {
+              item.checked = !paused;
+              paused = item.checked;
+              showFeedback(
+                error instanceof Error ? error.message : "Could not change dictation state",
+                "error",
+              );
+            });
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          quitting = true;
+          app.quit();
+        },
+      },
+    ]);
+    tray.setContextMenu(menu);
+    tray.on("double-click", () => openSettings());
+  };
+
   const initializePipeline = async (): Promise<void> => {
     const configPath = electronPreview
       ? path.join(app.getPath("userData"), "config.json")
@@ -245,6 +296,7 @@ if (!gotLock) {
         height: 720,
         show: false,
         backgroundColor: "#282c34",
+        icon: resolveAsset("icon.ico"),
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -262,9 +314,14 @@ if (!gotLock) {
       settingsWindow.once("ready-to-show", () => {
         if (!packagedSmoke) settingsWindow?.show();
       });
+      settingsWindow.on("close", (event) => {
+        if (!quitting) {
+          event.preventDefault();
+          settingsWindow?.hide();
+        }
+      });
       settingsWindow.on("closed", () => {
         settingsWindow = null;
-        app.quit();
       });
     } else {
       settingsWindow.show();
@@ -273,11 +330,8 @@ if (!gotLock) {
   };
 
   app.on("second-instance", openSettings);
-  app.on("window-all-closed", () => {
-    // The spike has no tray yet, so closing its only window must end it.
-    app.quit();
-  });
   app.on("before-quit", () => {
+    quitting = true;
     void windowsHost.stop();
   });
   ipcMain.on("audio:event", (event, payload: unknown) => {
@@ -318,8 +372,10 @@ if (!gotLock) {
     }
   });
   app.whenReady().then(async () => {
+    app.setAppUserModelId("com.undertone.desktop");
     await createOverlay();
     await createAudio();
+    createTray();
     openSettings();
     windowsHost.onKeyboard((event) => {
       if (event.injected) return;
@@ -342,9 +398,17 @@ if (!gotLock) {
     windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
     await initializePipeline();
+    tray?.setToolTip(`Undertone · ${config.hotkey}`);
     await windowsHost.startInput();
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);
+      if (tray === null || settingsWindow === null) {
+        throw new Error("Tray shell did not initialize");
+      }
+      settingsWindow.close();
+      if (settingsWindow === null || settingsWindow.isDestroyed()) {
+        throw new Error("Closing Settings terminated the tray-owned window");
+      }
       if (packagedSmokeResult === undefined
         || !isWithin(packagedSmokeResult, app.getPath("temp"))) {
         throw new Error("Packaged smoke result path is invalid");
@@ -390,4 +454,10 @@ function isWithin(candidate: string, parent: string): boolean {
     && relative !== ".."
     && !relative.startsWith(`..${path.sep}`)
     && !path.isAbsolute(relative);
+}
+
+function resolveAsset(name: "icon.png" | "icon.ico"): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "assets", name)
+    : path.resolve(__dirname, "../../../../assets", name);
 }

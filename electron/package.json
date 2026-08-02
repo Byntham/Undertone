@@ -51,6 +51,14 @@
         "filter": [
           "Undertone.WinHost.exe"
         ]
+      },
+      {
+        "from": "../assets",
+        "to": "assets",
+        "filter": [
+          "icon.png",
+          "icon.ico"
+        ]
       }
     ],
     "win": {
