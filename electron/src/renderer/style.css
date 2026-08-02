@@ -60,6 +60,7 @@ h2 { margin: 27px 0 11px; color: #cfd4dc; font-size: 14px; }
 .settingRow p { margin: 5px 0 0; color: #858e9c; font-size: 12px; line-height: 1.4; }
 .control { flex: 0 0 auto; }
 .keycap { display: inline-block; min-width: 90px; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 10px; color: #cfd5de; background: #252a31; text-align: center; text-transform: capitalize; }
+.shortcutControl { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 select { min-width: 135px; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 30px 7px 10px; color: #d8dde5; background: #252a31; }
 input { min-width: 0; border: 1px solid #4a515e; border-radius: 7px; padding: 8px 10px; color: #e1e5eb; background: #21252b; }
 input::placeholder { color: #69717e; }

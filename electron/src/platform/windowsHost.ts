@@ -136,6 +136,14 @@ export class WindowsHost {
     await this.request("stopInput", "inputStopped");
   }
 
+  async startShortcutCapture(): Promise<void> {
+    await this.request("startShortcutCapture", "shortcutCaptureStarted");
+  }
+
+  async stopShortcutCapture(): Promise<void> {
+    await this.request("stopShortcutCapture", "shortcutCaptureStopped");
+  }
+
   async getForeground(): Promise<ForegroundInfo> {
     const response = await this.request("getForeground", "foreground");
     if (typeof response.window !== "string"

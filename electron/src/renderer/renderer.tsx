@@ -9,6 +9,7 @@ import type {
   SettingsPatch,
   SettingsProviderId,
   SettingsSnapshot,
+  ShortcutSetting,
 } from "../shared/settings";
 import "./style.css";
 
@@ -19,6 +20,7 @@ function SettingsApp(): React.JSX.Element {
   const [section, setSection] = useState<Section>("general");
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
+  const [capturing, setCapturing] = useState<ShortcutSetting | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,6 +66,18 @@ function SettingsApp(): React.JSX.Element {
     }
   };
 
+  const captureShortcut = async (field: ShortcutSetting): Promise<void> => {
+    setError(null);
+    setCapturing(field);
+    try {
+      setSettings(await settingsApi.captureShortcut(field));
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setCapturing(null);
+    }
+  };
+
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand">
@@ -89,7 +103,12 @@ function SettingsApp(): React.JSX.Element {
       {settings === null
         ? <div className="loading">{error ?? "Loading settings…"}</div>
         : section === "general"
-          ? <General settings={settings} update={update} />
+          ? <General
+              settings={settings}
+              update={update}
+              capturing={capturing}
+              captureShortcut={captureShortcut}
+            />
           : section === "providers"
             ? <Providers settings={settings} update={update} localAction={localAction} />
             : <About settings={settings} />}
@@ -103,9 +122,13 @@ function SettingsApp(): React.JSX.Element {
 function General({
   settings,
   update,
+  capturing,
+  captureShortcut,
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
+  capturing: ShortcutSetting | null;
+  captureShortcut: (field: ShortcutSetting) => Promise<void>;
 }): React.JSX.Element {
   return <section>
     <header className="pageHeader">
@@ -114,8 +137,21 @@ function General({
       <p>Core dictation behavior for the isolated Electron preview.</p>
     </header>
     <div className="card">
-      <SettingRow title="Push-to-talk shortcut" description="Shortcut capture ports in a later milestone.">
-        <span className="keycap">{settings.hotkey}</span>
+      <SettingRow title="Push-to-talk shortcut" description="Hold this shortcut while you speak.">
+        <ShortcutControl
+          field="hotkey"
+          value={settings.hotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow title="Re-paste last dictation" description="Paste the newest successful result again.">
+        <ShortcutControl
+          field="repasteHotkey"
+          value={settings.repasteHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
       </SettingRow>
       <SettingRow title="Transcription language" description="Language hint sent to the selected speech provider.">
         <select
@@ -157,6 +193,29 @@ function General({
       </SettingRow>
     </div>
   </section>;
+}
+
+function ShortcutControl({
+  field,
+  value,
+  capturing,
+  capture,
+}: {
+  field: ShortcutSetting;
+  value: string;
+  capturing: ShortcutSetting | null;
+  capture: (field: ShortcutSetting) => Promise<void>;
+}): React.JSX.Element {
+  const active = capturing === field;
+  return <div className="shortcutControl">
+    <span className="keycap">{active ? "Press shortcut…" : value || "Disabled"}</span>
+    <button
+      type="button"
+      className="smallButton"
+      disabled={capturing !== null}
+      onClick={() => { void capture(field); }}
+    >{active ? "Listening…" : "Change"}</button>
+  </div>;
 }
 
 const PROVIDERS: readonly { id: SettingsProviderId; label: string }[] = [
@@ -543,6 +602,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     aiCleanup: true,
     restoreClipboard: true,
     hotkey: "right ctrl",
+    repasteHotkey: "ctrl+alt+v",
     appVersion: "1.3.0-electron.0",
     preview: true,
     provider: "xai",
@@ -603,6 +663,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       }
       const { providerKey: _providerKey, sttModel: _sttModel, cleanupModel: _cleanupModel, ...plain } = patch;
       preview = { ...preview, ...plain };
+      return preview;
+    },
+    async captureShortcut(field) {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      preview = {
+        ...preview,
+        [field]: field === "hotkey" ? "f13" : "ctrl+shift+v",
+      };
       return preview;
     },
     async localAction(kind, action) {

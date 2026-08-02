@@ -25,6 +25,7 @@ import {
 } from "../core/pipelineQueue";
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
+import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
@@ -37,6 +38,7 @@ import { WindowsHost } from "../platform/windowsHost";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
+  ShortcutSetting,
 } from "../shared/settings";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
@@ -80,12 +82,19 @@ if (!gotLock) {
   let shutdownComplete = false;
   let shutdownPromise: Promise<void> | null = null;
   let pendingTarget: Promise<DictationTarget | null> | null = null;
+  let shortcutCapture: {
+    collector: ShortcutCapture;
+    completed: boolean;
+    resolve: (shortcut: string | null) => void;
+  } | null = null;
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
   } : {});
-  let rightControlDown = false;
+  const pttShortcut = new ShortcutBinding(config.hotkey);
+  const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
+  const toggleShortcut = new ShortcutBinding(config.toggle_hotkey, true);
   let overlayHideTimer: ReturnType<typeof setTimeout> | undefined;
 
   const sendOverlay = (state: "recording" | "locked" | "message" | "hidden", text = ""): void => {
@@ -116,6 +125,38 @@ if (!gotLock) {
     if (text.startsWith("Loading the local model")) return;
     const duration = kind === "normal" ? 1_600 : 5_000;
     overlayHideTimer = setTimeout(() => sendOverlay("hidden"), duration);
+  };
+
+  const configureShortcuts = (): void => {
+    try {
+      pttShortcut.set(config.hotkey);
+    } catch {
+      pttShortcut.set("right ctrl");
+      showFeedback("The saved push-to-talk shortcut is unsupported; using Right Ctrl", "warning");
+    }
+    try {
+      repasteShortcut.set(config.repaste_hotkey, true);
+    } catch {
+      repasteShortcut.set("", true);
+      showFeedback("The saved re-paste shortcut is unsupported", "warning");
+    }
+    try {
+      toggleShortcut.set(config.toggle_hotkey, true);
+    } catch {
+      toggleShortcut.set("", true);
+      showFeedback("The saved toggle shortcut is unsupported", "warning");
+    }
+  };
+
+  const repasteLast = (): void => {
+    const text = history.latestSuccessText();
+    if (text === null) {
+      showFeedback("Nothing to re-paste yet", "warning");
+      return;
+    }
+    void pipeline?.enqueueRepaste(text).catch((error: unknown) => {
+      showFeedback(error instanceof Error ? error.message : "Could not re-paste", "error");
+    });
   };
 
   const gestures = new TapStateMachine({
@@ -204,6 +245,11 @@ if (!gotLock) {
         type: "checkbox",
         checked: false,
         click: (item) => {
+          if (shortcutCapture !== null) {
+            item.checked = paused;
+            showFeedback("Finish the shortcut, or press Esc to cancel capture", "warning");
+            return;
+          }
           paused = item.checked;
           if (paused) gestures.cancel();
           void (paused ? windowsHost.stopInput() : windowsHost.startInput())
@@ -244,6 +290,7 @@ if (!gotLock) {
     }
     configStore = new ConfigStore(storeOptions);
     config = await configStore.load();
+    configureShortcuts();
 
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
@@ -396,6 +443,54 @@ if (!gotLock) {
     });
   }
 
+  async function persistSettingsPatch(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
+    let result = currentSettingsSnapshot();
+    const operation = settingsUpdateChain.then(async () => {
+      const store = configStore;
+      if (store === null) throw new Error("Settings store is not ready");
+      const previousHotkey = config.hotkey;
+      const previousRepaste = config.repaste_hotkey;
+      const previousToggle = config.toggle_hotkey;
+      const next = applySettingsPatch(config, value);
+      await store.save(next);
+      config = next;
+      if (config.hotkey !== previousHotkey
+        || config.repaste_hotkey !== previousRepaste
+        || config.toggle_hotkey !== previousToggle) {
+        gestures.cancel();
+        configureShortcuts();
+      }
+      configureLocalResidency();
+      tray?.setToolTip(`Undertone · ${config.hotkey}`);
+      result = currentSettingsSnapshot();
+    });
+    settingsUpdateChain = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async function captureShortcut(field: ShortcutSetting): Promise<ReturnType<typeof settingsSnapshot>> {
+    if (shortcutCapture !== null) throw new Error("A shortcut is already being captured");
+    gestures.cancel();
+    const captured = new Promise<string | null>((resolve) => {
+      shortcutCapture = {
+        collector: new ShortcutCapture(),
+        completed: false,
+        resolve,
+      };
+    });
+    try {
+      await windowsHost.startShortcutCapture();
+      const shortcut = await captured;
+      if (shortcut === null) return currentSettingsSnapshot();
+      return await persistSettingsPatch({ [field]: shortcut });
+    } finally {
+      shortcutCapture = null;
+      await windowsHost.stopShortcutCapture().catch(() => undefined);
+      if (paused) await windowsHost.stopInput().catch(() => undefined);
+    }
+  }
+
   const openSettings = (): void => {
     if (settingsWindow === null) {
       settingsWindow = new BrowserWindow({
@@ -424,6 +519,10 @@ if (!gotLock) {
       settingsWindow.on("close", (event) => {
         if (!quitting) {
           event.preventDefault();
+          if (shortcutCapture !== null) {
+            showFeedback("Finish the shortcut, or press Esc to cancel capture", "warning");
+            return;
+          }
           settingsWindow?.hide();
         }
       });
@@ -458,20 +557,16 @@ if (!gotLock) {
     if (event.sender !== settingsWindow?.webContents) {
       throw new Error("Settings update came from an unauthorized renderer");
     }
-    let result = currentSettingsSnapshot();
-    const operation = settingsUpdateChain.then(async () => {
-      const store = configStore;
-      if (store === null) throw new Error("Settings store is not ready");
-      const next = applySettingsPatch(config, value);
-      await store.save(next);
-      config = next;
-      configureLocalResidency();
-      tray?.setToolTip(`Undertone · ${config.hotkey}`);
-      result = currentSettingsSnapshot();
-    });
-    settingsUpdateChain = operation.catch(() => undefined);
-    await operation;
-    return result;
+    return await persistSettingsPatch(value);
+  });
+  ipcMain.handle("shortcut:capture", async (event, value: unknown) => {
+    if (event.sender !== settingsWindow?.webContents) {
+      throw new Error("Shortcut capture came from an unauthorized renderer");
+    }
+    if (!isRecord(value) || (value.field !== "hotkey" && value.field !== "repasteHotkey")) {
+      throw new Error("Invalid shortcut capture target");
+    }
+    return await captureShortcut(value.field);
   });
   ipcMain.handle("local:action", async (event, value: unknown) => {
     if (event.sender !== settingsWindow?.webContents) {
@@ -548,21 +643,33 @@ if (!gotLock) {
     await createAudio();
     windowsHost.onKeyboard((event) => {
       if (event.injected) return;
+      const activeCapture = shortcutCapture;
+      if (activeCapture !== null) {
+        if (activeCapture.completed) return;
+        const result = activeCapture.collector.update(event);
+        if (result.done) {
+          activeCapture.completed = true;
+          activeCapture.resolve(result.shortcut);
+        }
+        return;
+      }
       if (event.virtualKey === 0x1b && event.eventType === "down") {
         if (gestures.state !== GestureState.idle) gestures.cancel();
         return;
       }
-      if (event.virtualKey === 0xa3) {
-        if (event.eventType === "down" && !rightControlDown) {
-          rightControlDown = true;
-          gestures.press();
-        } else if (event.eventType === "up" && rightControlDown) {
-          rightControlDown = false;
-          gestures.release();
-        }
-        return;
+      const ptt = pttShortcut.update(event);
+      const repaste = repasteShortcut.update(event);
+      const toggle = toggleShortcut.update(event);
+      if (ptt.pressed) gestures.press();
+      if (ptt.released) gestures.release();
+      if (repaste.pressed) repasteLast();
+      if (toggle.pressed) gestures.toggle();
+      if (event.eventType === "down"
+        && !ptt.keyBelongsToShortcut
+        && !repaste.keyBelongsToShortcut
+        && !toggle.keyBelongsToShortcut) {
+        insertionMemory.invalidate();
       }
-      if (event.eventType === "down") insertionMemory.invalidate();
     });
     windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();

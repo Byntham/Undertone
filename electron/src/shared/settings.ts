@@ -2,6 +2,7 @@ export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
 export type CloudProviderId = Exclude<SettingsProviderId, "local">;
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
+export type ShortcutSetting = "hotkey" | "repasteHotkey";
 
 export interface LocalEngineSnapshot {
   installed: boolean;
@@ -20,6 +21,7 @@ export interface SettingsSnapshot {
   aiCleanup: boolean;
   restoreClipboard: boolean;
   hotkey: string;
+  repasteHotkey: string;
   appVersion: string;
   preview: boolean;
   provider: SettingsProviderId;
@@ -37,6 +39,8 @@ export interface SettingsPatch {
   smartFormatting?: boolean;
   aiCleanup?: boolean;
   restoreClipboard?: boolean;
+  hotkey?: string;
+  repasteHotkey?: string;
   provider?: SettingsProviderId;
   cleanupProvider?: SettingsProviderId;
   providerKey?: { provider: CloudProviderId; value: string };
@@ -49,5 +53,6 @@ export interface SettingsPatch {
 export interface SettingsApi {
   load(): Promise<SettingsSnapshot>;
   update(patch: SettingsPatch): Promise<SettingsSnapshot>;
+  captureShortcut(field: ShortcutSetting): Promise<SettingsSnapshot>;
   localAction(kind: LocalEngineKind, action: LocalEngineAction): Promise<SettingsSnapshot>;
 }

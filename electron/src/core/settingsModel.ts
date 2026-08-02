@@ -12,12 +12,15 @@ import type {
   SettingsPatch,
   SettingsSnapshot,
 } from "../shared/settings";
+import { normalizeShortcut } from "./shortcuts";
 
 const PATCH_FIELDS = new Set([
   "language",
   "smartFormatting",
   "aiCleanup",
   "restoreClipboard",
+  "hotkey",
+  "repasteHotkey",
   "provider",
   "cleanupProvider",
   "providerKey",
@@ -47,6 +50,7 @@ export function settingsSnapshot(
     aiCleanup: config.ai_cleanup,
     restoreClipboard: config.restore_clipboard,
     hotkey: config.hotkey,
+    repasteHotkey: config.repaste_hotkey,
     appVersion,
     preview,
     provider,
@@ -100,6 +104,20 @@ export function applySettingsPatch(
   if (value.restoreClipboard !== undefined) {
     next.restore_clipboard = booleanField(value.restoreClipboard, "restoreClipboard");
   }
+  let shortcutChanged = false;
+  if (value.hotkey !== undefined) {
+    if (typeof value.hotkey !== "string") throw new Error("hotkey must be a string");
+    next.hotkey = normalizeShortcut(value.hotkey);
+    shortcutChanged = true;
+  }
+  if (value.repasteHotkey !== undefined) {
+    if (typeof value.repasteHotkey !== "string") {
+      throw new Error("repasteHotkey must be a string");
+    }
+    next.repaste_hotkey = normalizeShortcut(value.repasteHotkey, true);
+    shortcutChanged = true;
+  }
+  if (shortcutChanged) validateDistinctShortcuts(next);
   if (value.provider !== undefined) {
     next.provider = providerField(value.provider, "provider");
   }
@@ -209,6 +227,15 @@ function setModelOverride(
 function booleanField(value: unknown, name: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${name} must be boolean`);
   return value;
+}
+
+function validateDistinctShortcuts(config: UndertoneConfig): void {
+  const bindings = [config.hotkey, config.repaste_hotkey, config.toggle_hotkey]
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (new Set(bindings).size !== bindings.length) {
+    throw new Error("That shortcut is already assigned to another action");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

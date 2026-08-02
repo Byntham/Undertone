@@ -5,12 +5,18 @@ import type {
   LocalEngineKind,
   SettingsApi,
   SettingsPatch,
+  ShortcutSetting,
 } from "../shared/settings";
 
 const api: SettingsApi = {
   load: async () => await ipcRenderer.invoke("settings:get") as Awaited<ReturnType<SettingsApi["load"]>>,
   update: async (patch: SettingsPatch) => (
     await ipcRenderer.invoke("settings:update", patch) as Awaited<ReturnType<SettingsApi["update"]>>
+  ),
+  captureShortcut: async (field: ShortcutSetting) => (
+    await ipcRenderer.invoke("shortcut:capture", { field }) as Awaited<
+      ReturnType<SettingsApi["captureShortcut"]>
+    >
   ),
   localAction: async (kind: LocalEngineKind, action: LocalEngineAction) => (
     await ipcRenderer.invoke("local:action", { kind, action }) as Awaited<

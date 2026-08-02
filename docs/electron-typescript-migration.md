@@ -85,13 +85,13 @@ vertical spike:
 
 ### Input and recording
 
-- [ ] Right-Ctrl and arbitrary multi-key shortcuts expose distinct down/up
+- [x] Right-Ctrl and arbitrary multi-key shortcuts expose distinct down/up
       transitions globally.
-- [ ] Auto-repeat does not generate duplicate transitions.
+- [x] Auto-repeat does not generate duplicate transitions.
 - [x] Hold/release, short-tap discard, release-anchored double-tap lock,
       dedicated toggle, and Esc cancel match `tests/test_gestures.py`.
-- [ ] Shortcut capture suspends all configured shortcuts and rejects duplicates.
-- [ ] Undertone's injected keys do not invalidate insertion memory; genuine
+- [x] Shortcut capture suspends all configured shortcuts and rejects duplicates.
+- [x] Undertone's injected keys do not invalidate insertion memory; genuine
       typing and mouse clicks do.
 - [x] Audio is 16 kHz, mono, signed 16-bit PCM WAV and the existing minimum
       duration remains enforced.
@@ -487,3 +487,24 @@ Python entry points and packaging remain unchanged until milestone 7.
   with three opt-in gates skipped. The rebuilt unpacked package passes both
   `PACKAGED_SMOKE_OK` and `PACKAGED_LOCAL_RUNTIME_SMOKE_OK`; production-renderer
   checks at 960 x 720 cover the missing-engine, progress, and post-install UI.
+
+### Input checkpoint - configurable shortcuts - 2026-08-02
+
+- Push-to-talk is no longer hard-coded to right Ctrl. A strict TypeScript
+  matcher supports side-specific or generic modifiers, letters, digits,
+  function keys, navigation, punctuation, numpad, volume, and media keys;
+  chords emit one press/release pair and ignore auto-repeat.
+- Re-paste and the config-only dedicated toggle share the same raw host event
+  stream. Their constituent keys are excluded from insertion-memory invalidation,
+  while genuine non-shortcut key-down and mouse events still invalidate it;
+  injected events remain ignored.
+- General Settings exposes push-to-talk and re-paste capture. During capture the
+  native low-level hook suppresses keystrokes, normal shortcut actions are
+  suspended, Esc cancels, closing Settings and changing tray pause state are
+  refused, and exact duplicate assignments are rejected before atomic save.
+- Shortcut unit tests cover chord transitions, repeat filtering, right/generic
+  modifiers, aliases, invalid bindings, capture completion, and cancellation.
+  Native-host tests cover the capture-mode protocol and suppression lifecycle.
+- `npm run verify` passes 97 tests with three opt-in gates skipped. The built
+  General page passed its 960 x 720 screen check, interaction update, semantic
+  controls, and zero-horizontal-overflow check.

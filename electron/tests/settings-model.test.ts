@@ -12,6 +12,7 @@ describe("settings model", () => {
       aiCleanup: true,
       restoreClipboard: true,
       hotkey: "right ctrl",
+      repasteHotkey: "ctrl+alt+v",
       appVersion: "1.3.0",
       preview: true,
       provider: "xai",
@@ -112,6 +113,19 @@ describe("settings model", () => {
     expect(next.local_loaded).toBe(true);
     expect(next.local_idle_minutes).toBe(15);
     expect(config.language).toBe("en");
+  });
+
+  it("normalizes shortcut updates and rejects collisions", () => {
+    const config = normalizeConfig(undefined);
+    const next = applySettingsPatch(config, {
+      hotkey: " Control + Shift + A ",
+      repasteHotkey: "Alt+V",
+    });
+    expect(next.hotkey).toBe("ctrl+shift+a");
+    expect(next.repaste_hotkey).toBe("alt+v");
+    expect(() => applySettingsPatch(config, {
+      repasteHotkey: "right ctrl",
+    })).toThrow(/already assigned/u);
   });
 
   it("rejects unknown, mistyped, or malformed patches", () => {

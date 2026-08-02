@@ -32,6 +32,7 @@ internal static class Program
     private static readonly HookProc MouseProc = OnMouse;
 
     private static volatile bool _captureInput;
+    private static volatile bool _suppressKeyboard;
     private static uint _mainThreadId;
     private static IntPtr _keyboardHook;
     private static IntPtr _mouseHook;
@@ -150,7 +151,19 @@ internal static class Program
             else if (type == "stopInput")
             {
                 _captureInput = false;
+                _suppressKeyboard = false;
                 Respond(requestId, "inputStopped");
+            }
+            else if (type == "startShortcutCapture")
+            {
+                _captureInput = true;
+                _suppressKeyboard = true;
+                Respond(requestId, "shortcutCaptureStarted");
+            }
+            else if (type == "stopShortcutCapture")
+            {
+                _suppressKeyboard = false;
+                Respond(requestId, "shortcutCaptureStopped");
             }
             else if (type == "getForeground")
             {
@@ -248,6 +261,7 @@ internal static class Program
             else if (type == "shutdown")
             {
                 _captureInput = false;
+                _suppressKeyboard = false;
                 Respond(requestId, "shuttingDown");
                 PostThreadMessage(_mainThreadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
             }
@@ -348,7 +362,9 @@ internal static class Program
                 });
             }
         }
-        return CallNextHookEx(_keyboardHook, code, wParam, lParam);
+        return code >= 0 && _suppressKeyboard
+            ? new IntPtr(1)
+            : CallNextHookEx(_keyboardHook, code, wParam, lParam);
     }
 
     private static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam)

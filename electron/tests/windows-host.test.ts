@@ -27,6 +27,8 @@ describe("Windows host", () => {
     expect(await host.unprotectSecret("legacy-plaintext")).toBe("legacy-plaintext");
     expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
     await host.startInput();
+    await host.startShortcutCapture();
+    await host.stopShortcutCapture();
     await host.stopInput();
     await host.stop();
   });
