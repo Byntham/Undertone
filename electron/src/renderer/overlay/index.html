@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <title>Undertone status</title>
+  </head>
+  <body>
+    <div id="pill" class="pill hidden" role="status" aria-live="polite">
+      <div id="bars" class="bars" aria-hidden="true">
+        <i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <span id="check" class="check" aria-hidden="true">✓</span>
+      <span id="label"></span>
+    </div>
+    <script type="module" src="/overlay/overlay.ts"></script>
+  </body>
+</html>

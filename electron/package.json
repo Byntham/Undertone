@@ -6,11 +6,12 @@
   "main": "dist/main/main/main.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
+    "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
     "typecheck": "tsc --noEmit",
-    "build": "npm run clean && tsc -p tsconfig.build.json && vite build",
+    "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",
     "test": "vitest run --config vitest.config.mts",
     "start": "npm run build && electron .",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

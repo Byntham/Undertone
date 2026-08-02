@@ -6,6 +6,11 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/core/**/*.ts"],
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/core/**/*.ts",
+    "src/platform/**/*.ts"
+  ],
   "exclude": ["tests/**/*.ts"]
 }

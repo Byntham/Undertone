@@ -18,10 +18,11 @@ that exists only to be deleted later.
   remain plain TypeScript with Canvas/CSS.
 - Low-level hooks, UI Automation, focus restoration, input injection, DPAPI
   compatibility, and job objects live behind one small native Windows host.
-- A standalone native host is preferred over an in-process addon so a native
-  crash or hung COM provider cannot take down Electron. Rust is the preferred
-  implementation, but the toolchain is not installed on the reference machine;
-  that installation is deliberately deferred until the native spike begins.
+- A standalone Windows host is preferred over an in-process addon so a native
+  crash or hung COM provider cannot take down Electron. The host is C# targeting
+  the Windows-provided .NET Framework: the reference machine already has the
+  compiler, runtime, and UI Automation assemblies, avoiding a Rust + Visual
+  Studio toolchain installation and avoiding a bundled managed runtime.
 - `%APPDATA%\Undertone` and `%LOCALAPPDATA%\Undertone` remain authoritative.
   Existing configuration, encrypted keys, models, and runtime state must not
   be copied to a new product directory.
@@ -33,7 +34,7 @@ that exists only to be deleted later.
 ## Target boundaries
 
 ```text
-native Windows host
+C# Windows host
   hooks | UIA/Win32 context | focus | SendInput | DPAPI | job objects
                               |
                         typed local IPC
@@ -177,3 +178,18 @@ Python entry points and packaging remain unchanged until milestone 7.
 - `npm audit`: zero known vulnerabilities at installation.
 - Python verification remains pending because the required project `.venv`
   and Python 3.11 launcher are absent from this worktree environment.
+
+### Vertical spike checkpoint - Windows host and overlay - 2026-08-02
+
+- The C# Windows host compiles with the installed .NET Framework compiler to a
+  9.5 KB executable; no additional SDK or runtime was installed.
+- Real host tests verify protocol negotiation, keyboard/mouse hook installation,
+  command round-trips, graceful shutdown, and parent-pipe death handling.
+- The Electron main process starts exactly one host and a forced parent exit
+  leaves no Electron child or Windows-host process behind.
+- The default right-Ctrl and Esc event path is wired to the TypeScript gesture
+  state machine with injected-event and auto-repeat filtering.
+- Offscreen captures verify neutral recording, accent-blue locked, and message
+  overlay states on transparency.
+- A physical/injected desktop key drive remains pending because it is an
+  opt-in desktop E2E check under the project's test policy.
