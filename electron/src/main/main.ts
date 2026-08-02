@@ -1,19 +1,33 @@
-import { app, BrowserWindow, ipcMain, screen, session } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, screen, session } from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { CleanupClient } from "../core/cleanup";
+import { ClipboardPaster } from "../core/clipboardPaster";
+import { normalizeConfig, type UndertoneConfig } from "../core/config";
+import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
+import {
+  DictationPipelineQueue,
+  SessionHistory,
+  type DictationTarget,
+} from "../core/pipelineQueue";
+import { InsertionMemory, prepareText } from "../core/textPreparation";
+import { Transcriber } from "../core/transcriber";
+import { ConfigStore, type ConfigStoreOptions } from "./configStore";
+import { FetchHttpClient } from "../platform/http";
 import { WindowsHost } from "../platform/windowsHost";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
+const electronPreview = app.getVersion().includes("-electron.");
 if (packagedSmoke) {
   const profilePath = process.env.UNDERTONE_PACKAGE_SMOKE_PROFILE;
   if (profilePath === undefined || !isWithin(profilePath, app.getPath("temp"))) {
     throw new Error("Packaged smoke profile path is invalid");
   }
   app.setPath("userData", profilePath);
-} else if (app.getVersion().includes("-electron.")) {
+} else if (electronPreview) {
   const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
   app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
 }
@@ -27,10 +41,16 @@ if (!gotLock) {
   let audioWindow: BrowserWindow | null = null;
   let audioReady = false;
   let settingsReady = false;
+  let config: UndertoneConfig = normalizeConfig(undefined);
+  let pipeline: DictationPipelineQueue | null = null;
+  let pendingTarget: Promise<DictationTarget | null> | null = null;
+  const insertionMemory = new InsertionMemory();
+  const history = new SessionHistory();
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
   } : {});
   let rightControlDown = false;
+  let overlayHideTimer: ReturnType<typeof setTimeout> | undefined;
 
   const sendOverlay = (state: "recording" | "locked" | "message" | "hidden", text = ""): void => {
     const overlay = overlayWindow;
@@ -50,6 +70,18 @@ if (!gotLock) {
     overlay.showInactive();
   };
 
+  const showFeedback = (
+    text: string,
+    kind: "normal" | "warning" | "error" = "normal",
+  ): void => {
+    if (overlayHideTimer !== undefined) clearTimeout(overlayHideTimer);
+    overlayHideTimer = undefined;
+    sendOverlay("message", text);
+    if (text.startsWith("Loading the local model")) return;
+    const duration = kind === "normal" ? 1_600 : 5_000;
+    overlayHideTimer = setTimeout(() => sendOverlay("hidden"), duration);
+  };
+
   const gestures = new TapStateMachine({
     onStart: () => {
       if (!audioReady || audioWindow === null) {
@@ -61,10 +93,15 @@ if (!gotLock) {
       return true;
     },
     onFinish: () => {
+      pendingTarget = windowsHost.getForeground().then((foreground) => ({
+        window: foreground.window,
+        executable: foreground.executable,
+      })).catch(() => null);
       audioWindow?.webContents.send("audio:command", { type: "stop" });
       sendOverlay("message", "Finalizing audio…");
     },
     onDiscard: () => {
+      pendingTarget = null;
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       sendOverlay("hidden");
     },
@@ -119,6 +156,88 @@ if (!gotLock) {
     );
   };
 
+  const initializePipeline = async (): Promise<void> => {
+    const configPath = electronPreview
+      ? path.join(app.getPath("userData"), "config.json")
+      : path.join(app.getPath("appData"), "Undertone", "config.json");
+    const storeOptions: ConfigStoreOptions = { configPath, cipher: windowsHost };
+    if (!electronPreview) {
+      storeOptions.legacyConfigPath = path.join(
+        app.getPath("appData"),
+        "PushToTalkSTT",
+        "config.json",
+      );
+    }
+    config = await new ConfigStore(storeOptions).load();
+
+    const http = new FetchHttpClient();
+    const transcriber = new Transcriber(http, {
+      ensureReady() {
+        throw new Error("Local transcription is not available in the Electron preview yet");
+      },
+    });
+    const cleanup = new CleanupClient(http, {
+      baseUrl() { return null; },
+      loadAsync() { /* Local cleanup lifecycle is ported in a later milestone. */ },
+    });
+    const paster = new ClipboardPaster(
+      {
+        readText: () => clipboard.readText(),
+        writeText: (value) => clipboard.writeText(value),
+      },
+      windowsHost,
+    );
+    const runner = new DictationJobRunner({
+      transcriber,
+      async prepareText(transcript, snapshot) {
+        return await prepareText(transcript, snapshot, {
+          acquireContext: async () => await insertionMemory.acquire({
+            getCaretContext: async (before, after) => (
+              await windowsHost.getCaretContext(before, after)
+            ),
+            getForegroundWindow: async () => (await windowsHost.getForeground()).window,
+          }),
+          getAppIdentity: async () => {
+            const foreground = await windowsHost.getForeground();
+            return {
+              executable: foreground.executable,
+              title: foreground.title,
+            };
+          },
+          cleanup: async (request) => await cleanup.cleanup(request),
+        });
+      },
+      restoreTarget: async (target) => {
+        if (target === null || target.window === "" || target.window === "0") return true;
+        const foreground = await windowsHost.getForeground();
+        return foreground.window === target.window
+          || await windowsHost.focusWindow(target.window);
+      },
+      getForegroundWindow: async () => (await windowsHost.getForeground()).window,
+      isLocalSttLoaded: () => false,
+      paster,
+      history,
+      insertionMemory,
+      feedback: { message: showFeedback },
+    });
+    pipeline = new DictationPipelineQueue(
+      () => config,
+      {
+        dictate: async (wav, target, snapshot) => {
+          await runner.run(wav, target, snapshot);
+        },
+        repaste: async (text, snapshot) => {
+          const generation = insertionMemory.captureGeneration();
+          await paster.paste(text, Boolean(snapshot.restore_clipboard));
+          history.registerSuccess(text, null);
+          const foreground = await windowsHost.getForeground();
+          insertionMemory.registerPaste(foreground.window, text, generation);
+          showFeedback(`Pasted · ${text.split(/\s+/u).filter(Boolean).join(" ")}`);
+        },
+      },
+    );
+  };
+
   const openSettings = (): void => {
     if (settingsWindow === null) {
       settingsWindow = new BrowserWindow({
@@ -166,19 +285,36 @@ if (!gotLock) {
     if (payload.type === "ready") {
       audioReady = true;
     } else if (payload.type === "stopped") {
-      const wav = payload.wav;
-      const byteLength = wav instanceof ArrayBuffer
-        ? wav.byteLength
-        : ArrayBuffer.isView(wav) ? wav.byteLength : 0;
-      sendOverlay("message", `Audio captured · ${Math.round(byteLength / 1024)} KB`);
-      setTimeout(() => sendOverlay("hidden"), 1_500);
+      const wav = toByteArray(payload.wav);
+      const target = pendingTarget;
+      pendingTarget = null;
+      if (wav === null || wav.byteLength < 9_600) {
+        showFeedback("Too short — hold the key while you speak", "warning");
+        return;
+      }
+      const activePipeline = pipeline;
+      if (activePipeline === null) {
+        showFeedback("Dictation service is not ready", "error");
+        return;
+      }
+      void (async () => {
+        await activePipeline.enqueueDictation(wav, await target ?? {
+          window: "0",
+          executable: null,
+        });
+      })().catch((error: unknown) => {
+        showFeedback(
+          error instanceof Error ? error.message : "The dictation pipeline failed",
+          "error",
+        );
+      });
     } else if (payload.type === "error") {
+      pendingTarget = null;
       gestures.cancel();
-      sendOverlay(
-        "message",
+      showFeedback(
         typeof payload.message === "string" ? payload.message : "Microphone unavailable",
+        "error",
       );
-      setTimeout(() => sendOverlay("hidden"), 3_000);
     }
   });
   app.whenReady().then(async () => {
@@ -191,16 +327,21 @@ if (!gotLock) {
         if (gestures.state !== GestureState.idle) gestures.cancel();
         return;
       }
-      if (event.virtualKey !== 0xa3) return;
-      if (event.eventType === "down" && !rightControlDown) {
-        rightControlDown = true;
-        gestures.press();
-      } else if (event.eventType === "up" && rightControlDown) {
-        rightControlDown = false;
-        gestures.release();
+      if (event.virtualKey === 0xa3) {
+        if (event.eventType === "down" && !rightControlDown) {
+          rightControlDown = true;
+          gestures.press();
+        } else if (event.eventType === "up" && rightControlDown) {
+          rightControlDown = false;
+          gestures.release();
+        }
+        return;
       }
+      if (event.eventType === "down") insertionMemory.invalidate();
     });
+    windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
+    await initializePipeline();
     await windowsHost.startInput();
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);
@@ -225,6 +366,14 @@ if (!gotLock) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function toByteArray(value: unknown): Uint8Array | null {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+  }
+  return null;
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {

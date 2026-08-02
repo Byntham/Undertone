@@ -340,3 +340,22 @@ Python entry points and packaging remain unchanged until milestone 7.
   Electron verification to 76 tests across eleven files.
 - These components are not yet wired to the preview shell, so the corresponding
   end-to-end parity boxes remain open despite their isolated coverage.
+
+### Pipeline/shell checkpoint - cloud path integration - 2026-08-02
+
+- The Electron preview now loads a preview-isolated config through the native
+  DPAPI service before enabling input, then sends completed WAV captures into
+  the FIFO dictation queue. The release-time target HWND/executable flows
+  through pre-context and post-cleanup restoration into native paste.
+- Genuine non-hotkey keyboard events and mouse clicks invalidate insertion
+  memory. Short captures are rejected at the existing 9,600-byte threshold;
+  pipeline, transcription, no-speech, fallback, and paste outcomes all reach
+  the overlay rather than disappearing silently.
+- Cloud STT and cleanup are fully composed with formatting, Electron clipboard,
+  history, and the native host. Preview config remains under
+  `%LOCALAPPDATA%\Undertone\ElectronPreview`; production config is untouched.
+  Local provider selection fails safely until local lifecycle migration lands.
+- The rebuilt unpacked package passes its isolated service/config smoke, and a
+  fresh hardware audio smoke returned a 502 ms, 15,746-byte valid WAV. Physical
+  hotkey/focus/paste driving is still opt-in, so related parity boxes remain
+  open.
