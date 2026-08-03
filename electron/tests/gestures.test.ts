@@ -25,7 +25,7 @@ function make(startOk = true): {
   return { machine, actions };
 }
 
-describe("TapStateMachine Python parity", () => {
+describe("TapStateMachine", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);

@@ -2,7 +2,7 @@ const { app, BrowserWindow } = require("electron");
 const { mkdir, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 
-const outputDir = path.resolve(__dirname, "../../spikes/out/electron-overlay");
+const outputDir = path.resolve(__dirname, "../test-output/overlay");
 const overlayFile = path.resolve(__dirname, "../dist/renderer/overlay/index.html");
 
 async function capture(win, state, text = "", tone = "normal") {

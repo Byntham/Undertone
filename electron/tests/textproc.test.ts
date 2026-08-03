@@ -147,7 +147,7 @@ describe("transcript formatting", () => {
     expect(fmt("next", "he said \"stop.\"")).toBe(" Next");
   });
 
-  it("applies corrections once with Python-compatible boundaries and casing", () => {
+  it("applies corrections once with word boundaries and casing", () => {
     const corrections = { "under tone": "Undertone", asap: "ASAP" };
     expect(applyCorrections("the under tone app", corrections)).toBe("the Undertone app");
     expect(applyCorrections("UNDER TONE", corrections)).toBe("UNDERTONE");

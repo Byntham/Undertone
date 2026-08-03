@@ -373,10 +373,10 @@ if (!gotLock) {
     config = await configStore.load();
     if (!electronPreview && !packagedSmoke) {
       try {
-        await autostart.migrate();
+        await autostart.reconcile();
         startWithWindows = await autostart.isEnabled();
       } catch (error) {
-        console.warn("Autostart migration failed", error);
+        console.warn("Autostart reconciliation failed", error);
       }
     }
     configureShortcuts();

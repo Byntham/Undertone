@@ -26,20 +26,6 @@ describe("Windows host", () => {
     expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
     expect(await host.unprotectSecret("legacy-plaintext")).toBe("legacy-plaintext");
     expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
-    const python = path.resolve("..", ".venv", "Scripts", "python.exe");
-    const pythonRead = spawnSync(python, [
-      "-c",
-      "import config,sys; print(config._unprotect_key(sys.argv[1]))",
-      protectedValue,
-    ], { cwd: path.resolve(".."), encoding: "utf8", windowsHide: true });
-    expect(pythonRead.status).toBe(0);
-    expect(pythonRead.stdout.trim()).toBe("test-only-secret");
-    const pythonWrite = spawnSync(python, [
-      "-c",
-      "import config; print(config._protect_key('python-test-secret'))",
-    ], { cwd: path.resolve(".."), encoding: "utf8", windowsHide: true });
-    expect(pythonWrite.status).toBe(0);
-    expect(await host.unprotectSecret(pythonWrite.stdout.trim())).toBe("python-test-secret");
     await host.startInput();
     await host.startShortcutCapture();
     await host.stopShortcutCapture();

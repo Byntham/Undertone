@@ -945,7 +945,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     repasteHotkey: "ctrl+alt+v",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
-    appVersion: "1.4.0",
+    appVersion: "1.5.0",
     preview: true,
     provider: "xai",
     cleanupProvider: "xai",
@@ -1059,7 +1059,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     },
     async history() {
       return [
-        { id: 2, ok: true, text: "The Electron migration is ready.", raw: null, error: null, timestamp: Date.now(), retryable: false },
+        { id: 2, ok: true, text: "Undertone is ready.", raw: null, error: null, timestamp: Date.now(), retryable: false },
         { id: 1, ok: false, text: "", raw: null, error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
       ];
     },

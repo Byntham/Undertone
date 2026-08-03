@@ -1,8 +1,0 @@
-sounddevice
-keyboard
-mouse
-requests
-pyperclip
-pillow
-comtypes
-PySide6

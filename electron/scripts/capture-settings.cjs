@@ -9,7 +9,7 @@ if (![1, 1.5, 2].includes(scale)) throw new Error("Scale must be 1, 1.5, or 2");
 app.commandLine.appendSwitch("force-device-scale-factor", String(scale));
 
 const root = path.resolve(__dirname, "../dist/renderer");
-const output = path.resolve(__dirname, `../../spikes/out/electron-settings-${scale}`);
+const output = path.resolve(__dirname, `../test-output/settings-${scale}`);
 const contentTypes = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],

@@ -27,25 +27,25 @@ class FakeRegistry implements RegistryRunner {
 }
 
 describe("Windows autostart", () => {
-  it("migrates either legacy registration to one current executable", async () => {
+  it("reconciles either legacy registration to one current executable", async () => {
     const registry = new FakeRegistry();
-    registry.values.set("PushToTalkSTT", "old python command");
+    registry.values.set("PushToTalkSTT", "legacy command");
     const manager = new AutostartManager(String.raw`C:\Program Files\Undertone\Undertone.exe`, registry);
-    await manager.migrate();
+    await manager.reconcile();
     expect(registry.values.has("PushToTalkSTT")).toBe(false);
     expect(registry.values.get("Undertone")).toBe(
       String.raw`"C:\Program Files\Undertone\Undertone.exe" --autostart`,
     );
     expect(await manager.isEnabled()).toBe(true);
 
-    await manager.migrate();
+    await manager.reconcile();
     expect([...registry.values.keys()]).toEqual(["Undertone"]);
   });
 
-  it("does not opt a user in during migration and disables both names", async () => {
+  it("does not opt a user in while reconciling and disables both names", async () => {
     const registry = new FakeRegistry();
     const manager = new AutostartManager("Undertone.exe", registry);
-    await manager.migrate();
+    await manager.reconcile();
     expect(registry.values.size).toBe(0);
 
     await manager.setEnabled(true);

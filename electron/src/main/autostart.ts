@@ -14,7 +14,7 @@ export class AutostartManager {
     private readonly runner: RegistryRunner = new RegExeRunner(),
   ) {}
 
-  async migrate(): Promise<void> {
+  async reconcile(): Promise<void> {
     const [current, legacy] = await Promise.all([
       this.valueExists(VALUE_NAME),
       this.valueExists(LEGACY_VALUE_NAME),

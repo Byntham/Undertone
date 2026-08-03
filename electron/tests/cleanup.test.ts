@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import {
   CLEANUP_API_URLS,
@@ -41,18 +39,7 @@ const baseOptions = {
 };
 
 describe("cleanup providers", () => {
-  it("keeps the cleanup prompt byte-for-byte equivalent across runtimes", async () => {
-    const source = await readFile(
-      path.resolve(__dirname, "../../cleanup.py"),
-      "utf8",
-    );
-    const match = /SYSTEM_PROMPT = """\\\r?\n([\s\S]*?)"""\r?\n\r?\n_RESPONSE_FORMAT/u
-      .exec(source);
-    expect(match).not.toBeNull();
-    expect(SYSTEM_PROMPT).toBe(match![1]!.replaceAll("\r\n", "\n"));
-  });
-
-  it("uses the exact migrated prompt and structured response schema", async () => {
+  it("uses the production prompt and structured response schema", async () => {
     expect(SYSTEM_PROMPT.startsWith("COPYEDIT ONLY.")).toBe(true);
     expect(SYSTEM_PROMPT).toContain("text_before_cursor");
     expect(SYSTEM_PROMPT).toContain("Final audit:");
