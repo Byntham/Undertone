@@ -35,7 +35,6 @@ const PATCH_FIELDS = new Set([
   "sttVocabHints",
   "vocabulary",
   "corrections",
-  "devMode",
   "cleanupTimeout",
   "cleanupPrompt",
   "cleanupPrompts",
@@ -85,7 +84,6 @@ export function settingsSnapshot(
     sttVocabHints: config.stt_vocab_hints,
     vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
-    devMode: config.dev_mode,
     cleanupTimeout: config.cleanup_timeout,
     cleanupPrompt: config.cleanup_prompt,
     cleanupPrompts: { ...config.cleanup_prompts },
@@ -191,9 +189,6 @@ export function applySettingsPatch(
   }
   if (value.corrections !== undefined) {
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
-  }
-  if (value.devMode !== undefined) {
-    next.dev_mode = booleanField(value.devMode, "devMode");
   }
   if (value.cleanupTimeout !== undefined) {
     if (typeof value.cleanupTimeout !== "number"

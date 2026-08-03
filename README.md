@@ -19,7 +19,7 @@ Windows SmartScreen may warn about an unsigned build. Settings are stored in
 `%APPDATA%\Undertone`; installed local engines and models are stored in
 `%LOCALAPPDATA%\Undertone`.
 
-On first launch, open **Settings -> Providers**, choose a cloud or local
+On first launch, open **Settings -> Speech & AI**, choose a cloud or local
 transcription provider, and save or install what it needs. Provider keys stay
 write-only across the settings boundary and are DPAPI-encrypted on disk.
 
@@ -39,16 +39,15 @@ is used only for deterministic insertion seams.
 
 ## Settings
 
-- **General** - shortcuts, microphone test, practice dictation, language,
-  formatting, sound cues, clipboard restoration, and Start with Windows.
-- **Dictionary** - vocabulary, exact corrections, and xAI-only recognition
-  hints.
-- **History** - session-only copy, re-paste, and retry actions.
-- **Providers** - independent STT/cleanup providers, write-only cloud keys,
+- **General** - shortcuts, microphone test, language, formatting, sound cues,
+  clipboard restoration, Start with Windows, automatic updates, version, and
+  diagnostic paths.
+- **Speech & AI** - independent STT/cleanup providers, write-only cloud keys,
   local model install/load/eject controls, provider tests, model overrides, and
-  local residency.
-- **About** - version, automatic update check/install, settings/log locations,
-  and developer controls.
+  advanced local residency and cleanup controls.
+- **Dictionary** - vocabulary, exact corrections, and contextual xAI-only
+  recognition hints.
+- **History** - session-only copy, re-paste, and retry actions.
 
 Changes autosave. Diagnostics are written to `%APPDATA%\Undertone\app.log`.
 
@@ -68,7 +67,7 @@ build.bat
 `build.bat` produces the portable app and NSIS installer. `run.bat` builds and
 launches Undertone from source. Installed NSIS builds check the public GitHub
 Releases channel after launch and can download, restart, and install updates
-from **Settings -> About**. The desktop shortcut is recreated during upgrades.
+from **Settings -> General**. The desktop shortcut is recreated during upgrades.
 Portable builds remain manually updated.
 
 Useful direct commands:

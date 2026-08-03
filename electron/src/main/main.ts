@@ -669,6 +669,9 @@ if (!gotLock) {
       settingsWindow = new BrowserWindow({
         width: 960,
         height: 720,
+        minWidth: 800,
+        minHeight: 600,
+        useContentSize: true,
         show: false,
         backgroundColor: "#282c34",
         icon: resolveAsset("icon.ico"),
