@@ -97,8 +97,22 @@ async function startCapture(deviceName: string): Promise<void> {
   const sink = context.createGain();
   sink.gain.value = 0;
   const chunks: Float32Array[] = [];
+  let levelSquareSum = 0;
+  let levelSampleCount = 0;
+  const levelWindowSamples = Math.max(1, Math.round(context.sampleRate / 20));
   worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-    chunks.push(event.data);
+    const chunk = event.data;
+    chunks.push(chunk);
+    for (const sample of chunk) levelSquareSum += sample * sample;
+    levelSampleCount += chunk.length;
+    if (levelSampleCount >= levelWindowSamples) {
+      window.undertoneAudio.emit({
+        type: "level",
+        rms: Math.sqrt(levelSquareSum / levelSampleCount),
+      });
+      levelSquareSum = 0;
+      levelSampleCount = 0;
+    }
   };
   source.connect(worklet).connect(sink).connect(context.destination);
   await context.resume();
