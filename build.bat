@@ -1,9 +1,14 @@
 @echo off
-rem Build dist\Undertone.exe with PyInstaller using the project venv.
-cd /d "%~dp0"
-.venv\Scripts\python.exe -m PyInstaller undertone.spec --noconfirm
+setlocal
+rem Build the primary portable and per-user installer artifacts.
+cd /d "%~dp0electron"
+if not exist "node_modules\electron\dist\electron.exe" (
+    call npm ci
+    if errorlevel 1 exit /b 1
+)
+call npm run package
 if errorlevel 1 (
     echo Build failed.
     exit /b 1
 )
-echo Built dist\Undertone.exe
+echo Built Electron artifacts in electron\release
