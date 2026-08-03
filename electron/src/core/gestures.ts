@@ -10,7 +10,7 @@ export type GestureState = (typeof GestureState)[keyof typeof GestureState];
 export interface GestureCallbacks {
   onStart: () => boolean;
   onFinish: () => void;
-  onDiscard: () => void;
+  onDiscard: (reason: "cancel" | "short-tap") => void;
   onLock?: () => void;
 }
 
@@ -90,7 +90,7 @@ export class TapStateMachine {
     }
     this.cancelTimer();
     this.currentState = GestureState.idle;
-    this.callbacks.onDiscard();
+    this.callbacks.onDiscard("cancel");
     return true;
   }
 
@@ -100,7 +100,7 @@ export class TapStateMachine {
       return;
     }
     this.currentState = GestureState.idle;
-    this.callbacks.onDiscard();
+    this.callbacks.onDiscard("short-tap");
   }
 
   private cancelTimer(): void {

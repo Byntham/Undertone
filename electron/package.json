@@ -18,6 +18,7 @@
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:package:local": "node scripts/package-smoke.mjs --local",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
+    "test:overlay-motion": "tsc -p tsconfig.build.json && vite build && node scripts/run-electron.mjs scripts/capture-overlay-bitblt.cjs --primed --assert-stable",
     "verify": "npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {

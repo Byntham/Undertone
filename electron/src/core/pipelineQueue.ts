@@ -10,12 +10,18 @@ export interface PipelineHandlers {
     wav: Uint8Array,
     target: DictationTarget | null,
     config: UndertoneConfig,
+    overlayRevision: number | undefined,
   ): Promise<void>;
   repaste(text: string, config: UndertoneConfig): Promise<void>;
 }
 
 type PipelineJob =
-  | { type: "dictate"; wav: Uint8Array; target: DictationTarget | null }
+  | {
+    type: "dictate";
+    wav: Uint8Array;
+    target: DictationTarget | null;
+    overlayRevision: number | undefined;
+  }
   | { type: "retry"; wav: Uint8Array }
   | { type: "repaste"; text: string };
 
@@ -34,8 +40,17 @@ export class DictationPipelineQueue {
     private readonly handlers: PipelineHandlers,
   ) {}
 
-  enqueueDictation(wav: Uint8Array, target: DictationTarget): Promise<void> {
-    return this.enqueue({ type: "dictate", wav: wav.slice(), target: { ...target } });
+  enqueueDictation(
+    wav: Uint8Array,
+    target: DictationTarget,
+    overlayRevision?: number,
+  ): Promise<void> {
+    return this.enqueue({
+      type: "dictate",
+      wav: wav.slice(),
+      target: { ...target },
+      overlayRevision,
+    });
   }
 
   enqueueRetry(wav: Uint8Array): Promise<void> {
@@ -66,9 +81,10 @@ export class DictationPipelineQueue {
               queued.job.wav,
               queued.job.target,
               config,
+              queued.job.overlayRevision,
             );
           } else if (queued.job.type === "retry") {
-            await this.handlers.dictate(queued.job.wav, null, config);
+            await this.handlers.dictate(queued.job.wav, null, config, undefined);
           } else {
             await this.handlers.repaste(queued.job.text, config);
           }

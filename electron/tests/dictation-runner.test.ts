@@ -37,10 +37,8 @@ describe("dictation job runner", () => {
       async getCaretContext() { return null; },
       async getForegroundWindow() { return "42"; },
     })).toEqual({ before: "Hello world.", after: null });
-    expect(state.messages.at(-1)).toEqual({
-      text: "Pasted · Hello world.",
-      kind: undefined,
-    });
+    expect(state.messages).toEqual([]);
+    expect(state.dismissed).toBe(1);
   });
 
   it("parks text on clipboard and history when target restoration fails", async () => {
@@ -94,17 +92,16 @@ describe("dictation job runner", () => {
     });
   });
 
-  it("announces cold local loading and keeps paste memory invalid after raced input", async () => {
+  it("keeps paste memory invalid after raced input without success feedback", async () => {
     const { dependencies, state } = harness();
-    dependencies.isLocalSttLoaded = () => false;
     dependencies.paster.paste = async (text, restore) => {
       state.pasted.push({ text, restore });
       dependencies.insertionMemory.invalidate();
     };
     const runner = new DictationJobRunner(dependencies);
     await runner.run(WAV, null, normalizeConfig({ provider: "local" }));
-    expect(state.messages.slice(0, 2).map((message) => message.text))
-      .toEqual(["Loading the local model…", "Local model loaded"]);
+    expect(state.messages).toEqual([]);
+    expect(state.dismissed).toBe(1);
     expect(await dependencies.insertionMemory.acquire({
       async getCaretContext() { return null; },
       async getForegroundWindow() { return "42"; },
@@ -118,6 +115,7 @@ function harness(): {
     restoreCalls: number;
     pasted: Array<{ text: string; restore: boolean }>;
     fallback: string | null;
+    dismissed: number;
     messages: Array<{ text: string; kind: "normal" | "warning" | "error" | undefined }>;
     transcribeOptions: Record<string, unknown> | null;
   };
@@ -126,6 +124,7 @@ function harness(): {
     restoreCalls: 0,
     pasted: [] as Array<{ text: string; restore: boolean }>,
     fallback: null as string | null,
+    dismissed: 0,
     messages: [] as Array<{
       text: string;
       kind: "normal" | "warning" | "error" | undefined;
@@ -151,9 +150,6 @@ function harness(): {
       async getForegroundWindow() {
         return "42";
       },
-      isLocalSttLoaded() {
-        return true;
-      },
       paster: {
         async paste(text, restore) {
           state.pasted.push({ text, restore });
@@ -167,6 +163,9 @@ function harness(): {
       feedback: {
         message(text, kind) {
           state.messages.push({ text, kind });
+        },
+        dismiss() {
+          state.dismissed += 1;
         },
       },
     },

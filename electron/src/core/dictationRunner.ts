@@ -25,6 +25,7 @@ export interface PasterPort {
 
 export interface DictationFeedback {
   message(text: string, kind?: "normal" | "warning" | "error"): void;
+  dismiss(): void;
 }
 
 export interface DictationRunnerDependencies {
@@ -32,7 +33,6 @@ export interface DictationRunnerDependencies {
   prepareText(text: string, config: UndertoneConfig): Promise<string>;
   restoreTarget(target: DictationTarget | null): Promise<boolean>;
   getForegroundWindow(): Promise<string>;
-  isLocalSttLoaded(): boolean;
   paster: PasterPort;
   history: SessionHistory;
   insertionMemory: InsertionMemory;
@@ -46,10 +46,9 @@ export class DictationJobRunner {
     wav: Uint8Array,
     target: DictationTarget | null,
     config: UndertoneConfig,
+    feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
     const provider = stringValue(config.provider, "xai");
-    const coldLocal = provider === "local" && !this.dependencies.isLocalSttLoaded();
-    if (coldLocal) this.dependencies.feedback.message("Loading the local model…");
 
     let transcript: string;
     try {
@@ -64,12 +63,11 @@ export class DictationJobRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.dependencies.history.registerFailure(message, wav);
-      this.dependencies.feedback.message(message, "error");
+      feedback.message(message, "error");
       return;
     }
-    if (coldLocal) this.dependencies.feedback.message("Local model loaded");
     if (transcript.length === 0) {
-      this.dependencies.feedback.message("No speech detected", "error");
+      feedback.message("No speech detected", "error");
       return;
     }
 
@@ -80,7 +78,7 @@ export class DictationJobRunner {
     if (refocused) refocused = await this.dependencies.restoreTarget(target);
     const historyRaw = raw === final ? null : raw;
     if (!refocused) {
-      this.clipboardFallback(final, historyRaw, config);
+      this.clipboardFallback(final, historyRaw, config, feedback);
       return;
     }
 
@@ -88,19 +86,20 @@ export class DictationJobRunner {
     try {
       await this.dependencies.paster.paste(final, Boolean(config.restore_clipboard));
     } catch {
-      this.clipboardFallback(final, historyRaw, config);
+      this.clipboardFallback(final, historyRaw, config, feedback);
       return;
     }
     this.dependencies.history.registerSuccess(final, historyRaw);
     const foreground = await this.dependencies.getForegroundWindow();
     this.dependencies.insertionMemory.registerPaste(foreground, final, inputGeneration);
-    this.dependencies.feedback.message(`Pasted · ${preview(final)}`);
+    feedback.dismiss();
   }
 
   private clipboardFallback(
     final: string,
     raw: string | null,
     config: UndertoneConfig,
+    feedback: DictationFeedback,
   ): void {
     this.dependencies.paster.copyFallback(final);
     this.dependencies.history.registerSuccess(final, raw);
@@ -108,7 +107,7 @@ export class DictationJobRunner {
     const message = shortcut.length > 0
       ? `Couldn't paste — press ${shortcut} where you want it`
       : "Couldn't paste — the text is on your clipboard";
-    this.dependencies.feedback.message(message, "warning");
+    feedback.message(message, "warning");
   }
 }
 
@@ -121,11 +120,6 @@ function vocabularyFor(config: UndertoneConfig): unknown[] {
     }
   }
   return vocabulary;
-}
-
-function preview(text: string): string {
-  const collapsed = text.split(/\s+/u).filter(Boolean).join(" ");
-  return collapsed.length > 48 ? `${collapsed.slice(0, 47).trimEnd()}…` : collapsed;
 }
 
 function isStringMap(value: unknown): value is Record<string, string> {

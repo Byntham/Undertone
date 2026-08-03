@@ -17,7 +17,7 @@ function make(startOk = true): {
         return startOk;
       },
       onFinish: () => actions.push("finish"),
-      onDiscard: () => actions.push("discard"),
+      onDiscard: (reason) => actions.push(`discard:${reason}`),
       onLock: () => actions.push("lock"),
     },
     { shortTapMs: SHORT_MS, doubleTapMs: DOUBLE_MS },
@@ -50,7 +50,7 @@ describe("TapStateMachine", () => {
     machine.release();
     expect(machine.state).toBe(GestureState.tapWait);
     vi.advanceTimersByTime(DOUBLE_MS);
-    expect(actions).toEqual(["start", "discard"]);
+    expect(actions).toEqual(["start", "discard:short-tap"]);
     expect(machine.state).toBe(GestureState.idle);
   });
 
@@ -88,7 +88,7 @@ describe("TapStateMachine", () => {
     machine.release();
     vi.advanceTimersByTime(DOUBLE_MS);
     machine.press();
-    expect(actions).toEqual(["start", "discard", "start"]);
+    expect(actions).toEqual(["start", "discard:short-tap", "start"]);
     expect(machine.state).toBe(GestureState.held);
   });
 
@@ -116,7 +116,7 @@ describe("TapStateMachine", () => {
     expect(machine.cancel()).toBe(true);
     machine.release();
     expect(machine.state).toBe(GestureState.idle);
-    expect(actions).toEqual(["start", "discard"]);
+    expect(actions).toEqual(["start", "discard:cancel"]);
   });
 
   it("does not cancel while idle", () => {
@@ -130,7 +130,7 @@ describe("TapStateMachine", () => {
     machine.toggle();
     expect(machine.cancel()).toBe(true);
     expect(machine.state).toBe(GestureState.idle);
-    expect(actions).toEqual(["start", "lock", "discard"]);
+    expect(actions).toEqual(["start", "lock", "discard:cancel"]);
   });
 
   it("cancels a pending tap without a second discard", () => {
@@ -140,6 +140,6 @@ describe("TapStateMachine", () => {
     expect(machine.cancel()).toBe(true);
     vi.advanceTimersByTime(DOUBLE_MS);
     expect(machine.state).toBe(GestureState.idle);
-    expect(actions).toEqual(["start", "discard"]);
+    expect(actions).toEqual(["start", "discard:cancel"]);
   });
 });
