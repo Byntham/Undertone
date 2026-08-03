@@ -293,7 +293,7 @@ export function createLocalSttRuntime(
     readyUrl: (port) => `http://127.0.0.1:${port}/`,
     ready: () => true,
     readyTimeoutMs: 60_000,
-    unavailableMessage: "The local model isn't installed — download it in Settings → Providers.",
+    unavailableMessage: "The local model isn't installed — download it in Settings → Speech & AI.",
     failedMessage: "The local transcription engine failed to start — see server.log.",
     fallbackNotice: "GPU transcription failed — using CPU (slower).",
   }, options);
@@ -327,7 +327,7 @@ export function createLocalCleanupRuntime(
     readyUrl: (port) => `http://127.0.0.1:${port}/health`,
     ready: (response) => response.status === 200,
     readyTimeoutMs: 120_000,
-    unavailableMessage: "The local cleanup model isn't installed — download it in Settings → Providers.",
+    unavailableMessage: "The local cleanup model isn't installed — download it in Settings → Speech & AI.",
     failedMessage: "The local cleanup engine failed to start — see llm-server.log.",
     fallbackNotice: "GPU cleanup failed — using CPU (slower).",
   }, options);

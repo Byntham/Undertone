@@ -42,13 +42,13 @@ export class Transcriber {
     if (!isProvider(provider)) {
       throw new TranscriptionError(
         `Unknown transcription provider '${provider}' in the config. `
-        + "Pick a provider in Settings → Providers.",
+        + "Pick a provider in Settings → Speech & AI.",
       );
     }
     if (provider !== "local" && apiKey.length === 0) {
       throw new TranscriptionError(
         "No API key configured for the transcription provider. "
-        + "Open Settings → Providers and enter one.",
+        + "Open Settings → Speech & AI and enter one.",
       );
     }
     const normalized = {
@@ -86,7 +86,7 @@ export class Transcriber {
     const responseText = response.body;
     if (response.status === 400 && responseText.includes("Incorrect API key")) {
       throw new TranscriptionError(
-        "Invalid xAI API key. Check it in Settings → Providers.",
+        "Invalid xAI API key. Check it in Settings → Speech & AI.",
       );
     }
     checkResponse(response.status, responseText, "xAI");
@@ -147,7 +147,7 @@ export class Transcriber {
       body: form,
       timeoutMs: STT_TIMEOUT_MS,
     }, "The local transcription engine stopped responding — try Eject then Load "
-      + "in Settings → Providers.");
+      + "in Settings → Speech & AI.");
     const text = textFromPayload(payload);
     return text.split(/\s+/u).filter(Boolean).join(" ");
   }
@@ -199,7 +199,7 @@ function checkResponse(status: number, text: string, provider: string): void {
   if (status === 200) return;
   if (status === 401 || status === 403) {
     throw new TranscriptionError(
-      `Invalid ${provider} API key. Check it in Settings → Providers.`,
+      `Invalid ${provider} API key. Check it in Settings → Speech & AI.`,
     );
   }
   if (status === 429) {
