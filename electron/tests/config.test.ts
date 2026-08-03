@@ -46,6 +46,10 @@ describe("configuration", () => {
     expect(DEFAULT_CONFIG.vocabulary).toEqual([]);
   });
 
+  it("drops the retired developer mode setting", () => {
+    expect(normalizeConfig({ dev_mode: true })).not.toHaveProperty("dev_mode");
+  });
+
   it("folds legacy model fields under their selected providers", () => {
     const shippedDefault: ConfigRecord = {
       ...normalizeConfig(undefined),

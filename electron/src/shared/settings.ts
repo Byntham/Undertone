@@ -42,7 +42,6 @@ export interface SettingsSnapshot {
   sttVocabHints: boolean;
   vocabulary: string[];
   corrections: Record<string, string>;
-  devMode: boolean;
   cleanupTimeout: number;
   cleanupPrompt: string;
   cleanupPrompts: Record<string, string>;
@@ -80,7 +79,6 @@ export interface SettingsPatch {
   sttVocabHints?: boolean;
   vocabulary?: string[];
   corrections?: Record<string, string>;
-  devMode?: boolean;
   cleanupTimeout?: number;
   cleanupPrompt?: string;
   cleanupPrompts?: Record<string, string>;

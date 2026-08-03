@@ -1,6 +1,6 @@
 const { app, BrowserWindow } = require("electron");
 const { createServer } = require("node:http");
-const { mkdir, readFile, writeFile } = require("node:fs/promises");
+const { mkdir, readFile, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 
 const scaleIndex = process.argv.indexOf("--scale");
@@ -54,6 +54,7 @@ app.whenReady().then(async () => {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   await win.loadURL(`http://127.0.0.1:${address.port}/`);
+  await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const sections = [
     { label: "General", filename: "general" },
@@ -74,6 +75,9 @@ app.whenReady().then(async () => {
       contentWidth: document.querySelector('main')?.scrollWidth ?? 0,
       contentClientWidth: document.querySelector('main')?.clientWidth ?? 0,
       contentScrollTop: document.querySelector('main')?.scrollTop ?? 0,
+      contentPaddingLeft: getComputedStyle(document.querySelector('main')).paddingLeft,
+      sectionLeft: document.querySelector('main section')?.getBoundingClientRect().left ?? 0,
+      sectionWidth: document.querySelector('main section')?.getBoundingClientRect().width ?? 0,
       hasContentHorizontalOverflow: (document.querySelector('main')?.scrollWidth ?? 0)
         > (document.querySelector('main')?.clientWidth ?? 0),
       title: document.querySelector('h1')?.textContent ?? ''

@@ -30,7 +30,6 @@ describe("settings model", () => {
       sttVocabHints: true,
       vocabulary: [],
       corrections: {},
-      devMode: false,
       cleanupTimeout: 2.5,
       cleanupPrompt: "",
       cleanupPrompts: {},
@@ -123,7 +122,6 @@ describe("settings model", () => {
       sttVocabHints: false,
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
-      devMode: true,
       cleanupTimeout: 4.5,
       cleanupPrompt: " custom prompt ",
       cleanupPrompts: { Fast: "multi\nline prompt" },
@@ -141,7 +139,6 @@ describe("settings model", () => {
     expect(next.stt_vocab_hints).toBe(false);
     expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
-    expect(next.dev_mode).toBe(true);
     expect(next.cleanup_timeout).toBe(4.5);
     expect(next.cleanup_prompt).toBe("custom prompt");
     expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });

@@ -947,7 +947,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     sttVocabHints: true,
     vocabulary: ["Undertone", "Kubernetes"],
     corrections: { "under tone": "Undertone" },
-    devMode: false,
     cleanupTimeout: 2.5,
     cleanupPrompt: "",
     cleanupPrompts: {},
