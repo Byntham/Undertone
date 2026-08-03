@@ -9,6 +9,7 @@ export type AudioEvent =
   | { type: "ready"; devices: string[] }
   | { type: "devices"; devices: string[] }
   | { type: "started"; sampleRate: number }
+  | { type: "level"; rms: number }
   | { type: "stopped"; wav: ArrayBuffer; durationMs: number }
   | { type: "meter"; requestId: number; peak?: number; error?: string }
   | { type: "cancelled" }

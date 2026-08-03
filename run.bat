@@ -2,9 +2,12 @@
 setlocal
 rem Build and launch the primary Electron desktop app without a console window.
 cd /d "%~dp0electron"
-if not exist "node_modules\electron\dist\electron.exe" (
+call npm ls --depth=0 >nul 2>&1
+if errorlevel 1 (
     call npm ci
     if errorlevel 1 exit /b 1
+)
+if not exist "node_modules\electron\dist\electron.exe" (
     rem Electron 43 downloads its runtime lazily when the package is loaded.
     node -e "require('electron')"
     if errorlevel 1 exit /b 1

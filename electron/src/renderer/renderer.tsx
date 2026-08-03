@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import type {
+  AppUpdateSnapshot,
   CloudProviderId,
   LocalEngineAction,
   LocalEngineKind,
@@ -291,6 +292,7 @@ function General({
         <p>{settings.preview ? "Isolated Electron preview" : "Production channel"}</p>
       </div>
     </div>
+    <AppUpdates />
     <div className="aboutLinks">
       <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Open settings folder</button>
       <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>View log</button>
@@ -864,6 +866,76 @@ function providerLabel(provider: SettingsProviderId): string {
   return PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? provider;
 }
 
+function AppUpdates(): React.JSX.Element {
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateSnapshot | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    void settingsApi.updateStatus()
+      .then((snapshot) => { if (active) setUpdateStatus(snapshot); })
+      .catch((reason: unknown) => { if (active) setUpdateError(errorMessage(reason)); });
+    const unsubscribe = settingsApi.onUpdateStatus((snapshot) => {
+      if (active) {
+        setUpdateStatus(snapshot);
+        setUpdateError(null);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  const checkForUpdates = async (): Promise<void> => {
+    setUpdateError(null);
+    try {
+      setUpdateStatus(await settingsApi.checkForUpdates());
+    } catch (reason) {
+      setUpdateError(errorMessage(reason));
+    }
+  };
+
+  const installUpdate = async (): Promise<void> => {
+    setUpdateError(null);
+    try {
+      await settingsApi.installUpdate();
+    } catch (reason) {
+      setUpdateError(errorMessage(reason));
+    }
+  };
+
+  const busy = updateStatus?.phase === "checking" || updateStatus?.phase === "downloading";
+  return <div className="card updateCard">
+      <div className="updateCopy">
+        <h3>Application updates</h3>
+        <p role="status" data-error={updateStatus?.phase === "error" || updateError !== null}>
+          {updateError ?? updateStatus?.message ?? "Loading update status..."}
+        </p>
+        {updateStatus?.phase === "downloading" && <progress
+          aria-label="Update download progress"
+          max={100}
+          value={updateStatus.progress ?? 0}
+        />}
+      </div>
+      {updateStatus?.phase === "downloaded"
+        ? <button type="button" className="smallButton accent" onClick={() => { void installUpdate(); }}>
+            Restart and install
+          </button>
+        : <button
+            type="button"
+            className="smallButton accent"
+            disabled={busy || updateStatus?.supported !== true}
+            onClick={() => { void checkForUpdates(); }}
+          >
+            {updateStatus?.phase === "checking"
+              ? "Checking..."
+              : updateStatus?.phase === "downloading"
+                ? `${Math.round(updateStatus.progress ?? 0)}%`
+                : "Check for updates"}
+          </button>}
+  </div>;
+}
+
 function SettingRow({
   title,
   description,
@@ -935,7 +1007,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     repasteHotkey: "ctrl+alt+v",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
-    appVersion: "1.5.0",
+    appVersion: "1.6.0",
     preview: true,
     provider: "xai",
     cleanupProvider: "xai",
@@ -972,6 +1044,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
         installBytes: 3_155_769_803,
       },
     },
+  };
+  const previewUpdate: AppUpdateSnapshot = {
+    supported: false,
+    phase: "unavailable",
+    currentVersion: "1.6.0",
+    availableVersion: null,
+    progress: null,
+    message: "Update checks are available in the installed app.",
   };
   return {
     async load() { return preview; },
@@ -1056,6 +1136,10 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     async systemAction() {},
     async providerTest(kind) { return `${kind} works`; },
     async microphoneTest() { return 0.18; },
+    async updateStatus() { return previewUpdate; },
+    async checkForUpdates() { return previewUpdate; },
+    async installUpdate() { throw new Error(previewUpdate.message); },
+    onUpdateStatus() { return () => undefined; },
   };
 }
 

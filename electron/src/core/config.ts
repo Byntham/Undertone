@@ -1,4 +1,4 @@
-export const APP_VERSION = "1.5.0";
+export const APP_VERSION = "1.6.0";
 export const APP_NAME = "Undertone";
 export const LEGACY_APP_NAME = "PushToTalkSTT";
 

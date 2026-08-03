@@ -10,6 +10,7 @@ import {
   shell,
   Tray,
 } from "electron";
+import electronUpdater = require("electron-updater");
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -24,6 +25,7 @@ import {
 } from "../core/config";
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
+import { OverlayController } from "../core/overlayController";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
   DictationPipelineQueue,
@@ -35,6 +37,7 @@ import { Transcriber } from "../core/transcriber";
 import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
 import { AutostartManager } from "./autostart";
+import { AppUpdateService } from "./appUpdater";
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
@@ -51,6 +54,7 @@ import type {
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
+import type { OverlayState, OverlayTone } from "../shared/overlay";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
@@ -90,6 +94,7 @@ if (!gotLock) {
   let localStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
+  let appUpdateService: AppUpdateService | null = null;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
@@ -113,8 +118,8 @@ if (!gotLock) {
   const pttShortcut = new ShortcutBinding(config.hotkey);
   const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
   const toggleShortcut = new ShortcutBinding(config.toggle_hotkey, true);
-  let overlayHideTimer: ReturnType<typeof setTimeout> | undefined;
-  let transcriptionSlowTimer: ReturnType<typeof setTimeout> | undefined;
+  let overlayDisplayId: number | undefined;
+  let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
   let recordingTrayImage: Electron.NativeImage | null = null;
   let microphoneTest: {
@@ -125,40 +130,69 @@ if (!gotLock) {
   } | null = null;
   let nextMicrophoneTestId = 1;
 
-  const sendOverlay = (
-    state: "recording" | "locked" | "transcribing" | "message" | "hidden",
-    text = "",
-    tone: "normal" | "warning" | "error" = "normal",
-  ): void => {
-    const overlay = overlayWindow;
-    if (overlay === null) return;
-    overlay.webContents.send("overlay:state", { state, text, tone });
-    if (state === "hidden") {
-      overlay.hide();
-      return;
+  const positionOverlay = (overlay: BrowserWindow): void => {
+    if (overlayDisplayId === undefined) {
+      overlayDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id;
     }
-    const bounds = screen.getPrimaryDisplay().bounds;
+    const display = screen.getAllDisplays().find(({ id }) => id === overlayDisplayId)
+      ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const bounds = display.workArea;
     const { width, height } = overlay.getBounds();
     overlay.setPosition(
       bounds.x + Math.round((bounds.width - width) / 2),
-      bounds.y + bounds.height - height - 72,
+      bounds.y + bounds.height - height - 24,
       false,
     );
-    overlay.showInactive();
+  };
+
+  const renderOverlay = (state: OverlayState): void => {
+    const overlay = overlayWindow;
+    if (overlay === null || overlay.isDestroyed()) return;
+    if (state.state === "hidden") {
+      // Keep the click-through native window presented. Windows fades a newly
+      // shown layered window and shifts its raster by a pixel during that fade.
+      overlay.webContents.send("overlay:state", state);
+      return;
+    }
+    positionOverlay(overlay);
+    overlay.setAlwaysOnTop(true, "screen-saver");
+    if (!overlay.isVisible()) overlay.showInactive();
+    overlay.moveTop();
+    overlay.webContents.send("overlay:state", state);
+  };
+
+  const overlayController = new OverlayController(renderOverlay);
+
+  const anchorOverlayToCursor = (): void => {
+    overlayDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id;
+  };
+
+  const sendOverlayLevel = (rms: number): void => {
+    const overlay = overlayWindow;
+    const state = overlayController.current().state;
+    if (overlay === null || overlay.isDestroyed()
+      || (state !== "recording" && state !== "locked")) return;
+    overlay.webContents.send("overlay:level", rms);
   };
 
   const showFeedback = (
     text: string,
-    kind: "normal" | "warning" | "error" = "normal",
+    kind: OverlayTone = "normal",
   ): void => {
-    if (overlayHideTimer !== undefined) clearTimeout(overlayHideTimer);
-    if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
-    overlayHideTimer = undefined;
-    transcriptionSlowTimer = undefined;
-    sendOverlay("message", text, kind);
-    if (text.startsWith("Loading the local model")) return;
-    const duration = kind === "normal" ? 1_600 : 5_000;
-    overlayHideTimer = setTimeout(() => sendOverlay("hidden"), duration);
+    const barOnlySignal = (text.startsWith("Too short") && kind === "warning")
+      || (text === "No speech detected" && kind === "error");
+    const duration = barOnlySignal
+      ? 1_000
+        : kind === "normal"
+          ? 1_200
+          : kind === "warning"
+            ? 2_200
+            : 2_600;
+    if (barOnlySignal) {
+      overlayController.signal(text, kind, duration);
+    } else {
+      overlayController.feedback(text, kind, duration);
+    }
   };
 
   const playCue = (name: "start" | "stop" | "lock" | "cancel"): void => {
@@ -216,16 +250,17 @@ if (!gotLock) {
         return false;
       }
       if (!audioReady || audioWindow === null) {
-        sendOverlay("message", "Audio service is not ready");
+        showFeedback("Audio service is not ready", "error");
         return false;
       }
+      anchorOverlayToCursor();
       audioWindow.webContents.send("audio:command", {
         type: "start",
         deviceName: config.input_device,
       });
       playCue("start");
       setTrayRecording(true);
-      sendOverlay("recording");
+      overlayController.recording();
       return true;
     },
     onFinish: () => {
@@ -236,31 +271,30 @@ if (!gotLock) {
       audioWindow?.webContents.send("audio:command", { type: "stop" });
       playCue("stop");
       setTrayRecording(false);
-      sendOverlay("transcribing");
-      if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
-      transcriptionSlowTimer = setTimeout(() => {
-        sendOverlay("message", "Still transcribing…");
-      }, 4_000);
+      pendingOverlayRevision = overlayController.transcribing();
     },
-    onDiscard: () => {
+    onDiscard: (reason) => {
       pendingTarget = null;
+      pendingOverlayRevision = undefined;
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       playCue("cancel");
       setTrayRecording(false);
-      if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
-      transcriptionSlowTimer = undefined;
-      sendOverlay("hidden");
+      if (reason === "short-tap") {
+        showFeedback("Too short — hold the key while you speak", "warning");
+      } else {
+        overlayController.hide();
+      }
     },
     onLock: () => {
       playCue("lock");
-      sendOverlay("locked");
+      overlayController.locked();
     },
   });
 
   const createOverlay = async (): Promise<void> => {
-    overlayWindow = new BrowserWindow({
-      width: 220,
-      height: 60,
+    const overlay = new BrowserWindow({
+      width: 420,
+      height: 52,
       show: false,
       frame: false,
       transparent: true,
@@ -277,10 +311,32 @@ if (!gotLock) {
         preload: path.join(__dirname, "../preload/overlayPreload.js"),
       },
     });
-    overlayWindow.setIgnoreMouseEvents(true);
-    await overlayWindow.loadFile(
+    overlayWindow = overlay;
+    overlay.setIgnoreMouseEvents(true);
+    overlay.setAlwaysOnTop(true, "screen-saver");
+    overlay.webContents.on("did-finish-load", () => {
+      renderOverlay(overlayController.current());
+    });
+    overlay.webContents.on("render-process-gone", (_event, details) => {
+      console.error("Overlay renderer exited", details);
+      if (!quitting && !overlay.isDestroyed()) overlay.reload();
+    });
+    await overlay.loadFile(
       path.join(__dirname, "../../renderer/overlay/index.html"),
     );
+    positionOverlay(overlay);
+    overlay.showInactive();
+    overlay.moveTop();
+    const repositionOverlay = (): void => {
+      overlayDisplayId = undefined;
+      if (overlayController.current().state === "hidden") {
+        positionOverlay(overlay);
+      } else {
+        renderOverlay(overlayController.current());
+      }
+    };
+    screen.on("display-metrics-changed", repositionOverlay);
+    screen.on("display-removed", repositionOverlay);
   };
 
   const createAudio = async (): Promise<void> => {
@@ -430,19 +486,24 @@ if (!gotLock) {
           || await windowsHost.focusWindow(target.window);
       },
       getForegroundWindow: async () => (await windowsHost.getForeground()).window,
-      isLocalSttLoaded: () => localStt?.status(
-        modelOverride(config, "stt", "local"),
-      ).loaded ?? false,
       paster,
       history,
       insertionMemory,
-      feedback: { message: showFeedback },
+      feedback: {
+        message: showFeedback,
+        dismiss: () => { overlayController.confirm(); },
+      },
     });
     pipeline = new DictationPipelineQueue(
       () => config,
       {
-        dictate: async (wav, target, snapshot) => {
-          await runner.run(wav, target, snapshot);
+        dictate: async (wav, target, snapshot, overlayRevision) => {
+          await runner.run(wav, target, snapshot, {
+            message: showFeedback,
+            dismiss: () => {
+              overlayController.confirm("Text pasted", 1_000, overlayRevision);
+            },
+          });
         },
         repaste: async (text, snapshot) => {
           const generation = insertionMemory.captureGeneration();
@@ -450,7 +511,7 @@ if (!gotLock) {
           history.registerSuccess(text, null);
           const foreground = await windowsHost.getForeground();
           insertionMemory.registerPaste(foreground.window, text, generation);
-          showFeedback(`Pasted · ${text.split(/\s+/u).filter(Boolean).join(" ")}`);
+          overlayController.confirm();
         },
       },
     );
@@ -470,6 +531,7 @@ if (!gotLock) {
   }
 
   async function shutdownServices(): Promise<void> {
+    overlayController.dispose();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -481,6 +543,13 @@ if (!gotLock) {
     ]);
     await windowsHost.stop();
     await fileLog.flush();
+  }
+
+  async function finishShutdown(): Promise<void> {
+    shutdownPromise ??= shutdownServices()
+      .catch((error: unknown) => console.error("Electron shutdown failed", error));
+    await shutdownPromise;
+    shutdownComplete = true;
   }
 
   function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
@@ -647,12 +716,7 @@ if (!gotLock) {
     quitting = true;
     if (shutdownComplete) return;
     event.preventDefault();
-    shutdownPromise ??= shutdownServices()
-      .catch((error: unknown) => console.error("Electron shutdown failed", error))
-      .finally(() => {
-        shutdownComplete = true;
-        app.quit();
-      });
+    void finishShutdown().finally(() => app.quit());
   });
   ipcMain.handle("settings:get", (event) => {
     if (event.sender !== settingsWindow?.webContents) {
@@ -835,6 +899,21 @@ if (!gotLock) {
     });
     return await result;
   });
+  ipcMain.handle("update:status", (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    return appUpdateService.snapshot();
+  });
+  ipcMain.handle("update:check", async (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    return await appUpdateService.check();
+  });
+  ipcMain.handle("update:install", async (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    await appUpdateService.install();
+  });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
@@ -842,6 +921,10 @@ if (!gotLock) {
       microphones = stringArray(payload.devices);
     } else if (payload.type === "devices") {
       microphones = stringArray(payload.devices);
+    } else if (payload.type === "level") {
+      if (typeof payload.rms === "number" && Number.isFinite(payload.rms)) {
+        sendOverlayLevel(Math.max(0, Math.min(1, payload.rms)));
+      }
     } else if (payload.type === "meter") {
       const activeTest = microphoneTest;
       if (activeTest === null || payload.requestId !== activeTest.requestId) return;
@@ -857,8 +940,11 @@ if (!gotLock) {
     } else if (payload.type === "stopped") {
       const wav = toByteArray(payload.wav);
       const target = pendingTarget;
+      const overlayRevision = pendingOverlayRevision;
       pendingTarget = null;
-      if (wav === null || wav.byteLength < 9_600) {
+      pendingOverlayRevision = undefined;
+      const durationMs = typeof payload.durationMs === "number" ? payload.durationMs : 0;
+      if (wav === null || wav.byteLength <= 44 || durationMs < 300) {
         showFeedback("Too short — hold the key while you speak", "warning");
         return;
       }
@@ -871,7 +957,7 @@ if (!gotLock) {
         await activePipeline.enqueueDictation(wav, await target ?? {
           window: "0",
           executable: null,
-        });
+        }, overlayRevision);
       })().catch((error: unknown) => {
         showFeedback(
           error instanceof Error ? error.message : "The dictation pipeline failed",
@@ -889,6 +975,28 @@ if (!gotLock) {
   });
   app.whenReady().then(async () => {
     app.setAppUserModelId("com.undertone.desktop");
+    const portableBuild = process.env.PORTABLE_EXECUTABLE_FILE !== undefined;
+    const updaterSupported = app.isPackaged && !packagedSmoke && !portableBuild;
+    const { autoUpdater } = electronUpdater;
+    appUpdateService = new AppUpdateService({
+      updater: updaterSupported ? autoUpdater : null,
+      currentVersion: app.getVersion(),
+      unavailableMessage: electronPreview
+        ? "Update checks are available in the installed app."
+        : portableBuild
+          ? "Portable builds cannot update in place. Install Undertone once to enable updates."
+          : "Updates are unavailable in this build.",
+      prepareToInstall: async () => {
+        quitting = true;
+        await finishShutdown();
+      },
+      onStatus: (snapshot) => {
+        settingsWindow?.webContents.send("update:status", snapshot);
+        if (snapshot.phase === "downloaded") {
+          showFeedback(`${snapshot.message} Open Settings to restart.`, "normal");
+        }
+      },
+    });
     await createOverlay();
     await createAudio();
     windowsHost.onKeyboard((event) => {
@@ -930,6 +1038,11 @@ if (!gotLock) {
       || providerKey(config, config.provider).trim().length > 0;
     if (packagedSmoke || !config.onboarded || !sttConfigured) openSettings();
     await windowsHost.startInput();
+    if (updaterSupported) {
+      setTimeout(() => {
+        void appUpdateService?.check();
+      }, 15_000);
+    }
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);
       if (tray === null || settingsWindow === null) {
