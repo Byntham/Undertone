@@ -5,6 +5,7 @@ const audioFile = path.resolve(__dirname, "../dist/renderer/audio/index.html");
 const preload = path.resolve(__dirname, "../dist/main/preload/audioPreload.js");
 let audioWindow;
 let finished = false;
+let levelEvents = 0;
 
 function fail(message) {
   if (finished) return;
@@ -27,6 +28,13 @@ ipcMain.on("audio:event", (_event, payload) => {
     setTimeout(() => {
       audioWindow.webContents.send("audio:command", { type: "stop" });
     }, 500);
+  } else if (payload.type === "level") {
+    if (typeof payload.rms !== "number" || !Number.isFinite(payload.rms)
+        || payload.rms < 0 || payload.rms > 1) {
+      fail("Audio smoke returned an invalid live level");
+    } else {
+      levelEvents += 1;
+    }
   } else if (payload.type === "error") {
     fail(`Audio smoke error: ${payload.message}`);
   } else if (payload.type === "stopped") {
@@ -44,6 +52,8 @@ ipcMain.on("audio:event", (_event, payload) => {
         || view.getUint16(34, true) !== 16
         || bytes.byteLength <= 44) {
       fail("Audio smoke returned the wrong PCM format");
+    } else if (levelEvents === 0) {
+      fail("Audio smoke did not receive live levels");
     } else {
       succeed(bytes.byteLength, payload.durationMs);
     }

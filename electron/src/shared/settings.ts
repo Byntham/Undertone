@@ -6,6 +6,23 @@ export type ShortcutSetting = "hotkey" | "repasteHotkey";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
+export type AppUpdatePhase =
+  | "unavailable"
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "up-to-date"
+  | "downloaded"
+  | "error";
+
+export interface AppUpdateSnapshot {
+  supported: boolean;
+  phase: AppUpdatePhase;
+  currentVersion: string;
+  availableVersion: string | null;
+  progress: number | null;
+  message: string;
+}
 
 export interface LocalEngineSnapshot {
   installed: boolean;
@@ -42,7 +59,6 @@ export interface SettingsSnapshot {
   sttVocabHints: boolean;
   vocabulary: string[];
   corrections: Record<string, string>;
-  devMode: boolean;
   cleanupTimeout: number;
   cleanupPrompt: string;
   cleanupPrompts: Record<string, string>;
@@ -80,7 +96,6 @@ export interface SettingsPatch {
   sttVocabHints?: boolean;
   vocabulary?: string[];
   corrections?: Record<string, string>;
-  devMode?: boolean;
   cleanupTimeout?: number;
   cleanupPrompt?: string;
   cleanupPrompts?: Record<string, string>;
@@ -96,4 +111,8 @@ export interface SettingsApi {
   systemAction(action: SystemAction): Promise<void>;
   providerTest(kind: ProviderTestKind): Promise<string>;
   microphoneTest(): Promise<number>;
+  updateStatus(): Promise<AppUpdateSnapshot>;
+  checkForUpdates(): Promise<AppUpdateSnapshot>;
+  installUpdate(): Promise<void>;
+  onUpdateStatus(listener: (snapshot: AppUpdateSnapshot) => void): () => void;
 }

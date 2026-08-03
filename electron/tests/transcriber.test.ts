@@ -135,7 +135,7 @@ describe("transcription providers", () => {
       wav: WAV,
       apiKey: "  ",
       provider: "openai",
-    })).rejects.toThrow(/Providers/u);
+    })).rejects.toThrow(/Speech & AI/u);
     await expect(transcriber.transcribe({
       wav: WAV,
       apiKey: "k",

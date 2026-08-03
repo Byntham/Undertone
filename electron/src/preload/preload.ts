@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type {
+  AppUpdateSnapshot,
   LocalEngineAction,
   LocalEngineKind,
   HistoryAction,
@@ -39,6 +40,18 @@ const api: SettingsApi = {
     await ipcRenderer.invoke("provider:test", { kind }) as string
   ),
   microphoneTest: async () => await ipcRenderer.invoke("microphone:test") as number,
+  updateStatus: async () => await ipcRenderer.invoke("update:status") as AppUpdateSnapshot,
+  checkForUpdates: async () => await ipcRenderer.invoke("update:check") as AppUpdateSnapshot,
+  installUpdate: async () => {
+    await ipcRenderer.invoke("update:install");
+  },
+  onUpdateStatus: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, snapshot: AppUpdateSnapshot): void => {
+      listener(snapshot);
+    };
+    ipcRenderer.on("update:status", wrapped);
+    return () => ipcRenderer.removeListener("update:status", wrapped);
+  },
 };
 
 contextBridge.exposeInMainWorld("undertoneSettings", api);

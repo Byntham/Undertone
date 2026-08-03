@@ -1,4 +1,4 @@
-export const APP_VERSION = "1.5.0";
+export const APP_VERSION = "1.6.0";
 export const APP_NAME = "Undertone";
 export const LEGACY_APP_NAME = "PushToTalkSTT";
 
@@ -32,7 +32,6 @@ export interface UndertoneConfig extends ConfigRecord {
   cleanup_timeout: number;
   cleanup_prompt: string;
   cleanup_prompts: Record<string, string>;
-  dev_mode: boolean;
 }
 
 export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
@@ -62,7 +61,6 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   cleanup_timeout: 2.5,
   cleanup_prompt: "",
   cleanup_prompts: {},
-  dev_mode: false,
 };
 
 export const KEY_FIELDS = {
@@ -76,6 +74,7 @@ const LEGACY_XAI_CLEANUP = "grok-4.20-0309-non-reasoning";
 export function normalizeConfig(value: unknown): UndertoneConfig {
   const config = cloneConfig(DEFAULT_CONFIG) as UndertoneConfig;
   if (isRecord(value)) Object.assign(config, value);
+  delete config.dev_mode;
   cloneContainers(config);
   foldLegacyModels(config);
   foldLegacyLocal(config);

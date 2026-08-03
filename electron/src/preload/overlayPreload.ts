@@ -1,10 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { OverlayState } from "../shared/overlay";
 
-export interface OverlayState {
-  state: "recording" | "locked" | "transcribing" | "message" | "hidden";
-  text: string;
-  tone?: "normal" | "warning" | "error";
-}
+export type { OverlayState } from "../shared/overlay";
 
 contextBridge.exposeInMainWorld("undertoneOverlay", {
   onState: (listener: (state: OverlayState) => void): (() => void) => {
@@ -13,5 +10,12 @@ contextBridge.exposeInMainWorld("undertoneOverlay", {
     };
     ipcRenderer.on("overlay:state", handler);
     return () => ipcRenderer.removeListener("overlay:state", handler);
+  },
+  onLevel: (listener: (level: number) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, level: number): void => {
+      listener(level);
+    };
+    ipcRenderer.on("overlay:level", handler);
+    return () => ipcRenderer.removeListener("overlay:level", handler);
   },
 });
