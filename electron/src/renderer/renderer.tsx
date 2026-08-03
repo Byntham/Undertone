@@ -15,6 +15,7 @@ import type {
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
+import desktopIconUrl from "../../../assets/icon.png";
 import "./style.css";
 
 type Section = "general" | "dictionary" | "history" | "providers" | "about";
@@ -108,7 +109,7 @@ function SettingsApp(): React.JSX.Element {
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand">
-        <span className="brandMark" aria-hidden="true">U</span>
+        <img className="brandMark" src={desktopIconUrl} alt="" />
         <div><strong>Undertone</strong><small>{settings?.preview ? "Development preview" : "Desktop dictation"}</small></div>
       </div>
       <nav aria-label="Settings sections">
@@ -856,7 +857,7 @@ function About({
       <p>Push-to-talk dictation for Windows.</p>
     </header>
     <div className="card aboutCard">
-      <div className="aboutIcon" aria-hidden="true">U</div>
+      <img className="aboutIcon" src={desktopIconUrl} alt="" />
       <div>
         <h2>Undertone {settings.appVersion}</h2>
         <p>{settings.preview ? "Isolated Electron preview" : "Production channel"}</p>

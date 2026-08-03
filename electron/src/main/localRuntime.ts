@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -47,7 +46,6 @@ export interface LocalRuntimeOptions {
 
 interface EngineSpec {
   defaultModel: string;
-  stateFile: string;
   logFile: string;
   serverFile(build: LocalBuild): string;
   requiredFiles(model: string): readonly string[];
@@ -67,12 +65,6 @@ interface ActiveServer {
   model: string;
 }
 
-interface RuntimeState {
-  cuda_installed?: boolean;
-  cuda_disabled?: boolean;
-  [key: string]: unknown;
-}
-
 export class LocalServerRuntime {
   private readonly fetcher: LocalFetch;
   private readonly notice: ((message: string) => void) | undefined;
@@ -83,6 +75,7 @@ export class LocalServerRuntime {
   private idleSeconds = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUsed = 0;
+  private cudaUnavailable = false;
 
   constructor(
     private readonly host: LocalProcessHost,
@@ -171,11 +164,8 @@ export class LocalServerRuntime {
 
   private async startServer(model: string, generation: number): Promise<string> {
     await this.stopActive();
-    const state = await loadState(this.spec.stateFile);
     const builds: LocalBuild[] = ["cpu"];
-    if (state.cuda_installed === true
-      && state.cuda_disabled !== true
-      && existsSync(this.spec.serverFile("cuda"))) {
+    if (!this.cudaUnavailable && existsSync(this.spec.serverFile("cuda"))) {
       builds.unshift("cuda");
     }
 
@@ -192,7 +182,7 @@ export class LocalServerRuntime {
         lastError = error;
         if (generation !== this.generation) throw error;
         if (build !== "cuda") break;
-        await saveState(this.spec.stateFile, { cuda_disabled: true });
+        this.cudaUnavailable = true;
         this.notice?.(this.spec.fallbackNotice);
       }
     }
@@ -285,7 +275,6 @@ export function createLocalSttRuntime(
   const models = path.join(root, "models");
   return new LocalServerRuntime(host, {
     defaultModel: LOCAL_STT_MODEL,
-    stateFile: path.join(runtime, "runtime.json"),
     logFile: path.join(runtime, "server.log"),
     serverFile: (build) => path.join(runtime, build, "whisper-server.exe"),
     requiredFiles: (model) => [
@@ -303,7 +292,7 @@ export function createLocalSttRuntime(
     ],
     readyUrl: (port) => `http://127.0.0.1:${port}/`,
     ready: () => true,
-    readyTimeoutMs: 20_000,
+    readyTimeoutMs: 60_000,
     unavailableMessage: "The local model isn't installed — download it in Settings → Providers.",
     failedMessage: "The local transcription engine failed to start — see server.log.",
     fallbackNotice: "GPU transcription failed — using CPU (slower).",
@@ -319,7 +308,6 @@ export function createLocalCleanupRuntime(
   const models = path.join(root, "models");
   return new LocalServerRuntime(host, {
     defaultModel: LOCAL_CLEANUP_MODEL,
-    stateFile: path.join(runtime, "llm-runtime.json"),
     logFile: path.join(runtime, "llm-server.log"),
     serverFile: (build) => path.join(runtime, `llm-${build}`, "llama-server.exe"),
     requiredFiles: (model) => [
@@ -382,24 +370,6 @@ async function pickPort(): Promise<number> {
       server.close((error) => error ? reject(error) : resolve(port));
     });
   });
-}
-
-async function loadState(file: string): Promise<RuntimeState> {
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8")) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as RuntimeState
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveState(file: string, changes: Partial<RuntimeState>): Promise<void> {
-  const next = { ...await loadState(file), ...changes };
-  const temporary = `${file}.tmp`;
-  await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
-  await rename(temporary, file);
 }
 
 async function delay(milliseconds: number): Promise<void> {

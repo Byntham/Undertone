@@ -20,12 +20,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 26px; }
 .brandMark, .aboutIcon {
-  display: grid;
-  place-items: center;
-  color: #101318;
-  background: #61afef;
-  border-radius: 11px;
-  font-weight: 800;
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
 }
 .brandMark { width: 38px; height: 38px; }
 .brand strong, .brand small { display: block; }
@@ -74,7 +71,7 @@ textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid #
 .saveState { position: fixed; right: 25px; bottom: 18px; color: #98c379; font-size: 12px; }
 .saveState.failed { color: #e06c75; }
 .aboutCard { display: flex; align-items: center; gap: 17px; padding: 22px; }
-.aboutIcon { width: 58px; height: 58px; border-radius: 15px; font-size: 23px; }
+.aboutIcon { width: 58px; height: 58px; }
 .aboutCard h2 { margin: 0; color: #eef1f5; font-size: 19px; }
 .aboutCard p { margin: 5px 0 0; color: #858e9c; }
 .notice { margin-top: 18px; border: 1px solid #3b526a; border-radius: 10px; padding: 15px 17px; color: #9cb6ce; background: #253342; font-size: 13px; line-height: 1.5; }

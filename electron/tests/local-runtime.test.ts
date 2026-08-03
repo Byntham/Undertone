@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -85,7 +85,7 @@ describe("local runtime", () => {
     expect(host.stopped).toContain(host.starts[0]?.processId);
   });
 
-  it("persists CUDA disablement and falls back to CPU", async () => {
+  it("falls back to CPU and skips further CUDA attempts in the same session", async () => {
     const root = await installedRoot("stt", true);
     const host = new FakeHost();
     host.failCuda = true;
@@ -99,11 +99,25 @@ describe("local runtime", () => {
     expect(host.starts.map((start) => path.basename(path.dirname(start.file))))
       .toEqual(["cuda", "cpu"]);
     expect(notices).toEqual(["GPU transcription failed — using CPU (slower)."]);
-    const state = JSON.parse(await readFile(
-      path.join(root, "runtime", "runtime.json"),
-      "utf8",
-    )) as Record<string, unknown>;
-    expect(state.cuda_disabled).toBe(true);
+    await runtime.eject();
+    await runtime.ensureReady();
+    expect(host.starts.map((start) => path.basename(path.dirname(start.file))))
+      .toEqual(["cuda", "cpu", "cpu"]);
+    expect(notices).toEqual(["GPU transcription failed — using CPU (slower)."]);
+    await runtime.shutdown();
+  });
+
+  it("uses an installed CUDA runtime despite legacy disabled state", async () => {
+    const root = await installedRoot("stt", true, true);
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+
+    await runtime.ensureReady();
+
+    expect(host.starts).toHaveLength(1);
+    expect(host.starts[0]?.file)
+      .toBe(path.join(root, "runtime", "cuda", "whisper-server.exe"));
+    expect(runtime.status().build).toBe("cuda");
     await runtime.shutdown();
   });
 
@@ -194,7 +208,11 @@ describe("local runtime", () => {
   );
 });
 
-async function installedRoot(kind: "stt" | "cleanup", cuda = false): Promise<string> {
+async function installedRoot(
+  kind: "stt" | "cleanup",
+  cuda = false,
+  cudaDisabled = false,
+): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "undertone-local-runtime-"));
   temporaryDirectories.push(root);
   const runtime = path.join(root, "runtime");
@@ -208,7 +226,7 @@ async function installedRoot(kind: "stt" | "cleanup", cuda = false): Promise<str
       await touch(path.join(runtime, "cuda", "whisper-server.exe"));
       await writeFile(
         path.join(runtime, "runtime.json"),
-        JSON.stringify({ cuda_installed: true, cuda_disabled: false }),
+        JSON.stringify({ cuda_installed: true, cuda_disabled: cudaDisabled }),
         "utf8",
       );
     }
