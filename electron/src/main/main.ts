@@ -10,6 +10,7 @@ import {
   shell,
   Tray,
 } from "electron";
+import electronUpdater = require("electron-updater");
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -35,6 +36,7 @@ import { Transcriber } from "../core/transcriber";
 import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
 import { AutostartManager } from "./autostart";
+import { AppUpdateService } from "./appUpdater";
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
@@ -90,6 +92,7 @@ if (!gotLock) {
   let localStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
+  let appUpdateService: AppUpdateService | null = null;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
@@ -483,6 +486,13 @@ if (!gotLock) {
     await fileLog.flush();
   }
 
+  async function finishShutdown(): Promise<void> {
+    shutdownPromise ??= shutdownServices()
+      .catch((error: unknown) => console.error("Electron shutdown failed", error));
+    await shutdownPromise;
+    shutdownComplete = true;
+  }
+
   function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
     const engineSnapshot = (
       kind: LocalEngineKind,
@@ -644,12 +654,7 @@ if (!gotLock) {
     quitting = true;
     if (shutdownComplete) return;
     event.preventDefault();
-    shutdownPromise ??= shutdownServices()
-      .catch((error: unknown) => console.error("Electron shutdown failed", error))
-      .finally(() => {
-        shutdownComplete = true;
-        app.quit();
-      });
+    void finishShutdown().finally(() => app.quit());
   });
   ipcMain.handle("settings:get", (event) => {
     if (event.sender !== settingsWindow?.webContents) {
@@ -832,6 +837,21 @@ if (!gotLock) {
     });
     return await result;
   });
+  ipcMain.handle("update:status", (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    return appUpdateService.snapshot();
+  });
+  ipcMain.handle("update:check", async (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    return await appUpdateService.check();
+  });
+  ipcMain.handle("update:install", async (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (appUpdateService === null) throw new Error("Update service is not ready");
+    await appUpdateService.install();
+  });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
@@ -886,6 +906,28 @@ if (!gotLock) {
   });
   app.whenReady().then(async () => {
     app.setAppUserModelId("com.undertone.desktop");
+    const portableBuild = process.env.PORTABLE_EXECUTABLE_FILE !== undefined;
+    const updaterSupported = app.isPackaged && !packagedSmoke && !portableBuild;
+    const { autoUpdater } = electronUpdater;
+    appUpdateService = new AppUpdateService({
+      updater: updaterSupported ? autoUpdater : null,
+      currentVersion: app.getVersion(),
+      unavailableMessage: electronPreview
+        ? "Update checks are available in the installed app."
+        : portableBuild
+          ? "Portable builds cannot update in place. Install Undertone once to enable updates."
+          : "Updates are unavailable in this build.",
+      prepareToInstall: async () => {
+        quitting = true;
+        await finishShutdown();
+      },
+      onStatus: (snapshot) => {
+        settingsWindow?.webContents.send("update:status", snapshot);
+        if (snapshot.phase === "downloaded") {
+          showFeedback(`${snapshot.message} Open Settings to restart.`, "normal");
+        }
+      },
+    });
     await createOverlay();
     await createAudio();
     windowsHost.onKeyboard((event) => {
@@ -927,6 +969,11 @@ if (!gotLock) {
       || providerKey(config, config.provider).trim().length > 0;
     if (packagedSmoke || !config.onboarded || !sttConfigured) openSettings();
     await windowsHost.startInput();
+    if (updaterSupported) {
+      setTimeout(() => {
+        void appUpdateService?.check();
+      }, 15_000);
+    }
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);
       if (tray === null || settingsWindow === null) {

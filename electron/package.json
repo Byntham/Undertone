@@ -1,6 +1,6 @@
 {
   "name": "undertone-electron",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Push-to-talk dictation for Windows",
   "main": "dist/main/main/main.js",
@@ -15,6 +15,7 @@
     "package:portable": "npm run build && electron-builder --win portable --x64",
     "package:nsis": "npm run build && electron-builder --win nsis --x64",
     "package": "npm run build && electron-builder --win --x64",
+    "release": "npm run build && electron-builder --win --x64 --publish always",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:package:local": "node scripts/package-smoke.mjs --local",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
@@ -66,6 +67,12 @@
     ],
     "win": {
       "icon": "icon.ico",
+      "publish": {
+        "provider": "github",
+        "owner": "Byntham",
+        "repo": "Undertone",
+        "releaseType": "release"
+      },
       "target": [
         "nsis",
         "portable"
@@ -75,13 +82,15 @@
       "artifactName": "Undertone-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always"
     },
     "portable": {
       "artifactName": "Undertone-${version}-${arch}-portable.${ext}"
     }
   },
   "dependencies": {
+    "electron-updater": "6.8.9",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   }
