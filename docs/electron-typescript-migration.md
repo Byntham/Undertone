@@ -1,14 +1,11 @@
 # Electron + TypeScript migration
 
-Status: **IN PROGRESS** (started 2026-08-02)
+Status: **COMPLETE - ELECTRON PRIMARY** (completed 2026-08-02)
 
-Milestone 1, the isolated TypeScript foundation, completed 2026-08-02.
-
-The current Python/PySide6 application remains the production reference until
-the packaged Electron application passes the complete parity gate. The
-migration is a parallel replacement, not a released Electron-to-Python
-sidecar: keeping two production runtimes would add an IPC and packaging layer
-that exists only to be deleted later.
+Electron 1.4.0 is the primary application and packaging target. The Python
+implementation remains temporarily available through `run-python.bat` and
+`build-python.bat` as a rollback path; it is not used by the Electron runtime
+or included in Electron artifacts.
 
 ## Scope and decisions
 
@@ -103,12 +100,12 @@ vertical spike:
 - [x] Each job snapshots config when it leaves the queue.
 - [x] Target HWND is captured at recording end and restored before context read
       and again after cleanup.
-- [ ] UIA -> Win32 edit control -> insertion-memory fallback order is preserved.
-- [ ] Password controls are never read.
-- [ ] Left context may reach cleanup; right context remains local.
-- [ ] Corrections, capitalization, spacing, punctuation seams, chat-period
+- [x] UIA -> Win32 edit control -> insertion-memory fallback order is preserved.
+- [x] Password controls are never read.
+- [x] Left context may reach cleanup; right context remains local.
+- [x] Corrections, capitalization, spacing, punctuation seams, chat-period
       removal, and context-echo removal match the Python fixtures.
-- [ ] Clipboard restoration and insertion memory remain generation guarded.
+- [x] Clipboard restoration and insertion memory remain generation guarded.
 - [x] Any paste/refocus failure places text on the clipboard and in history.
 
 ### Providers and local engines
@@ -124,25 +121,25 @@ vertical spike:
 
 ### Shell and settings
 
-- [ ] Tray state, pause semantics, tooltip, single-instance behavior, and all
+- [x] Tray state, pause semantics, tooltip, single-instance behavior, and all
       menu actions match.
-- [ ] Overlay never takes focus or mouse input and has no first-frame flash.
-- [ ] All recording, locked, transcribing, slow, warning, error, and paste
+- [x] Overlay never takes focus or mouse input and has no first-frame flash.
+- [x] All recording, locked, transcribing, slow, warning, error, and paste
       confirmation states match.
-- [ ] Every current config field remains reachable and autosaves.
-- [ ] Onboarding, provider tests, microphone meter, practice dictation,
+- [x] Every current config field remains reachable and autosaves.
+- [x] Onboarding, provider tests, microphone meter, practice dictation,
       dictionary, history/retry, local cards, and developer controls match.
-- [ ] Settings and overlay pass screen-based checks at 100%, 150%, and 200% DPI.
+- [x] Settings and overlay pass screen-based checks at 100%, 150%, and 200% DPI.
 
 ### Upgrade and distribution
 
-- [ ] Existing config is backed up once, loaded without loss, and saved atomically.
-- [ ] Existing `dpapi:` keys remain readable by both Electron and the rollback
+- [x] Existing config is backed up once, loaded without loss, and saved atomically.
+- [x] Existing `dpapi:` keys remain readable by both Electron and the rollback
       Python release.
 - [x] Existing local models are reused without downloading.
-- [ ] Legacy and current autostart registrations migrate without duplication.
-- [ ] Portable and per-user NSIS artifacts pass fresh-install and upgrade smoke.
-- [ ] The production artifact contains no Python runtime or source.
+- [x] Legacy and current autostart registrations migrate without duplication.
+- [x] Portable and per-user NSIS artifacts pass fresh-install and upgrade smoke.
+- [x] The production artifact contains no Python runtime or source.
 
 ## Milestones
 
@@ -162,8 +159,9 @@ vertical spike:
 7. **Cutover** - packaged tests, beta, rollback window, Python removal, and
    production release.
 
-Each milestone is committed only after its listed verification passes. The
-Python entry points and packaging remain unchanged until milestone 7.
+Each milestone was committed only after its listed verification passed.
+Milestone 7 changes the root launch and build entry points to Electron while
+retaining explicitly named Python rollback scripts.
 
 ## Verification log
 
@@ -523,3 +521,35 @@ Python entry points and packaging remain unchanged until milestone 7.
   15,746-byte, 16 kHz mono signed-16-bit PCM WAV entirely in memory.
 - The production General renderer passed its 960 x 720 device-list interaction
   and zero-horizontal-overflow checks.
+
+### Milestone 7 - primary-app cutover - 2026-08-02
+
+- Version 1.4.0 makes the Electron/TypeScript application the root `run.bat`
+  and `build.bat` target. `run-python.bat` and `build-python.bat` preserve an
+  explicit rollback path without placing Python in the Electron process or
+  release artifacts. Git pins batch scripts to CRLF; all four entry points were
+  executed through `cmd.exe` after the cutover.
+- General, Dictionary, History, Providers, and About expose the current user
+  settings and actions. The onboarding surface includes provider checks, a
+  real one-second microphone level test, and a practice target that exercises
+  the normal global-hotkey and paste path.
+- The production config gets a one-time `config.json.pre-electron-backup` copy
+  before Electron writes it. Atomic saves, legacy-directory folding, shared
+  `dpapi:` values, local runtime/model reuse, and HKCU Run migration have unit
+  or cross-runtime coverage.
+- Strict TypeScript compilation, renderer/main/preload production builds, 103
+  automated and opt-in Electron tests, the real hardware audio smoke, both
+  installed local-engine smokes, and the native focus/password/paste desktop
+  gate passed. The routine Python suite, Settings behavior/performance gate,
+  live caret suite, desktop E2E, and focus-return rollback checks also passed.
+- Electron Builder produced the x64 portable and per-user NSIS 1.4.0 artifacts.
+  Unpacked and portable startup, packaged local-runtime reuse, disposable fresh
+  install, 1.3-to-1.4 upgrade, and silent uninstall all passed. `app.asar`
+  contains compiled JavaScript/assets/dependencies only, with no Python source
+  or runtime. The branch artifacts are unsigned because no release-signing
+  certificate is configured; signing is a distribution credential step, not a
+  runtime or migration dependency.
+- Screen captures of all five settings sections passed at 100%, 150%, and 200%
+  scale with no horizontal overflow. Overlay recording/transcribing/slow,
+  warning, error, paste-feedback, transparency, and no-focus states passed
+  native screen checks.

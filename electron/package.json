@@ -1,8 +1,8 @@
 {
   "name": "undertone-electron",
-  "version": "1.3.0-electron.0",
+  "version": "1.4.0",
   "private": true,
-  "description": "Electron and TypeScript migration workspace for Undertone",
+  "description": "Push-to-talk dictation for Windows",
   "main": "dist/main/main/main.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -14,6 +14,7 @@
     "package:dir": "npm run build && electron-builder --win --x64 --dir",
     "package:portable": "npm run build && electron-builder --win portable --x64",
     "package:nsis": "npm run build && electron-builder --win nsis --x64",
+    "package": "npm run build && electron-builder --win --x64",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:package:local": "node scripts/package-smoke.mjs --local",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",

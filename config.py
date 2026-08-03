@@ -13,7 +13,7 @@ from ctypes import wintypes
 
 APP_NAME = "Undertone"
 LEGACY_APP_NAME = "PushToTalkSTT"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 CONFIG_PATH: pathlib.Path = pathlib.Path(os.environ["APPDATA"]) / APP_NAME / "config.json"
 

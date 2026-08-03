@@ -11,7 +11,7 @@ const electron = require("electron");
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-const child = spawn(electron, [target], {
+const child = spawn(electron, [target, ...process.argv.slice(3)], {
   env,
   stdio: "inherit",
   windowsHide: false,

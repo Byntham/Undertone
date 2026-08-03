@@ -3,6 +3,9 @@ export type CloudProviderId = Exclude<SettingsProviderId, "local">;
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
 export type ShortcutSetting = "hotkey" | "repasteHotkey";
+export type HistoryAction = "copy" | "repaste" | "retry";
+export type SystemAction = "openSettingsFolder" | "openLog";
+export type ProviderTestKind = "stt" | "cleanup";
 
 export interface LocalEngineSnapshot {
   installed: boolean;
@@ -20,6 +23,9 @@ export interface SettingsSnapshot {
   smartFormatting: boolean;
   aiCleanup: boolean;
   restoreClipboard: boolean;
+  soundCues: boolean;
+  startWithWindows: boolean;
+  onboarded: boolean;
   hotkey: string;
   repasteHotkey: string;
   inputDevice: string;
@@ -33,7 +39,24 @@ export interface SettingsSnapshot {
   cleanupModel: string;
   localLoaded: boolean;
   localIdleMinutes: number;
+  sttVocabHints: boolean;
+  vocabulary: string[];
+  corrections: Record<string, string>;
+  devMode: boolean;
+  cleanupTimeout: number;
+  cleanupPrompt: string;
+  cleanupPrompts: Record<string, string>;
   localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
+}
+
+export interface HistorySnapshotEntry {
+  id: number;
+  ok: boolean;
+  text: string;
+  raw: string | null;
+  error: string | null;
+  timestamp: number;
+  retryable: boolean;
 }
 
 export interface SettingsPatch {
@@ -41,6 +64,9 @@ export interface SettingsPatch {
   smartFormatting?: boolean;
   aiCleanup?: boolean;
   restoreClipboard?: boolean;
+  soundCues?: boolean;
+  startWithWindows?: boolean;
+  onboarded?: boolean;
   hotkey?: string;
   repasteHotkey?: string;
   inputDevice?: string;
@@ -51,6 +77,13 @@ export interface SettingsPatch {
   cleanupModel?: { provider: SettingsProviderId; value: string };
   localLoaded?: boolean;
   localIdleMinutes?: number;
+  sttVocabHints?: boolean;
+  vocabulary?: string[];
+  corrections?: Record<string, string>;
+  devMode?: boolean;
+  cleanupTimeout?: number;
+  cleanupPrompt?: string;
+  cleanupPrompts?: Record<string, string>;
 }
 
 export interface SettingsApi {
@@ -58,4 +91,9 @@ export interface SettingsApi {
   update(patch: SettingsPatch): Promise<SettingsSnapshot>;
   captureShortcut(field: ShortcutSetting): Promise<SettingsSnapshot>;
   localAction(kind: LocalEngineKind, action: LocalEngineAction): Promise<SettingsSnapshot>;
+  history(): Promise<HistorySnapshotEntry[]>;
+  historyAction(id: number, action: HistoryAction): Promise<void>;
+  systemAction(action: SystemAction): Promise<void>;
+  providerTest(kind: ProviderTestKind): Promise<string>;
+  microphoneTest(): Promise<number>;
 }

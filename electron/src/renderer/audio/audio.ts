@@ -28,8 +28,21 @@ let operations = Promise.resolve();
 window.undertoneAudio.onCommand((command) => {
   operations = operations.then(async () => {
     if (command.type === "start") await startCapture(command.deviceName ?? "");
+    else if (command.type === "meter") {
+      try {
+        const peak = await measureMicrophone(command.deviceName ?? "");
+        window.undertoneAudio.emit({ type: "meter", requestId: command.requestId, peak });
+      } catch (error) {
+        window.undertoneAudio.emit({
+          type: "meter",
+          requestId: command.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     else if (command.type === "stop") await stopCapture(false);
-    else await stopCapture(true);
+    else if (command.type === "cancel") await stopCapture(true);
+    else if (command.type === "cue") await playCue(command.name).catch(() => undefined);
   }).catch((error: unknown) => {
     window.undertoneAudio.emit({
       type: "error",
@@ -37,6 +50,26 @@ window.undertoneAudio.onCommand((command) => {
     });
   });
 });
+
+async function playCue(name: "start" | "stop" | "lock" | "cancel"): Promise<void> {
+  const context = new AudioContext({ latencyHint: "interactive" });
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.055, context.currentTime + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.09);
+  gain.connect(context.destination);
+  const frequencies = name === "lock" ? [620, 820] : [name === "start" ? 760 : 520];
+  for (const [index, frequency] of frequencies.entries()) {
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.value = frequency;
+    oscillator.connect(gain);
+    oscillator.start(context.currentTime + index * 0.055);
+    oscillator.stop(context.currentTime + 0.09 + index * 0.055);
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, frequencies.length * 55 + 80));
+  await context.close();
+}
 
 void reportDevices("ready");
 navigator.mediaDevices.addEventListener("devicechange", () => { void reportDevices("devices"); });
@@ -72,6 +105,40 @@ async function startCapture(deviceName: string): Promise<void> {
   session = { context, stream, source, worklet, sink, chunks, startedAt: performance.now() };
   window.undertoneAudio.emit({ type: "started", sampleRate: context.sampleRate });
   await reportDevices("devices");
+}
+
+async function measureMicrophone(deviceName: string): Promise<number> {
+  if (session !== null) throw new Error("A dictation is already recording");
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const selected = devices.find((device) => (
+    device.kind === "audioinput" && device.label === deviceName
+  ));
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: selected === undefined ? true : { deviceId: { exact: selected.deviceId } },
+    video: false,
+  });
+  const context = new AudioContext({ latencyHint: "interactive" });
+  const source = context.createMediaStreamSource(stream);
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 1_024;
+  source.connect(analyser);
+  await context.resume();
+  const samples = new Float32Array(analyser.fftSize);
+  let peak = 0;
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      peak = Math.max(peak, Math.sqrt(sum / samples.length));
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+  } finally {
+    source.disconnect();
+    for (const track of stream.getTracks()) track.stop();
+    await context.close();
+  }
+  return Math.min(1, peak);
 }
 
 async function reportDevices(type: "ready" | "devices"): Promise<void> {

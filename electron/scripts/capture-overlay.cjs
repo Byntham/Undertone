@@ -5,14 +5,15 @@ const path = require("node:path");
 const outputDir = path.resolve(__dirname, "../../spikes/out/electron-overlay");
 const overlayFile = path.resolve(__dirname, "../dist/renderer/overlay/index.html");
 
-async function capture(win, state, text = "") {
+async function capture(win, state, text = "", tone = "normal") {
   await win.webContents.executeJavaScript(`
-    document.querySelector("#pill").className = "pill ${state}";
+    document.querySelector("#pill").className = "pill ${state} ${tone}";
     document.querySelector("#label").textContent = ${JSON.stringify(text)};
+    document.querySelector("#check").textContent = ${JSON.stringify(tone === "error" ? "×" : tone === "warning" ? "!" : "✓")};
   `);
   await new Promise((resolve) => setTimeout(resolve, 150));
   const image = await win.capturePage();
-  await writeFile(path.join(outputDir, `${state}.png`), image.toPNG());
+  await writeFile(path.join(outputDir, `${state}-${tone}.png`), image.toPNG());
 }
 
 app.whenReady().then(async () => {
@@ -32,7 +33,10 @@ app.whenReady().then(async () => {
   await win.loadFile(overlayFile);
   await capture(win, "recording");
   await capture(win, "locked");
+  await capture(win, "transcribing");
   await capture(win, "message", "Input path verified");
+  await capture(win, "message", "Couldn't paste", "warning");
+  await capture(win, "message", "Provider unavailable", "error");
   win.destroy();
   app.quit();
 }).catch((error) => {

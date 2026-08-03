@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 export interface OverlayState {
-  state: "recording" | "locked" | "message" | "hidden";
+  state: "recording" | "locked" | "transcribing" | "message" | "hidden";
   text: string;
+  tone?: "normal" | "warning" | "error";
 }
 
 contextBridge.exposeInMainWorld("undertoneOverlay", {

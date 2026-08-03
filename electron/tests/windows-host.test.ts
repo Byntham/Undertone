@@ -26,6 +26,20 @@ describe("Windows host", () => {
     expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
     expect(await host.unprotectSecret("legacy-plaintext")).toBe("legacy-plaintext");
     expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
+    const python = path.resolve("..", ".venv", "Scripts", "python.exe");
+    const pythonRead = spawnSync(python, [
+      "-c",
+      "import config,sys; print(config._unprotect_key(sys.argv[1]))",
+      protectedValue,
+    ], { cwd: path.resolve(".."), encoding: "utf8", windowsHide: true });
+    expect(pythonRead.status).toBe(0);
+    expect(pythonRead.stdout.trim()).toBe("test-only-secret");
+    const pythonWrite = spawnSync(python, [
+      "-c",
+      "import config; print(config._protect_key('python-test-secret'))",
+    ], { cwd: path.resolve(".."), encoding: "utf8", windowsHide: true });
+    expect(pythonWrite.status).toBe(0);
+    expect(await host.unprotectSecret(pythonWrite.stdout.trim())).toBe("python-test-secret");
     await host.startInput();
     await host.startShortcutCapture();
     await host.stopShortcutCapture();
@@ -165,9 +179,11 @@ describe("Windows host", () => {
       const scriptPath = path.join(temporary, "target.ps1");
       const target = desktopTargetPaths(temporary, "target");
       const thief = desktopTargetPaths(temporary, "thief");
+      const password = desktopTargetPaths(temporary, "password");
       const previousClipboard = getClipboardText();
       let targetProcess: ReturnType<typeof spawn> | null = null;
       let thiefProcess: ReturnType<typeof spawn> | null = null;
+      let passwordProcess: ReturnType<typeof spawn> | null = null;
       const host = new WindowsHost({ requestTimeoutMs: 5_000 });
       try {
         await writeFile(scriptPath, WPF_TARGET_SCRIPT, "utf8");
@@ -185,10 +201,21 @@ describe("Windows host", () => {
           "",
           0,
         );
+        passwordProcess = startDesktopTarget(
+          scriptPath,
+          "Undertone Electron Host Password",
+          password,
+          "never-read-this-secret",
+          0,
+          true,
+        );
         const targetWindow = await waitForTextFile(target.hwnd);
         const thiefWindow = await waitForTextFile(thief.hwnd);
+        const passwordWindow = await waitForTextFile(password.hwnd);
 
         await host.start();
+        expect(await host.focusWindow(passwordWindow)).toBe(true);
+        expect(await host.getCaretContext(120, 120)).toBeNull();
         expect(await host.focusWindow(thiefWindow)).toBe(true);
         expect((await host.getForeground()).window).toBe(thiefWindow);
         expect(await host.focusWindow(targetWindow)).toBe(true);
@@ -203,8 +230,10 @@ describe("Windows host", () => {
         await delay(300);
         await writeFile(target.stop, "", "utf8");
         await writeFile(thief.stop, "", "utf8");
+        await writeFile(password.stop, "", "utf8");
         await waitForChildExit(targetProcess, 5_000);
         await waitForChildExit(thiefProcess, 5_000);
+        await waitForChildExit(passwordProcess, 5_000);
         expect(await readFile(target.result, "utf8")).toBe("I like hello apples.");
       } finally {
         try {
@@ -215,6 +244,7 @@ describe("Windows host", () => {
           } finally {
             targetProcess?.kill();
             thiefProcess?.kill();
+            passwordProcess?.kill();
             await rm(temporary, { recursive: true, force: true });
           }
         }
@@ -236,7 +266,8 @@ const WPF_TARGET_SCRIPT = String.raw`param(
   [string]$ResultPath,
   [string]$StopPath,
   [string]$InitialText,
-  [int]$CaretIndex
+  [int]$CaretIndex,
+  [switch]$Password
 )
 Add-Type -AssemblyName PresentationFramework
 $window = New-Object System.Windows.Window
@@ -244,9 +275,14 @@ $window.Title = $Title
 $window.Width = 500
 $window.Height = 220
 $window.Topmost = $true
-$textBox = New-Object System.Windows.Controls.TextBox
-$textBox.Text = $InitialText
-$textBox.CaretIndex = [Math]::Min($CaretIndex, $textBox.Text.Length)
+if ($Password) {
+  $textBox = New-Object System.Windows.Controls.PasswordBox
+  $textBox.Password = $InitialText
+} else {
+  $textBox = New-Object System.Windows.Controls.TextBox
+  $textBox.Text = $InitialText
+  $textBox.CaretIndex = [Math]::Min($CaretIndex, $textBox.Text.Length)
+}
 $window.Content = $textBox
 $window.Add_ContentRendered({
   $handle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
@@ -258,7 +294,8 @@ $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(50)
 $timer.Add_Tick({
   if (Test-Path -LiteralPath $StopPath) {
-    [IO.File]::WriteAllText($ResultPath, $textBox.Text)
+    $result = if ($Password) { $textBox.Password } else { $textBox.Text }
+    [IO.File]::WriteAllText($ResultPath, $result)
     $timer.Stop()
     $window.Close()
   }
@@ -281,8 +318,9 @@ function startDesktopTarget(
   files: DesktopTargetPaths,
   initialText: string,
   caretIndex: number,
+  password = false,
 ): ReturnType<typeof spawn> {
-  return spawn("powershell", [
+  const arguments_ = [
     "-NoProfile",
     "-WindowStyle", "Hidden",
     "-STA",
@@ -294,7 +332,9 @@ function startDesktopTarget(
     "-StopPath", files.stop,
     "-InitialText", initialText,
     "-CaretIndex", String(caretIndex),
-  ], { windowsHide: true, stdio: "ignore" });
+  ];
+  if (password) arguments_.push("-Password");
+  return spawn("powershell", arguments_, { windowsHide: true, stdio: "ignore" });
 }
 
 async function waitForTextFile(file: string): Promise<string> {

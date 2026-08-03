@@ -7,14 +7,21 @@ import {
   nativeImage,
   screen,
   session,
+  shell,
   Tray,
 } from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CleanupClient } from "../core/cleanup";
+import { encodePcm16Wav } from "../core/audio";
 import { ClipboardPaster } from "../core/clipboardPaster";
-import { modelOverride, normalizeConfig, type UndertoneConfig } from "../core/config";
+import {
+  modelOverride,
+  normalizeConfig,
+  providerKey,
+  type UndertoneConfig,
+} from "../core/config";
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
@@ -27,6 +34,8 @@ import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
 import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore, type ConfigStoreOptions } from "./configStore";
+import { AutostartManager } from "./autostart";
+import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
   createLocalCleanupRuntime,
@@ -38,13 +47,16 @@ import { WindowsHost } from "../platform/windowsHost";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
+  HistoryAction,
   ShortcutSetting,
+  SystemAction,
 } from "../shared/settings";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
-const electronPreview = app.getVersion().includes("-electron.");
+const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIEW === "1";
+const isolatedProfile = electronPreview || packagedSmoke;
 if (packagedSmoke) {
   const profilePath = process.env.UNDERTONE_PACKAGE_SMOKE_PROFILE;
   if (profilePath === undefined || !isWithin(profilePath, app.getPath("temp"))) {
@@ -56,6 +68,7 @@ if (packagedSmoke) {
   app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
 }
 const gotLock = app.requestSingleInstanceLock();
+const fileLog = installFileLog(path.join(app.getPath("userData"), "app.log"));
 
 if (!gotLock) {
   app.quit();
@@ -72,10 +85,13 @@ if (!gotLock) {
   let config: UndertoneConfig = normalizeConfig(undefined);
   let configStore: ConfigStore | null = null;
   let settingsUpdateChain: Promise<void> = Promise.resolve();
+  let startWithWindows = false;
   let pipeline: DictationPipelineQueue | null = null;
   let localStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
+  let transcriberClient: Transcriber | null = null;
+  let cleanupClient: CleanupClient | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
     stt: { installing: false, phase: "", fraction: 0 },
     cleanup: { installing: false, phase: "", fraction: 0 },
@@ -90,6 +106,7 @@ if (!gotLock) {
   } | null = null;
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
+  const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
   } : {});
@@ -97,11 +114,25 @@ if (!gotLock) {
   const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
   const toggleShortcut = new ShortcutBinding(config.toggle_hotkey, true);
   let overlayHideTimer: ReturnType<typeof setTimeout> | undefined;
+  let transcriptionSlowTimer: ReturnType<typeof setTimeout> | undefined;
+  let normalTrayImage: Electron.NativeImage | null = null;
+  let recordingTrayImage: Electron.NativeImage | null = null;
+  let microphoneTest: {
+    requestId: number;
+    resolve: (peak: number) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  let nextMicrophoneTestId = 1;
 
-  const sendOverlay = (state: "recording" | "locked" | "message" | "hidden", text = ""): void => {
+  const sendOverlay = (
+    state: "recording" | "locked" | "transcribing" | "message" | "hidden",
+    text = "",
+    tone: "normal" | "warning" | "error" = "normal",
+  ): void => {
     const overlay = overlayWindow;
     if (overlay === null) return;
-    overlay.webContents.send("overlay:state", { state, text });
+    overlay.webContents.send("overlay:state", { state, text, tone });
     if (state === "hidden") {
       overlay.hide();
       return;
@@ -121,11 +152,29 @@ if (!gotLock) {
     kind: "normal" | "warning" | "error" = "normal",
   ): void => {
     if (overlayHideTimer !== undefined) clearTimeout(overlayHideTimer);
+    if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
     overlayHideTimer = undefined;
-    sendOverlay("message", text);
+    transcriptionSlowTimer = undefined;
+    sendOverlay("message", text, kind);
     if (text.startsWith("Loading the local model")) return;
     const duration = kind === "normal" ? 1_600 : 5_000;
     overlayHideTimer = setTimeout(() => sendOverlay("hidden"), duration);
+  };
+
+  const playCue = (name: "start" | "stop" | "lock" | "cancel"): void => {
+    if (!config.sound_cues) return;
+    audioWindow?.webContents.send("audio:command", { type: "cue", name });
+  };
+
+  const setTrayRecording = (recording: boolean): void => {
+    const image = recording ? recordingTrayImage : normalTrayImage;
+    if (image !== null) tray?.setImage(image);
+  };
+
+  const updateTrayTooltip = (): void => {
+    tray?.setToolTip(paused
+      ? "Undertone — paused"
+      : `Undertone — hold ${config.hotkey} to dictate`);
   };
 
   const configureShortcuts = (): void => {
@@ -162,6 +211,10 @@ if (!gotLock) {
 
   const gestures = new TapStateMachine({
     onStart: () => {
+      if (microphoneTest !== null) {
+        showFeedback("Finish the microphone test before dictating", "warning");
+        return false;
+      }
       if (!audioReady || audioWindow === null) {
         sendOverlay("message", "Audio service is not ready");
         return false;
@@ -170,6 +223,8 @@ if (!gotLock) {
         type: "start",
         deviceName: config.input_device,
       });
+      playCue("start");
+      setTrayRecording(true);
       sendOverlay("recording");
       return true;
     },
@@ -179,14 +234,27 @@ if (!gotLock) {
         executable: foreground.executable,
       })).catch(() => null);
       audioWindow?.webContents.send("audio:command", { type: "stop" });
-      sendOverlay("message", "Finalizing audio…");
+      playCue("stop");
+      setTrayRecording(false);
+      sendOverlay("transcribing");
+      if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
+      transcriptionSlowTimer = setTimeout(() => {
+        sendOverlay("message", "Still transcribing…");
+      }, 4_000);
     },
     onDiscard: () => {
       pendingTarget = null;
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
+      playCue("cancel");
+      setTrayRecording(false);
+      if (transcriptionSlowTimer !== undefined) clearTimeout(transcriptionSlowTimer);
+      transcriptionSlowTimer = undefined;
       sendOverlay("hidden");
     },
-    onLock: () => sendOverlay("locked"),
+    onLock: () => {
+      playCue("lock");
+      sendOverlay("locked");
+    },
   });
 
   const createOverlay = async (): Promise<void> => {
@@ -238,9 +306,10 @@ if (!gotLock) {
   };
 
   const createTray = (): void => {
-    const icon = nativeImage.createFromPath(resolveAsset("icon.png"));
-    tray = new Tray(icon);
-    tray.setToolTip("Undertone");
+    normalTrayImage = nativeImage.createFromPath(resolveAsset("icon.png"));
+    recordingTrayImage = nativeImage.createFromDataURL(recordingTraySvg());
+    tray = new Tray(normalTrayImage);
+    updateTrayTooltip();
     const menu = Menu.buildFromTemplate([
       { label: "Open Settings", click: () => openSettings() },
       { type: "separator" },
@@ -257,9 +326,17 @@ if (!gotLock) {
           paused = item.checked;
           if (paused) gestures.cancel();
           void (paused ? windowsHost.stopInput() : windowsHost.startInput())
+            .then(() => {
+              updateTrayTooltip();
+              showFeedback(
+                paused ? "Dictation paused" : "Dictation resumed",
+                paused ? "warning" : "normal",
+              );
+            })
             .catch((error: unknown) => {
               item.checked = !paused;
               paused = item.checked;
+              updateTrayTooltip();
               showFeedback(
                 error instanceof Error ? error.message : "Could not change dictation state",
                 "error",
@@ -281,11 +358,11 @@ if (!gotLock) {
   };
 
   const initializePipeline = async (): Promise<void> => {
-    const configPath = electronPreview
+    const configPath = isolatedProfile
       ? path.join(app.getPath("userData"), "config.json")
       : path.join(app.getPath("appData"), "Undertone", "config.json");
     const storeOptions: ConfigStoreOptions = { configPath, cipher: windowsHost };
-    if (!electronPreview) {
+    if (!isolatedProfile) {
       storeOptions.legacyConfigPath = path.join(
         app.getPath("appData"),
         "PushToTalkSTT",
@@ -294,6 +371,14 @@ if (!gotLock) {
     }
     configStore = new ConfigStore(storeOptions);
     config = await configStore.load();
+    if (!electronPreview && !packagedSmoke) {
+      try {
+        await autostart.migrate();
+        startWithWindows = await autostart.isEnabled();
+      } catch (error) {
+        console.warn("Autostart migration failed", error);
+      }
+    }
     configureShortcuts();
 
     const localAppData = process.env.LOCALAPPDATA;
@@ -309,8 +394,8 @@ if (!gotLock) {
     configureLocalResidency();
 
     const http = new FetchHttpClient();
-    const transcriber = new Transcriber(http, localStt);
-    const cleanup = new CleanupClient(http, localCleanup);
+    transcriberClient = new Transcriber(http, localStt);
+    cleanupClient = new CleanupClient(http, localCleanup);
     const paster = new ClipboardPaster(
       {
         readText: () => clipboard.readText(),
@@ -319,7 +404,7 @@ if (!gotLock) {
       windowsHost,
     );
     const runner = new DictationJobRunner({
-      transcriber,
+      transcriber: transcriberClient,
       async prepareText(transcript, snapshot) {
         return await prepareText(transcript, snapshot, {
           acquireContext: async () => await insertionMemory.acquire({
@@ -335,7 +420,7 @@ if (!gotLock) {
               title: foreground.title,
             };
           },
-          cleanup: async (request) => await cleanup.cleanup(request),
+          cleanup: async (request) => await cleanupClient!.cleanup(request),
         });
       },
       restoreTarget: async (target) => {
@@ -385,11 +470,17 @@ if (!gotLock) {
   }
 
   async function shutdownServices(): Promise<void> {
+    if (microphoneTest !== null) {
+      clearTimeout(microphoneTest.timer);
+      microphoneTest.reject(new Error("Undertone is shutting down"));
+      microphoneTest = null;
+    }
     await Promise.all([
       localStt?.shutdown() ?? Promise.resolve(),
       localCleanup?.shutdown() ?? Promise.resolve(),
     ]);
     await windowsHost.stop();
+    await fileLog.flush();
   }
 
   function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
@@ -444,7 +535,7 @@ if (!gotLock) {
         localCleanup,
         modelOverride(config, "cleanup", "local"),
       ),
-    }, microphones);
+    }, microphones, startWithWindows);
   }
 
   async function persistSettingsPatch(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
@@ -455,6 +546,15 @@ if (!gotLock) {
       const previousHotkey = config.hotkey;
       const previousRepaste = config.repaste_hotkey;
       const previousToggle = config.toggle_hotkey;
+      if (isRecord(value) && value.startWithWindows !== undefined) {
+        if (typeof value.startWithWindows !== "boolean") {
+          throw new Error("startWithWindows must be boolean");
+        }
+        if (!electronPreview) {
+          await autostart.setEnabled(value.startWithWindows);
+        }
+        startWithWindows = value.startWithWindows;
+      }
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
@@ -465,7 +565,7 @@ if (!gotLock) {
         configureShortcuts();
       }
       configureLocalResidency();
-      tray?.setToolTip(`Undertone · ${config.hotkey}`);
+      updateTrayTooltip();
       result = currentSettingsSnapshot();
     });
     settingsUpdateChain = operation.catch(() => undefined);
@@ -604,6 +704,134 @@ if (!gotLock) {
     }
     return currentSettingsSnapshot();
   });
+  ipcMain.handle("history:get", (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    return history.snapshot().map((entry) => entry.ok ? {
+      id: entry.id,
+      ok: true,
+      text: entry.text,
+      raw: entry.raw,
+      error: null,
+      timestamp: entry.timestamp,
+      retryable: false,
+    } : {
+      id: entry.id,
+      ok: false,
+      text: "",
+      raw: null,
+      error: entry.error,
+      timestamp: entry.timestamp,
+      retryable: entry.wav !== undefined,
+    });
+  });
+  ipcMain.handle("history:action", async (event, value: unknown) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!isRecord(value)
+      || typeof value.id !== "number"
+      || !Number.isInteger(value.id)
+      || !isHistoryAction(value.action)) {
+      throw new Error("Invalid history action");
+    }
+    const entry = history.snapshot().find((candidate) => candidate.id === value.id);
+    if (entry === undefined) throw new Error("That history entry is no longer available");
+    const activePipeline = pipeline;
+    if (activePipeline === null && value.action !== "copy") {
+      throw new Error("Dictation pipeline is not ready");
+    }
+    if (value.action === "copy") {
+      if (!entry.ok) throw new Error("Only successful dictations can be copied");
+      clipboard.writeText(entry.text);
+      return;
+    }
+    settingsWindow?.minimize();
+    await delay(600);
+    if (value.action === "repaste") {
+      if (!entry.ok) throw new Error("Only successful dictations can be re-pasted");
+      await activePipeline!.enqueueRepaste(entry.text);
+      return;
+    }
+    const wav = history.consumeRetry(entry.id);
+    if (wav === null) throw new Error("Retry audio is no longer available");
+    await activePipeline!.enqueueRetry(wav);
+  });
+  ipcMain.handle("system:action", async (event, value: unknown) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!isRecord(value) || !isSystemAction(value.action)) {
+      throw new Error("Invalid system action");
+    }
+    const settingsRoot = path.join(app.getPath("appData"), "Undertone");
+    const target = value.action === "openLog"
+      ? path.join(settingsRoot, "app.log")
+      : settingsRoot;
+    const result = await shell.openPath(target);
+    if (result.length > 0 && value.action === "openLog") {
+      const fallback = await shell.openPath(settingsRoot);
+      if (fallback.length > 0) throw new Error(fallback);
+    } else if (result.length > 0) {
+      throw new Error(result);
+    }
+  });
+  ipcMain.handle("provider:test", async (event, value: unknown) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!isRecord(value) || (value.kind !== "stt" && value.kind !== "cleanup")) {
+      throw new Error("Invalid provider test");
+    }
+    if (value.kind === "stt") {
+      const client = transcriberClient;
+      if (client === null) throw new Error("Transcription service is not ready");
+      const provider = config.provider;
+      await client.transcribe({
+        wav: new Uint8Array(encodePcm16Wav(new Float32Array(8_000), 16_000)),
+        apiKey: providerKey(config, provider),
+        language: config.language,
+        vocabulary: [],
+        provider,
+        model: modelOverride(config, "stt", provider),
+      });
+      return `Transcription works (${providerName(provider)}).`;
+    }
+    const client = cleanupClient;
+    if (client === null) throw new Error("Cleanup service is not ready");
+    const provider = config.cleanup_provider;
+    const model = modelOverride(config, "cleanup", provider);
+    if (provider === "local") await localCleanup?.ensureReady(model);
+    const cleaned = await client.cleanup({
+      transcript: "testing one two three",
+      context: null,
+      app: "",
+      corrections: {},
+      apiKey: providerKey(config, provider),
+      provider,
+      model,
+      timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
+      systemPrompt: config.cleanup_prompt,
+    });
+    if (cleaned === null) throw new Error("Cleanup test failed — check the provider and key");
+    return `Cleanup works (${providerName(provider)}).`;
+  });
+  ipcMain.handle("microphone:test", async (event) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!audioReady || audioWindow === null) throw new Error("Audio service is not ready");
+    if (microphoneTest !== null || gestures.state !== GestureState.idle) {
+      throw new Error("The microphone is already in use");
+    }
+    const requestId = nextMicrophoneTestId;
+    nextMicrophoneTestId += 1;
+    const result = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (microphoneTest?.requestId !== requestId) return;
+        microphoneTest = null;
+        reject(new Error("Microphone test timed out"));
+      }, 5_000);
+      microphoneTest = { requestId, resolve, reject, timer };
+    });
+    audioWindow.webContents.send("audio:command", {
+      type: "meter",
+      deviceName: config.input_device,
+      requestId,
+    });
+    return await result;
+  });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
@@ -611,6 +839,18 @@ if (!gotLock) {
       microphones = stringArray(payload.devices);
     } else if (payload.type === "devices") {
       microphones = stringArray(payload.devices);
+    } else if (payload.type === "meter") {
+      const activeTest = microphoneTest;
+      if (activeTest === null || payload.requestId !== activeTest.requestId) return;
+      clearTimeout(activeTest.timer);
+      microphoneTest = null;
+      if (typeof payload.error === "string") {
+        activeTest.reject(new Error(payload.error));
+      } else if (typeof payload.peak === "number" && Number.isFinite(payload.peak)) {
+        activeTest.resolve(Math.max(0, Math.min(1, payload.peak)));
+      } else {
+        activeTest.reject(new Error("Microphone test returned an invalid level"));
+      }
     } else if (payload.type === "stopped") {
       const wav = toByteArray(payload.wav);
       const target = pendingTarget;
@@ -682,8 +922,10 @@ if (!gotLock) {
     await windowsHost.start();
     await initializePipeline();
     createTray();
-    tray?.setToolTip(`Undertone · ${config.hotkey}`);
-    openSettings();
+    updateTrayTooltip();
+    const sttConfigured = config.provider === "local"
+      || providerKey(config, config.provider).trim().length > 0;
+    if (packagedSmoke || !config.onboarded || !sttConfigured) openSettings();
     await windowsHost.startInput();
     if (packagedSmoke) {
       await waitUntil(() => audioReady && settingsReady, 5_000);
@@ -718,12 +960,41 @@ if (!gotLock) {
       const message = error instanceof Error ? error.message : String(error);
       await writeFile(packagedSmokeResult, `error:${message}`, "utf8").catch(() => undefined);
     }
+    await fileLog.flush();
     app.exit(1);
   });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isHistoryAction(value: unknown): value is HistoryAction {
+  return value === "copy" || value === "repaste" || value === "retry";
+}
+
+function isSystemAction(value: unknown): value is SystemAction {
+  return value === "openSettingsFolder" || value === "openLog";
+}
+
+function providerName(provider: string): string {
+  return provider === "xai" ? "xAI"
+    : provider === "openai" ? "OpenAI"
+      : provider === "openrouter" ? "OpenRouter"
+        : "Local";
+}
+
+function authorizeSettingsSender(
+  sender: Electron.WebContents,
+  settingsWindow: BrowserWindow | null,
+): void {
+  if (sender !== settingsWindow?.webContents) {
+    throw new Error("Request came from an unauthorized renderer");
+  }
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function toByteArray(value: unknown): Uint8Array | null {
@@ -759,4 +1030,13 @@ function resolveAsset(name: "icon.png" | "icon.ico"): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, "assets", name)
     : path.resolve(__dirname, "../../../../assets", name);
+}
+
+function recordingTraySvg(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+    <rect x="2" y="2" width="28" height="28" rx="8" fill="#c9525c"/>
+    <path d="M10 9v8a6 6 0 0 0 12 0V9h-4v8a2 2 0 0 1-4 0V9z" fill="#fff"/>
+    <rect x="14" y="22" width="4" height="4" rx="1" fill="#fff"/>
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }

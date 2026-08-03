@@ -6,14 +6,18 @@ import type {
   LocalEngineAction,
   LocalEngineKind,
   LocalEngineSnapshot,
+  HistoryAction,
+  HistorySnapshotEntry,
+  ProviderTestKind,
   SettingsPatch,
   SettingsProviderId,
   SettingsSnapshot,
   ShortcutSetting,
+  SystemAction,
 } from "../shared/settings";
 import "./style.css";
 
-type Section = "general" | "providers" | "about";
+type Section = "general" | "dictionary" | "history" | "providers" | "about";
 const settingsApi = settingsApiForRenderer();
 
 function SettingsApp(): React.JSX.Element {
@@ -21,6 +25,7 @@ function SettingsApp(): React.JSX.Element {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [capturing, setCapturing] = useState<ShortcutSetting | null>(null);
+  const [history, setHistory] = useState<HistorySnapshotEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,6 +34,9 @@ function SettingsApp(): React.JSX.Element {
       void settingsApi.load()
         .then((snapshot) => { if (active) setSettings(snapshot); })
         .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
+      void settingsApi.history()
+        .then((entries) => { if (active) setHistory(entries); })
+        .catch(() => undefined);
     };
     refresh();
     const timer = setInterval(refresh, 1_000);
@@ -49,6 +57,25 @@ function SettingsApp(): React.JSX.Element {
       return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const historyAction = async (id: number, action: HistoryAction): Promise<void> => {
+    setError(null);
+    try {
+      await settingsApi.historyAction(id, action);
+      setHistory(await settingsApi.history());
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const systemAction = async (action: SystemAction): Promise<void> => {
+    setError(null);
+    try {
+      await settingsApi.systemAction(action);
+    } catch (reason) {
+      setError(errorMessage(reason));
     }
   };
 
@@ -82,11 +109,17 @@ function SettingsApp(): React.JSX.Element {
     <aside className="sidebar">
       <div className="brand">
         <span className="brandMark" aria-hidden="true">U</span>
-        <div><strong>Undertone</strong><small>Electron preview</small></div>
+        <div><strong>Undertone</strong><small>{settings?.preview ? "Development preview" : "Desktop dictation"}</small></div>
       </div>
       <nav aria-label="Settings sections">
         <NavItem active={section === "general"} onClick={() => setSection("general")}>
           General
+        </NavItem>
+        <NavItem active={section === "dictionary"} onClick={() => setSection("dictionary")}>
+          Dictionary
+        </NavItem>
+        <NavItem active={section === "history"} onClick={() => setSection("history")}>
+          History
         </NavItem>
         <NavItem active={section === "providers"} onClick={() => setSection("providers")}>
           Providers
@@ -109,9 +142,13 @@ function SettingsApp(): React.JSX.Element {
               capturing={capturing}
               captureShortcut={captureShortcut}
             />
+          : section === "dictionary"
+            ? <Dictionary settings={settings} update={update} />
+          : section === "history"
+            ? <History entries={history} action={historyAction} />
           : section === "providers"
             ? <Providers settings={settings} update={update} localAction={localAction} />
-            : <About settings={settings} />}
+            : <About settings={settings} update={update} systemAction={systemAction} />}
       <div className={`saveState ${error !== null ? "failed" : ""}`} role="status">
         {error ?? (saving ? "Saving…" : settings === null ? "" : "✓ Saved")}
       </div>
@@ -130,12 +167,34 @@ function General({
   capturing: ShortcutSetting | null;
   captureShortcut: (field: ShortcutSetting) => Promise<void>;
 }): React.JSX.Element {
+  const [microphoneStatus, setMicrophoneStatus] = useState<string | null>(null);
+  const [testingMicrophone, setTestingMicrophone] = useState(false);
+  const testMicrophone = async (): Promise<void> => {
+    setTestingMicrophone(true);
+    setMicrophoneStatus("Listening... speak normally");
+    try {
+      const peak = await settingsApi.microphoneTest();
+      const level = Math.round(peak * 100);
+      setMicrophoneStatus(level < 1 ? "No speech detected" : `Input level ${level}%`);
+    } catch (reason) {
+      setMicrophoneStatus(errorMessage(reason));
+    } finally {
+      setTestingMicrophone(false);
+    }
+  };
   return <section>
     <header className="pageHeader">
       <p className="eyebrow">SETTINGS</p>
       <h1>General</h1>
-      <p>Core dictation behavior for the isolated Electron preview.</p>
+      <p>Shortcuts, recording, formatting, and Windows integration.</p>
     </header>
+    {!settings.onboarded && <div className="notice setupNotice">
+      <strong>Finish setting up Undertone</strong>
+      <span>Add or install your transcription provider, then mark setup complete.</span>
+      <button type="button" className="smallButton accent" onClick={() => {
+        void update({ onboarded: true });
+      }}>Finish setup</button>
+    </div>}
     <div className="card">
       <SettingRow title="Push-to-talk shortcut" description="Hold this shortcut while you speak.">
         <ShortcutControl
@@ -154,16 +213,25 @@ function General({
         />
       </SettingRow>
       <SettingRow title="Microphone" description="Select the input device by its Windows name.">
-        <select
-          aria-label="Microphone"
-          value={settings.inputDevice}
-          onChange={(event) => { void update({ inputDevice: event.target.value }); }}
-        >
-          <option value="">System default</option>
-          {settings.inputDevice !== "" && !settings.microphones.includes(settings.inputDevice)
-            && <option value={settings.inputDevice}>{settings.inputDevice} (disconnected)</option>}
-          {settings.microphones.map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>
+        <div className="microphoneControl">
+          <select
+            aria-label="Microphone"
+            value={settings.inputDevice}
+            onChange={(event) => { void update({ inputDevice: event.target.value }); }}
+          >
+            <option value="">System default</option>
+            {settings.inputDevice !== "" && !settings.microphones.includes(settings.inputDevice)
+              && <option value={settings.inputDevice}>{settings.inputDevice} (disconnected)</option>}
+            {settings.microphones.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+          <button
+            type="button"
+            className="smallButton"
+            disabled={testingMicrophone}
+            onClick={() => { void testMicrophone(); }}
+          >{testingMicrophone ? "Testing..." : "Test"}</button>
+          {microphoneStatus !== null && <small role="status">{microphoneStatus}</small>}
+        </div>
       </SettingRow>
       <SettingRow title="Transcription language" description="Language hint sent to the selected speech provider.">
         <select
@@ -203,6 +271,29 @@ function General({
           onChange={(checked) => { void update({ restoreClipboard: checked }); }}
         />
       </SettingRow>
+      <SettingRow title="Sound cues" description="Play short tones for start, stop, lock, and cancel.">
+        <Toggle
+          label="Sound cues"
+          checked={settings.soundCues}
+          onChange={(soundCues) => { void update({ soundCues }); }}
+        />
+      </SettingRow>
+    </div>
+    <h2>System</h2>
+    <div className="card">
+      <SettingRow title="Start with Windows" description="Launch quietly in the tray when you sign in.">
+        <Toggle
+          label="Start with Windows"
+          checked={settings.startWithWindows}
+          onChange={(startWithWindows) => { void update({ startWithWindows }); }}
+        />
+      </SettingRow>
+    </div>
+    <h2>Practice</h2>
+    <div className="card practiceCard">
+      <label htmlFor="practice-dictation">Try a dictation</label>
+      <p>Click below, hold {settings.hotkey}, speak, then release. Your text will appear here.</p>
+      <textarea id="practice-dictation" aria-label="Practice dictation" placeholder="Your practice dictation will appear here..." />
     </div>
   </section>;
 }
@@ -230,6 +321,127 @@ function ShortcutControl({
   </div>;
 }
 
+function Dictionary({
+  settings,
+  update,
+}: {
+  settings: SettingsSnapshot;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}): React.JSX.Element {
+  const [term, setTerm] = useState("");
+  const [heard, setHeard] = useState("");
+  const [replacement, setReplacement] = useState("");
+  const addTerm = (): void => {
+    const value = term.trim();
+    if (value.length === 0 || settings.vocabulary.includes(value)) return;
+    void update({ vocabulary: [...settings.vocabulary, value] }).then((saved) => {
+      if (saved) setTerm("");
+    });
+  };
+  const addCorrection = (): void => {
+    const key = heard.trim();
+    const value = replacement.trim();
+    if (key.length === 0 || value.length === 0) return;
+    void update({ corrections: { ...settings.corrections, [key]: value } }).then((saved) => {
+      if (saved) {
+        setHeard("");
+        setReplacement("");
+      }
+    });
+  };
+  return <section>
+    <header className="pageHeader">
+      <p className="eyebrow">SETTINGS</p>
+      <h1>Dictionary</h1>
+      <p>Teach Undertone names, jargon, and exact replacements.</p>
+    </header>
+    <h2>Vocabulary</h2>
+    <div className="card listCard">
+      <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addTerm(); }}>
+        <input aria-label="Vocabulary term" value={term} onChange={(event) => setTerm(event.target.value)} />
+        <button type="submit" className="smallButton accent">Add</button>
+      </form>
+      <EditableList
+        empty="No terms yet."
+        entries={settings.vocabulary.map((value) => ({ key: value, label: value }))}
+        remove={(value) => { void update({ vocabulary: settings.vocabulary.filter((item) => item !== value) }); }}
+      />
+    </div>
+    <h2>Corrections</h2>
+    <div className="card listCard">
+      <form className="entryForm correctionForm" onSubmit={(event) => { event.preventDefault(); addCorrection(); }}>
+        <input aria-label="Misheard phrase" placeholder="What was heard" value={heard} onChange={(event) => setHeard(event.target.value)} />
+        <span aria-hidden="true">→</span>
+        <input aria-label="Replacement" placeholder="Replacement" value={replacement} onChange={(event) => setReplacement(event.target.value)} />
+        <button type="submit" className="smallButton accent">Add</button>
+      </form>
+      <EditableList
+        empty="No corrections yet."
+        entries={Object.entries(settings.corrections).map(([key, value]) => ({ key, label: `${key} → ${value}` }))}
+        remove={(key) => {
+          const next = { ...settings.corrections };
+          delete next[key];
+          void update({ corrections: next });
+        }}
+      />
+    </div>
+    <div className="card localPolicy">
+      <SettingRow title="Send recognition hints" description="xAI receives these terms as key-term hints; other providers do not.">
+        <Toggle label="Send recognition hints" checked={settings.sttVocabHints} onChange={(sttVocabHints) => {
+          void update({ sttVocabHints });
+        }} />
+      </SettingRow>
+    </div>
+  </section>;
+}
+
+function EditableList({
+  entries,
+  empty,
+  remove,
+}: {
+  entries: { key: string; label: string }[];
+  empty: string;
+  remove: (key: string) => void;
+}): React.JSX.Element {
+  if (entries.length === 0) return <p className="emptyList">{empty}</p>;
+  return <div className="editableList">{entries.map((entry) => <div key={entry.key}>
+    <span>{entry.label}</span>
+    <button type="button" aria-label={`Remove ${entry.key}`} onClick={() => remove(entry.key)}>×</button>
+  </div>)}</div>;
+}
+
+function History({
+  entries,
+  action,
+}: {
+  entries: HistorySnapshotEntry[];
+  action: (id: number, action: HistoryAction) => Promise<void>;
+}): React.JSX.Element {
+  return <section>
+    <header className="pageHeader">
+      <p className="eyebrow">SESSION</p>
+      <h1>History</h1>
+      <p>Recent dictations live in memory and disappear when Undertone exits.</p>
+    </header>
+    <div className="historyList">
+      {entries.length === 0 && <div className="card emptyList">Nothing dictated yet this session.</div>}
+      {entries.map((entry) => <article key={entry.id} className="historyEntry" data-ok={entry.ok}>
+        <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+        <div>
+          <p>{entry.ok ? entry.text : entry.error}</p>
+          {entry.raw !== null && <small>Heard: {entry.raw}</small>}
+        </div>
+        <div className="historyActions">
+          {entry.ok && <button type="button" className="smallButton" onClick={() => { void action(entry.id, "copy"); }}>Copy</button>}
+          {entry.ok && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "repaste"); }}>Re-paste</button>}
+          {!entry.ok && entry.retryable && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "retry"); }}>Retry</button>}
+        </div>
+      </article>)}
+    </div>
+  </section>;
+}
+
 const PROVIDERS: readonly { id: SettingsProviderId; label: string }[] = [
   { id: "xai", label: "xAI" },
   { id: "openai", label: "OpenAI" },
@@ -246,6 +458,19 @@ function Providers({
   update: (patch: SettingsPatch) => Promise<boolean>;
   localAction: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
 }): React.JSX.Element {
+  const [testing, setTesting] = useState<ProviderTestKind | null>(null);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const test = async (kind: ProviderTestKind): Promise<void> => {
+    setTesting(kind);
+    setTestResult(null);
+    try {
+      setTestResult(`✓ ${await settingsApi.providerTest(kind)}`);
+    } catch (reason) {
+      setTestResult(errorMessage(reason));
+    } finally {
+      setTesting(null);
+    }
+  };
   return <section>
     <header className="pageHeader">
       <p className="eyebrow">SETTINGS</p>
@@ -270,6 +495,15 @@ function Providers({
           onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
         />
       </SettingRow>
+    </div>
+    <div className="providerTests">
+      <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
+        {testing === "stt" ? "Testing…" : "Test transcription"}
+      </button>
+      <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("cleanup"); }}>
+        {testing === "cleanup" ? "Testing…" : "Test cleanup"}
+      </button>
+      {testResult !== null && <span>{testResult}</span>}
     </div>
 
     <h2>On-device</h2>
@@ -356,7 +590,85 @@ function Providers({
         update={update}
       />
     </div>
+    {settings.devMode && <>
+      <h2>Developer controls</h2>
+      <div className="card modelCard">
+        <form className="modelControl" onSubmit={(event) => {
+          event.preventDefault();
+          const field = event.currentTarget.elements.namedItem("cleanupTimeout");
+          if (field instanceof HTMLInputElement) {
+            void update({ cleanupTimeout: Number(field.value) });
+          }
+        }}>
+          <label htmlFor="cleanup-timeout">Cleanup timeout (seconds)</label>
+          <div className="modelEntry">
+            <input id="cleanup-timeout" name="cleanupTimeout" type="number" min="0.5" max="30" step="0.1" defaultValue={settings.cleanupTimeout} />
+            <button type="submit" className="smallButton accent">Save</button>
+          </div>
+        </form>
+        <PromptControl current={settings.cleanupPrompt} saved={settings.cleanupPrompts} update={update} />
+      </div>
+    </>}
   </section>;
+}
+
+function PromptControl({
+  current,
+  saved,
+  update,
+}: {
+  current: string;
+  saved: Record<string, string>;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}): React.JSX.Element {
+  const [value, setValue] = useState(current);
+  const [selected, setSelected] = useState("");
+  const [saveName, setSaveName] = useState("");
+  const save = (): void => {
+    const patch: SettingsPatch = { cleanupPrompt: value };
+    if (selected.length > 0) patch.cleanupPrompts = { ...saved, [selected]: value };
+    void update(patch);
+  };
+  const saveAs = (): void => {
+    const name = saveName.trim();
+    if (name.length === 0 || value.trim().length === 0) return;
+    void update({ cleanupPrompt: value, cleanupPrompts: { ...saved, [name]: value } });
+    setSelected(name);
+    setSaveName("");
+  };
+  return <form className="modelControl" onSubmit={(event) => {
+    event.preventDefault();
+    save();
+  }}>
+    <div className="promptHead">
+      <label htmlFor="cleanup-prompt">Cleanup system prompt</label>
+      <select aria-label="Saved cleanup prompt" value={selected} onChange={(event) => {
+        const name = event.target.value;
+        setSelected(name);
+        setValue(name.length === 0 ? "" : saved[name] ?? "");
+        void update({ cleanupPrompt: name.length === 0 ? "" : saved[name] ?? "" });
+      }}>
+        <option value="">Built-in default</option>
+        {Object.keys(saved).sort((left, right) => left.localeCompare(right)).map((name) => <option key={name} value={name}>{name}</option>)}
+      </select>
+    </div>
+    <textarea id="cleanup-prompt" value={value} placeholder="Empty uses the built-in prompt." onChange={(event) => setValue(event.target.value)} />
+    <div className="promptActions">
+      <small>Empty uses the built-in default.</small>
+      <button type="submit" className="smallButton accent">Save</button>
+    </div>
+    <div className="promptActions">
+      <input aria-label="New prompt save name" placeholder="New save name" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
+      <button type="button" className="smallButton" onClick={saveAs}>Save as new</button>
+      {selected.length > 0 && <button type="button" className="clearButton" onClick={() => {
+        const next = { ...saved };
+        delete next[selected];
+        setSelected("");
+        setValue("");
+        void update({ cleanupPrompt: "", cleanupPrompts: next });
+      }}>Delete save</button>}
+    </div>
+  </form>;
 }
 
 function ProviderSelect({
@@ -528,12 +840,20 @@ function providerLabel(provider: SettingsProviderId): string {
   return PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? provider;
 }
 
-function About({ settings }: { settings: SettingsSnapshot }): React.JSX.Element {
+function About({
+  settings,
+  update,
+  systemAction,
+}: {
+  settings: SettingsSnapshot;
+  update: (patch: SettingsPatch) => Promise<boolean>;
+  systemAction: (action: SystemAction) => Promise<void>;
+}): React.JSX.Element {
   return <section>
     <header className="pageHeader">
       <p className="eyebrow">UNDERTONE</p>
       <h1>About</h1>
-      <p>Push-to-talk dictation, transitioning to Electron and TypeScript.</p>
+      <p>Push-to-talk dictation for Windows.</p>
     </header>
     <div className="card aboutCard">
       <div className="aboutIcon" aria-hidden="true">U</div>
@@ -542,9 +862,14 @@ function About({ settings }: { settings: SettingsSnapshot }): React.JSX.Element 
         <p>{settings.preview ? "Isolated Electron preview" : "Production channel"}</p>
       </div>
     </div>
-    <div className="notice">
-      The Python application remains the production reference while parity,
-      upgrade, and rollback gates are still open.
+    <div className="aboutLinks">
+      <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Open settings folder</button>
+      <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>View log</button>
+    </div>
+    <div className="card localPolicy">
+      <SettingRow title="Developer mode" description="Expose cleanup tuning controls and surface diagnostic warnings.">
+        <Toggle label="Developer mode" checked={settings.devMode} onChange={(devMode) => { void update({ devMode }); }} />
+      </SettingRow>
     </div>
   </section>;
 }
@@ -613,11 +938,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     smartFormatting: true,
     aiCleanup: true,
     restoreClipboard: true,
+    soundCues: true,
+    startWithWindows: false,
+    onboarded: true,
     hotkey: "right ctrl",
     repasteHotkey: "ctrl+alt+v",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
-    appVersion: "1.3.0-electron.0",
+    appVersion: "1.4.0",
     preview: true,
     provider: "xai",
     cleanupProvider: "xai",
@@ -626,6 +954,13 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     cleanupModel: "",
     localLoaded: false,
     localIdleMinutes: 0,
+    sttVocabHints: true,
+    vocabulary: ["Undertone", "Kubernetes"],
+    corrections: { "under tone": "Undertone" },
+    devMode: false,
+    cleanupTimeout: 2.5,
+    cleanupPrompt: "",
+    cleanupPrompts: {},
     localEngines: {
       stt: {
         installed: true,
@@ -722,6 +1057,16 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       };
       return preview;
     },
+    async history() {
+      return [
+        { id: 2, ok: true, text: "The Electron migration is ready.", raw: null, error: null, timestamp: Date.now(), retryable: false },
+        { id: 1, ok: false, text: "", raw: null, error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
+      ];
+    },
+    async historyAction() {},
+    async systemAction() {},
+    async providerTest(kind) { return `${kind} works`; },
+    async microphoneTest() { return 0.18; },
   };
 }
 

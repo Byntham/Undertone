@@ -19,6 +19,9 @@ const PATCH_FIELDS = new Set([
   "smartFormatting",
   "aiCleanup",
   "restoreClipboard",
+  "soundCues",
+  "startWithWindows",
+  "onboarded",
   "hotkey",
   "repasteHotkey",
   "inputDevice",
@@ -29,6 +32,13 @@ const PATCH_FIELDS = new Set([
   "cleanupModel",
   "localLoaded",
   "localIdleMinutes",
+  "sttVocabHints",
+  "vocabulary",
+  "corrections",
+  "devMode",
+  "cleanupTimeout",
+  "cleanupPrompt",
+  "cleanupPrompts",
 ]);
 
 const PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
@@ -43,6 +53,7 @@ export function settingsSnapshot(
     cleanup: LocalEngineSnapshot;
   } = EMPTY_LOCAL_ENGINES,
   microphones: readonly string[] = [],
+  startWithWindows = false,
 ): SettingsSnapshot {
   const provider = snapshotProvider(config.provider);
   const cleanupProvider = snapshotProvider(config.cleanup_provider);
@@ -51,6 +62,9 @@ export function settingsSnapshot(
     smartFormatting: config.smart_formatting,
     aiCleanup: config.ai_cleanup,
     restoreClipboard: config.restore_clipboard,
+    soundCues: config.sound_cues,
+    startWithWindows,
+    onboarded: config.onboarded,
     hotkey: config.hotkey,
     repasteHotkey: config.repaste_hotkey,
     inputDevice: config.input_device,
@@ -68,6 +82,13 @@ export function settingsSnapshot(
     cleanupModel: modelOverride(config, "cleanup", cleanupProvider),
     localLoaded: config.local_loaded,
     localIdleMinutes: config.local_idle_minutes,
+    sttVocabHints: config.stt_vocab_hints,
+    vocabulary: [...config.vocabulary],
+    corrections: { ...config.corrections },
+    devMode: config.dev_mode,
+    cleanupTimeout: config.cleanup_timeout,
+    cleanupPrompt: config.cleanup_prompt,
+    cleanupPrompts: { ...config.cleanup_prompts },
     localEngines: {
       stt: { ...localEngines.stt },
       cleanup: { ...localEngines.cleanup },
@@ -107,6 +128,15 @@ export function applySettingsPatch(
   }
   if (value.restoreClipboard !== undefined) {
     next.restore_clipboard = booleanField(value.restoreClipboard, "restoreClipboard");
+  }
+  if (value.soundCues !== undefined) {
+    next.sound_cues = booleanField(value.soundCues, "soundCues");
+  }
+  if (value.startWithWindows !== undefined) {
+    booleanField(value.startWithWindows, "startWithWindows");
+  }
+  if (value.onboarded !== undefined) {
+    next.onboarded = booleanField(value.onboarded, "onboarded");
   }
   let shortcutChanged = false;
   if (value.hotkey !== undefined) {
@@ -152,6 +182,36 @@ export function applySettingsPatch(
       throw new Error("localIdleMinutes is invalid");
     }
     next.local_idle_minutes = value.localIdleMinutes;
+  }
+  if (value.sttVocabHints !== undefined) {
+    next.stt_vocab_hints = booleanField(value.sttVocabHints, "sttVocabHints");
+  }
+  if (value.vocabulary !== undefined) {
+    next.vocabulary = stringList(value.vocabulary, "vocabulary", 200, 256);
+  }
+  if (value.corrections !== undefined) {
+    next.corrections = stringMap(value.corrections, "corrections", 200, 256);
+  }
+  if (value.devMode !== undefined) {
+    next.dev_mode = booleanField(value.devMode, "devMode");
+  }
+  if (value.cleanupTimeout !== undefined) {
+    if (typeof value.cleanupTimeout !== "number"
+      || !Number.isFinite(value.cleanupTimeout)
+      || value.cleanupTimeout < 0.5
+      || value.cleanupTimeout > 30) {
+      throw new Error("cleanupTimeout must be between 0.5 and 30 seconds");
+    }
+    next.cleanup_timeout = value.cleanupTimeout;
+  }
+  if (value.cleanupPrompt !== undefined) {
+    if (typeof value.cleanupPrompt !== "string" || value.cleanupPrompt.length > 40_000) {
+      throw new Error("cleanupPrompt is invalid");
+    }
+    next.cleanup_prompt = value.cleanupPrompt.trim();
+  }
+  if (value.cleanupPrompts !== undefined) {
+    next.cleanup_prompts = textMap(value.cleanupPrompts, "cleanupPrompts", 50, 40_000);
   }
   return next;
 }
@@ -234,6 +294,65 @@ function setModelOverride(
 function booleanField(value: unknown, name: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${name} must be boolean`);
   return value;
+}
+
+function stringList(
+  value: unknown,
+  name: string,
+  maximumEntries: number,
+  maximumLength: number,
+): string[] {
+  if (!Array.isArray(value) || value.length > maximumEntries) {
+    throw new Error(`${name} is invalid`);
+  }
+  const result: string[] = [];
+  for (const item of value) {
+    const normalized = boundedSingleLine(item, name, maximumLength);
+    if (normalized.length > 0 && !result.includes(normalized)) result.push(normalized);
+  }
+  return result;
+}
+
+function stringMap(
+  value: unknown,
+  name: string,
+  maximumEntries: number,
+  maximumLength: number,
+): Record<string, string> {
+  if (!isRecord(value) || Object.keys(value).length > maximumEntries) {
+    throw new Error(`${name} is invalid`);
+  }
+  const result: Record<string, string> = {};
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedKey = boundedSingleLine(key, `${name}.key`, maximumLength);
+    const normalizedValue = boundedSingleLine(child, `${name}.value`, maximumLength);
+    if (normalizedKey.length === 0 || normalizedValue.length === 0) {
+      throw new Error(`${name} entries cannot be empty`);
+    }
+    result[normalizedKey] = normalizedValue;
+  }
+  return result;
+}
+
+function textMap(
+  value: unknown,
+  name: string,
+  maximumEntries: number,
+  maximumLength: number,
+): Record<string, string> {
+  if (!isRecord(value) || Object.keys(value).length > maximumEntries) {
+    throw new Error(`${name} is invalid`);
+  }
+  const result: Record<string, string> = {};
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedKey = boundedSingleLine(key, `${name}.key`, 128);
+    if (normalizedKey.length === 0) throw new Error(`${name} is invalid`);
+    if (typeof child !== "string" || child.trim().length === 0 || child.length > maximumLength) {
+      throw new Error(`${name} is invalid`);
+    }
+    result[normalizedKey] = child.trim();
+  }
+  return result;
 }
 
 function validateDistinctShortcuts(config: UndertoneConfig): void {

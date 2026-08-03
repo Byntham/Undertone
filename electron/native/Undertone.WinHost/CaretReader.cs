@@ -17,6 +17,8 @@ internal sealed class CaretReader : IDisposable
     private const int WmGetText = 0x000D;
     private const int WmGetTextLength = 0x000E;
     private const int EmGetSel = 0x00B0;
+    private const int GwlStyle = -16;
+    private const long EsPassword = 0x0020;
     private const uint SmtoAbortIfHung = 0x0002;
     private static readonly char[] EmptyValueChars =
         { ' ', '\t', '\r', '\n', '\u200b', '\ufeff', '\ufffc' };
@@ -180,6 +182,9 @@ internal sealed class CaretReader : IDisposable
         object pattern;
         try
         {
+            var controlType = element.Current.ControlType;
+            if (controlType != ControlType.Edit && controlType != ControlType.Document)
+                return false;
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
             {
                 var value = ((ValuePattern)pattern).Current.Value;
@@ -199,6 +204,8 @@ internal sealed class CaretReader : IDisposable
         {
             var info = new GuiThreadInfo { Size = Marshal.SizeOf(typeof(GuiThreadInfo)) };
             if (!GetGUIThreadInfo(0, ref info) || info.Focus == IntPtr.Zero)
+                return null;
+            if ((GetWindowLongPtr(info.Focus, GwlStyle).ToInt64() & EsPassword) != 0)
                 return null;
             var className = new StringBuilder(64);
             GetClassName(info.Focus, className, className.Capacity);
@@ -286,6 +293,9 @@ internal sealed class CaretReader : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder value, int maximum);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SendMessageTimeout(

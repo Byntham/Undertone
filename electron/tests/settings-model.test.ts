@@ -11,6 +11,9 @@ describe("settings model", () => {
       smartFormatting: true,
       aiCleanup: true,
       restoreClipboard: true,
+      soundCues: true,
+      startWithWindows: false,
+      onboarded: false,
       hotkey: "right ctrl",
       repasteHotkey: "ctrl+alt+v",
       inputDevice: "",
@@ -24,6 +27,13 @@ describe("settings model", () => {
       cleanupModel: "",
       localLoaded: false,
       localIdleMinutes: 0,
+      sttVocabHints: true,
+      vocabulary: [],
+      corrections: {},
+      devMode: false,
+      cleanupTimeout: 2.5,
+      cleanupPrompt: "",
+      cleanupPrompts: {},
       localEngines: {
         stt: {
           installed: false,
@@ -107,6 +117,16 @@ describe("settings model", () => {
       inputDevice: "USB Podcast Mic",
       localLoaded: true,
       localIdleMinutes: 15,
+      soundCues: false,
+      startWithWindows: true,
+      onboarded: true,
+      sttVocabHints: false,
+      vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
+      corrections: { "under tone": "Undertone" },
+      devMode: true,
+      cleanupTimeout: 4.5,
+      cleanupPrompt: " custom prompt ",
+      cleanupPrompts: { Fast: "multi\nline prompt" },
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -116,6 +136,15 @@ describe("settings model", () => {
     expect(next.input_device).toBe("USB Podcast Mic");
     expect(next.local_loaded).toBe(true);
     expect(next.local_idle_minutes).toBe(15);
+    expect(next.sound_cues).toBe(false);
+    expect(next.onboarded).toBe(true);
+    expect(next.stt_vocab_hints).toBe(false);
+    expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
+    expect(next.corrections).toEqual({ "under tone": "Undertone" });
+    expect(next.dev_mode).toBe(true);
+    expect(next.cleanup_timeout).toBe(4.5);
+    expect(next.cleanup_prompt).toBe("custom prompt");
+    expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });
     expect(config.language).toBe("en");
   });
 
@@ -142,6 +171,12 @@ describe("settings model", () => {
       .toThrow(/Invalid transcription language/u);
     expect(() => applySettingsPatch(config, { localIdleMinutes: 7 }))
       .toThrow(/invalid/u);
+    expect(() => applySettingsPatch(config, { cleanupTimeout: 31 }))
+      .toThrow(/between/u);
+    expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
+      .toThrow(/invalid/u);
+    expect(() => applySettingsPatch(config, { corrections: { heard: "" } }))
+      .toThrow(/empty/u);
     expect(() => applySettingsPatch(config, null)).toThrow(/must be an object/u);
   });
 });

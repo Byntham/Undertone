@@ -2,12 +2,15 @@ import { contextBridge, ipcRenderer } from "electron";
 
 export type AudioCommand =
   | { type: "start"; deviceName?: string }
-  | { type: "stop" | "cancel" };
+  | { type: "meter"; deviceName?: string; requestId: number }
+  | { type: "stop" | "cancel" }
+  | { type: "cue"; name: "start" | "stop" | "lock" | "cancel" };
 export type AudioEvent =
   | { type: "ready"; devices: string[] }
   | { type: "devices"; devices: string[] }
   | { type: "started"; sampleRate: number }
   | { type: "stopped"; wav: ArrayBuffer; durationMs: number }
+  | { type: "meter"; requestId: number; peak?: number; error?: string }
   | { type: "cancelled" }
   | { type: "error"; message: string };
 

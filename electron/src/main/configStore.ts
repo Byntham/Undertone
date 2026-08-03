@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -17,22 +18,26 @@ export interface SecretCipher {
 export interface ConfigStoreOptions {
   configPath: string;
   legacyConfigPath?: string;
+  backupPath?: string;
   cipher: SecretCipher;
 }
 
 export class ConfigStore {
   private readonly configPath: string;
   private readonly legacyConfigPath: string | undefined;
+  private readonly backupPath: string;
   private readonly cipher: SecretCipher;
 
   constructor(options: ConfigStoreOptions) {
     this.configPath = options.configPath;
     this.legacyConfigPath = options.legacyConfigPath;
+    this.backupPath = options.backupPath ?? `${options.configPath}.pre-electron-backup`;
     this.cipher = options.cipher;
   }
 
   async load(): Promise<UndertoneConfig> {
     await this.migrateLegacyConfig();
+    await this.backupExistingConfig();
     await mkdir(path.dirname(this.configPath), { recursive: true });
     let parsed: unknown;
     try {
@@ -47,6 +52,15 @@ export class ConfigStore {
       if (typeof value === "string") config[field] = await this.cipher.unprotectSecret(value);
     }
     return config;
+  }
+
+  private async backupExistingConfig(): Promise<void> {
+    try {
+      await copyFile(this.configPath, this.backupPath, constants.COPYFILE_EXCL);
+    } catch (error) {
+      const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+      if (code !== "ENOENT" && code !== "EEXIST") throw error;
+    }
   }
 
   async save(config: UndertoneConfig): Promise<void> {

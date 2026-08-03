@@ -1,103 +1,106 @@
 # Undertone
 
-Push-to-talk dictation for Windows. Hold a key, speak, release — your words
-are transcribed by your choice of provider (xAI, OpenAI, or OpenRouter) and
-pasted into whatever text box has focus.
+Push-to-talk dictation for Windows. Hold a global shortcut, speak, release —
+Undertone transcribes the audio and pastes polished text into the text box that
+had focus.
+
+Undertone 1.4 is an Electron desktop app written in strict TypeScript, with a
+small C# Windows host for global input, UI Automation, focus restoration,
+DPAPI, paste injection, and supervised local-model processes. The earlier
+Python/PySide6 implementation remains in the repository as a temporary rollback
+path; it is no longer the primary launch or build.
 
 ## Install
 
-Grab `Undertone.exe` (or build it yourself, below) and run it — there is
-nothing to install, and settings live in `%APPDATA%\Undertone` either way.
-Windows SmartScreen may warn about an unsigned exe the first time; choose
-*More info → Run anyway*.
+Use either artifact from `electron\release`:
 
-The Undertone icon appears in the system tray, and a setup banner walks you
-through the one required step: open **Settings → Providers**, paste an API
-key for your provider ([console.x.ai](https://console.x.ai),
-[platform.openai.com](https://platform.openai.com), or
-[openrouter.ai](https://openrouter.ai)), and use the Test buttons to verify.
-Turn on *Start with Windows* in **Settings → General** to keep it around.
+- `Undertone-Setup-1.4.0-x64.exe` — assisted per-user installer.
+- `Undertone-1.4.0-x64-portable.exe` — self-contained portable app.
 
-### Building the exe
+Windows SmartScreen may warn about an unsigned build. Settings remain in
+`%APPDATA%\Undertone`; installed local engines and models remain in
+`%LOCALAPPDATA%\Undertone`. The Electron app reuses both locations and creates
+`config.json.pre-electron-backup` once before taking ownership of an existing
+configuration.
 
-```
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt pyinstaller
-build.bat
-```
-
-The self-contained app lands in `dist\Undertone.exe`.
-
-### Running from source
-
-```
-.venv\Scripts\python main.py     (or double-click run.bat)
-```
+On first launch, open **Settings → Providers**, choose a cloud or local
+transcription provider, and save or install what it needs. Provider keys stay
+write-only across the settings boundary and are DPAPI-encrypted on disk.
 
 ## Use
 
-- **Hold** the push-to-talk shortcut (default: **right Ctrl**) and speak —
-  a pill at the bottom of the screen shows live microphone bars.
-- **Release**. After a brief spinner, the text is pasted into the focused
-  text box.
-- **Double-tap** the shortcut to lock hands-free recording for longer
-  dictation; tap once more to finish. Very short taps are ignored.
-- **Ctrl+Alt+V** re-pastes your latest dictation (for when it landed in the
-  wrong window).
+- Hold the push-to-talk shortcut (default **Right Ctrl**) and speak, then
+  release to transcribe and paste.
+- Double-tap the shortcut to lock hands-free recording; tap once more to stop.
+- Press **Esc** to cancel a recording.
+- Press **Ctrl+Alt+V** to re-paste the latest successful dictation.
+- Use the tray menu to open Settings, pause all dictation shortcuts, or quit.
 
-## Smart formatting and AI cleanup
+Smart formatting uses bounded caret context where Windows exposes it, then
+falls back to Undertone's insertion memory. Only text before the caret may be
+sent to the configured cleanup provider; text after the caret stays local and
+is used only for deterministic insertion seams.
 
-Undertone adapts each dictation to where your cursor is: it joins cleanly to
-existing text on both sides, lowercases a sentence-case opener when you're
-mid-sentence, and capitalizes at a sentence start. Context comes from the
-focused control where Windows exposes it (UI Automation, or the classic
-Win32 edit-control protocol), falling back to what Undertone itself last
-pasted for left-side context. In chat apps (Slack, Discord, WhatsApp…) a
-lone trailing period on a short message is dropped.
+## Settings
 
-With **AI cleanup** on, a fast chat model additionally removes filler words
-and false starts ("we should… actually let's just…" keeps only the
-correction), fixes mishearings using your dictionary, and fits the phrasing
-to the surrounding text — adding roughly half a second before the paste.
-The mechanical seams (spacing on both sides, sentence-start capital) stay
-rule-based, and any model failure or timeout falls back silently to the
-rule-based result. Note: with AI cleanup on, the ~300 characters before
-your cursor are sent to the cleanup provider along with the audio. Text after
-the cursor is used only for local seam formatting and is not sent. Both
-toggles live in **Settings → General**.
+- **General** — shortcuts, microphone, language, formatting, sound cues,
+  clipboard restoration, and Start with Windows.
+- **Dictionary** — vocabulary, exact corrections, and xAI-only recognition
+  hints.
+- **History** — session-only copy, re-paste, and retry actions.
+- **Providers** — independent STT/cleanup providers, write-only cloud keys,
+  local model install/load/eject controls, provider tests, model overrides, and
+  local residency.
+- **About** — version, settings/log locations, and developer controls.
 
-## Settings (tray icon → Settings…)
+Changes autosave. Diagnostics are written to `%APPDATA%\Undertone\app.log`.
 
-- **General** — change the push-to-talk and re-paste shortcuts (click
-  *Change*, then press any key or combination, e.g. `ctrl+shift+space`;
-  Esc cancels), pick the spoken language, and toggle *Start with
-  Windows*, *Smart formatting*, *AI cleanup*, and *Sound cues*.
-- **Dictionary** — *Vocabulary*: names and jargon the transcriber should
-  recognize (sent as recognition hints with every request). *Corrections*:
-  always replace a misheard phrase with the right one.
-- **History** — this session's dictations, with copy and re-paste. History
-  lives in memory only and is gone when the app exits.
-- **Providers** — choose the transcription and AI-cleanup providers
-  independently (any mix of xAI, OpenAI, OpenRouter), save and test each
-  key, and override model IDs under *Advanced* (empty = a sensible
-  per-provider default). Keys are stored locally in
-  `%APPDATA%\Undertone\config.json`; keep that file private.
-- Changes apply immediately — there is no Save button to forget.
+## Build and run from source
 
-An optional dedicated toggle-mode key can be set in `config.json`
-(`toggle_hotkey`).
+Requirements: Windows, Node.js 22.12 or later, npm, and the Windows-provided
+.NET Framework C# compiler used by `electron\scripts\build-native.ps1`.
 
-## Privacy
+```bat
+cd electron
+npm ci
+npm run verify
+cd ..
+build.bat
+```
 
-Audio goes to your chosen transcription provider and nowhere else.
-Undertone never captures your screen, keeps no audio, and its dictation
-history is in-memory only.
+`build.bat` produces the portable app and NSIS installer in
+`electron\release`. Double-click `run.bat` to build and launch the Electron app
+from source.
 
-## Notes
+Useful direct commands:
 
-- Only one instance runs at a time; launching a second shows a notice.
-- Diagnostics are logged to `%APPDATA%\Undertone\app.log`.
-- Pasting into apps running **as Administrator** requires this app to be
-  elevated too (Windows blocks synthetic input across integrity levels).
-- `transcriber.py`'s PROVIDERS registry is the extension point for
-  additional STT providers.
+```bat
+cd electron
+npm run verify
+npm run package:dir
+npm run smoke:package
+npm run smoke:audio
+```
+
+## Rollback implementation
+
+The Python reference remains available during the rollback window:
+
+```bat
+run-python.bat
+build-python.bat
+```
+
+The rollback build needs PyInstaller installed once in the project venv:
+`.venv\Scripts\python.exe -m pip install pyinstaller`.
+
+It uses the same `%APPDATA%\Undertone` configuration and DPAPI key format. Do
+not run the Python and Electron tray apps simultaneously; both intentionally
+enforce single-instance operation and own the same global shortcuts.
+
+## Privacy and platform notes
+
+Audio goes only to the selected transcription provider. Local mode keeps it on
+this PC. History is in-memory and is discarded on exit. Pasting into elevated
+applications requires Undertone to be elevated as well because Windows blocks
+lower-integrity input injection.

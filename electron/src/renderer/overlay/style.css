@@ -64,6 +64,16 @@ body {
   background: #61afef;
 }
 
+.transcribing .bars i {
+  background: #61afef;
+  animation-duration: 430ms;
+}
+
+.message.warning { border-color: #806631; color: #e5bd6a; }
+.message.error { border-color: #8d4049; color: #f08a93; }
+.message.warning .check { color: #e5bd6a; }
+.message.error .check { color: #f08a93; }
+
 .message .bars,
 .recording .check,
 .locked .check,
@@ -72,10 +82,17 @@ body {
   display: none;
 }
 
+.transcribing .check,
+.transcribing #label {
+  display: none;
+}
+
 .recording,
 .locked {
   width: 76px;
 }
+
+.transcribing { width: 76px; }
 
 .check {
   color: #98c379;

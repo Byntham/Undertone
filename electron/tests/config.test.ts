@@ -150,6 +150,22 @@ describe("configuration", () => {
     expect(await fileExists(`${configPath}.tmp`)).toBe(false);
   });
 
+  it("backs up the pre-Electron config exactly once", async () => {
+    const directory = await makeTemporaryDirectory();
+    const configPath = path.join(directory, "Undertone", "config.json");
+    const backupPath = path.join(directory, "Undertone", "config.pre-electron.json");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const original = JSON.stringify({ language: "fr", api_key: "dpapi:test:b2xk" });
+    await writeFile(configPath, original, "utf8");
+    const store = new ConfigStore({ configPath, backupPath, cipher });
+    expect((await store.load()).language).toBe("fr");
+    expect(await readFile(backupPath, "utf8")).toBe(original);
+
+    await writeFile(configPath, JSON.stringify({ language: "de" }), "utf8");
+    expect((await store.load()).language).toBe("de");
+    expect(await readFile(backupPath, "utf8")).toBe(original);
+  });
+
   it("loads legacy plaintext keys and treats malformed DPAPI as empty", async () => {
     const directory = await makeTemporaryDirectory();
     const configPath = path.join(directory, "Undertone", "config.json");

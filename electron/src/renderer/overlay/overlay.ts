@@ -11,12 +11,14 @@ declare global {
 
 const pill = document.querySelector<HTMLDivElement>("#pill");
 const label = document.querySelector<HTMLSpanElement>("#label");
+const check = document.querySelector<HTMLSpanElement>("#check");
 
-if (pill === null || label === null) {
+if (pill === null || label === null || check === null) {
   throw new Error("Overlay markup is incomplete");
 }
 
-window.undertoneOverlay?.onState(({ state, text }) => {
-  pill.className = `pill ${state}`;
+window.undertoneOverlay?.onState(({ state, text, tone = "normal" }) => {
+  pill.className = `pill ${state} ${tone}`;
   label.textContent = text;
+  check.textContent = tone === "error" ? "×" : tone === "warning" ? "!" : "✓";
 });

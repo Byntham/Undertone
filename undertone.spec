@@ -19,7 +19,7 @@ from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
 )
 
-APP_VERSION = "1.3.0"  # keep in sync with config.APP_VERSION
+APP_VERSION = "1.4.0"  # keep in sync with config.APP_VERSION
 _ver_tuple = tuple(int(p) for p in APP_VERSION.split(".")) + (0,)
 
 version_info = VSVersionInfo(
