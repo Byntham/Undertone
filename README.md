@@ -4,7 +4,7 @@ Push-to-talk dictation for Windows. Hold a global shortcut, speak, and release;
 Undertone transcribes the audio and pastes polished text into the text box that
 had focus.
 
-Undertone 1.5 is an Electron desktop app written in strict TypeScript, with a
+Undertone 1.6 is an Electron desktop app written in strict TypeScript, with a
 small C# Windows host for global input, UI Automation, focus restoration,
 DPAPI, paste injection, and supervised local-model processes.
 
@@ -12,8 +12,8 @@ DPAPI, paste injection, and supervised local-model processes.
 
 Builds produce two artifacts in `electron\release`:
 
-- `Undertone-Setup-1.5.0-x64.exe` - assisted per-user installer.
-- `Undertone-1.5.0-x64-portable.exe` - self-contained portable app.
+- `Undertone-Setup-1.6.0-x64.exe` - assisted per-user installer with in-app updates.
+- `Undertone-1.6.0-x64-portable.exe` - self-contained portable app (manual updates).
 
 Windows SmartScreen may warn about an unsigned build. Settings are stored in
 `%APPDATA%\Undertone`; installed local engines and models are stored in
@@ -47,7 +47,8 @@ is used only for deterministic insertion seams.
 - **Providers** - independent STT/cleanup providers, write-only cloud keys,
   local model install/load/eject controls, provider tests, model overrides, and
   local residency.
-- **About** - version, settings/log locations, and developer controls.
+- **About** - version, automatic update check/install, settings/log locations,
+  and developer controls.
 
 Changes autosave. Diagnostics are written to `%APPDATA%\Undertone\app.log`.
 
@@ -65,7 +66,10 @@ build.bat
 ```
 
 `build.bat` produces the portable app and NSIS installer. `run.bat` builds and
-launches Undertone from source.
+launches Undertone from source. Installed NSIS builds check the public GitHub
+Releases channel after launch and can download, restart, and install updates
+from **Settings -> About**. The desktop shortcut is recreated during upgrades.
+Portable builds remain manually updated.
 
 Useful direct commands:
 
