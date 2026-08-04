@@ -1,4 +1,5 @@
 import {
+  DEFAULT_CONFIG,
   KEY_FIELDS,
   modelOverride,
   normalizeConfig,
@@ -95,7 +96,7 @@ export function settingsSnapshot(
 function snapshotProvider(value: unknown): ProviderId {
   return typeof value === "string" && PROVIDERS.has(value as ProviderId)
     ? value as ProviderId
-    : "xai";
+    : DEFAULT_CONFIG.provider;
 }
 
 export function applySettingsPatch(
