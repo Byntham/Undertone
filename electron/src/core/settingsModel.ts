@@ -22,7 +22,6 @@ const PATCH_FIELDS = new Set([
   "restoreClipboard",
   "soundCues",
   "startWithWindows",
-  "onboarded",
   "hotkey",
   "repasteHotkey",
   "inputDevice",
@@ -64,7 +63,6 @@ export function settingsSnapshot(
     restoreClipboard: config.restore_clipboard,
     soundCues: config.sound_cues,
     startWithWindows,
-    onboarded: config.onboarded,
     hotkey: config.hotkey,
     repasteHotkey: config.repaste_hotkey,
     inputDevice: config.input_device,
@@ -133,9 +131,6 @@ export function applySettingsPatch(
   }
   if (value.startWithWindows !== undefined) {
     booleanField(value.startWithWindows, "startWithWindows");
-  }
-  if (value.onboarded !== undefined) {
-    next.onboarded = booleanField(value.onboarded, "onboarded");
   }
   let shortcutChanged = false;
   if (value.hotkey !== undefined) {

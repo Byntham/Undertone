@@ -1020,7 +1020,10 @@ if (!gotLock) {
       const toggle = toggleShortcut.update(event);
       if (ptt.pressed) gestures.press();
       if (ptt.released) gestures.release();
-      if (repaste.pressed) repasteLast();
+      // Wait until the physical re-paste chord is fully released. Sending
+      // Ctrl+V while its Ctrl/Alt keys are still held turns the injected paste
+      // back into the re-paste chord in the target application.
+      if (repaste.completed) repasteLast();
       if (toggle.pressed) gestures.toggle();
       if (event.eventType === "down"
         && !ptt.keyBelongsToShortcut
@@ -1036,7 +1039,7 @@ if (!gotLock) {
     updateTrayTooltip();
     const sttConfigured = config.provider === "local"
       || providerKey(config, config.provider).trim().length > 0;
-    if (packagedSmoke || !config.onboarded || !sttConfigured) openSettings();
+    if (packagedSmoke || !sttConfigured) openSettings();
     await windowsHost.startInput();
     if (updaterSupported) {
       setTimeout(() => {

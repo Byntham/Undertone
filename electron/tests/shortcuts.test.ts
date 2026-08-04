@@ -21,6 +21,17 @@ describe("shortcut binding", () => {
     expect(binding.update(up(0xa2)).released).toBe(false);
   });
 
+  it("completes a chord only after every shortcut key is physically released", () => {
+    const binding = new ShortcutBinding("ctrl+alt+v");
+    binding.update(down(0xa2));
+    binding.update(down(0xa4));
+    expect(binding.update(down(0x56)).completed).toBe(false);
+    expect(binding.update(up(0x56)).completed).toBe(false);
+    expect(binding.update(up(0xa4)).completed).toBe(false);
+    expect(binding.update(up(0xa2)).completed).toBe(true);
+    expect(binding.update(up(0xa2)).completed).toBe(false);
+  });
+
   it("distinguishes right modifiers while generic modifiers accept either side", () => {
     const exact = new ShortcutBinding("right ctrl");
     expect(exact.update(down(0xa2)).pressed).toBe(false);
