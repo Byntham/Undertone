@@ -8,7 +8,6 @@ using System.Threading;
 internal sealed class ForegroundInfo
 {
     public string Window;
-    public uint ProcessId;
     public string Executable;
     public string Title;
 }
@@ -31,7 +30,6 @@ internal static class Desktop
         return new ForegroundInfo
         {
             Window = window.ToInt64().ToString(),
-            ProcessId = processId,
             Executable = GetExecutable(processId),
             Title = GetTitle(window)
         };

@@ -34,8 +34,8 @@ The desktop test steals focus and is valid only while the desktop is idle.
 
 ## Release rules
 
-- `electron/package.json`, its lockfile, `src/core/config.ts`, and the renderer
-  preview version must stay in sync.
+- `electron/package.json`, its lockfile, and the renderer preview version must
+  stay in sync.
 - Use a minor version for a feature batch and a patch version for a fix-only
   release.
 - `npm run package` builds x64 NSIS and portable artifacts. They are unsigned

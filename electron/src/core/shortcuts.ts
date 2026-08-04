@@ -166,7 +166,7 @@ export function normalizeShortcut(shortcut: string, allowEmpty = false): string 
   return parseShortcut(shortcut, allowEmpty).map((part) => part.name).join("+");
 }
 
-export function keyName(virtualKey: number): string | null {
+function keyName(virtualKey: number): string | null {
   if (virtualKey >= 0x41 && virtualKey <= 0x5a) {
     return String.fromCharCode(virtualKey).toLowerCase();
   }

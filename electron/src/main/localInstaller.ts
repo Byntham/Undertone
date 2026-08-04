@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, statfs, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
@@ -18,7 +18,7 @@ export interface InstallArtifact {
   size: number;
 }
 
-export interface LocalInstallHost {
+interface LocalInstallHost {
   extractSubset(
     zipFiles: readonly string[],
     patterns: readonly string[],
@@ -188,10 +188,6 @@ export class LocalInstaller {
       path.join(models, LOCAL_VAD_MODEL),
       progress,
     );
-    await saveState(path.join(runtime, "runtime.json"), {
-      cuda_installed: wantCuda,
-      cuda_disabled: false,
-    });
   }
 
   private async installCleanup(progress: InstallProgressListener): Promise<void> {
@@ -228,10 +224,6 @@ export class LocalInstaller {
       path.join(models, LOCAL_CLEANUP_MODEL),
       progress,
     );
-    await saveState(path.join(runtime, "llm-runtime.json"), {
-      cuda_installed: wantCuda,
-      cuda_disabled: false,
-    });
   }
 
   private async prepare(kind: LocalEngineKind): Promise<void> {
@@ -375,17 +367,4 @@ async function readWithTimeout(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-async function saveState(file: string, changes: Record<string, unknown>): Promise<void> {
-  let current: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8")) as unknown;
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      current = parsed as Record<string, unknown>;
-    }
-  } catch { /* Missing/corrupt state starts clean. */ }
-  const temporary = `${file}.tmp`;
-  await writeFile(temporary, JSON.stringify({ ...current, ...changes }, null, 2), "utf8");
-  await rename(temporary, file);
 }

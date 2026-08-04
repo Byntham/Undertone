@@ -22,7 +22,7 @@ export interface LocalProcessHost {
   isSupervisedRunning(processId: number): Promise<boolean>;
 }
 
-export interface LocalRuntimeStatus {
+interface LocalRuntimeStatus {
   installed: boolean;
   loaded: boolean;
   loading: boolean;

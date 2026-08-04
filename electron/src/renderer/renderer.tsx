@@ -351,7 +351,7 @@ function Dictionary({
       <p>Teach Undertone names, jargon, and exact replacements.</p>
     </header>
     <h2>Vocabulary</h2>
-    <div className="card listCard">
+    <div className="card">
       <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addTerm(); }}>
         <input aria-label="Vocabulary term" value={term} onChange={(event) => setTerm(event.target.value)} />
         <button type="submit" className="smallButton accent">Add</button>
@@ -363,8 +363,8 @@ function Dictionary({
       />
     </div>
     <h2>Corrections</h2>
-    <div className="card listCard">
-      <form className="entryForm correctionForm" onSubmit={(event) => { event.preventDefault(); addCorrection(); }}>
+    <div className="card">
+      <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addCorrection(); }}>
         <input aria-label="Misheard phrase" placeholder="What was heard" value={heard} onChange={(event) => setHeard(event.target.value)} />
         <span aria-hidden="true">→</span>
         <input aria-label="Replacement" placeholder="Replacement" value={replacement} onChange={(event) => setReplacement(event.target.value)} />

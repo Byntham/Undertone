@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 1;
+    private const int ProtocolVersion = 2;
     private const int WhKeyboardLl = 13;
     private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
@@ -59,7 +59,6 @@ internal static class Program
             {
                 { "protocol", ProtocolVersion },
                 { "type", "ready" },
-                { "pid", Process.GetCurrentProcess().Id },
                 { "keyboardHook", _keyboardHook != IntPtr.Zero },
                 { "mouseHook", _mouseHook != IntPtr.Zero }
             });
@@ -139,11 +138,7 @@ internal static class Program
 
         try
         {
-            if (type == "ping")
-            {
-                Respond(requestId, "pong");
-            }
-            else if (type == "startInput")
+            if (type == "startInput")
             {
                 _captureInput = true;
                 Respond(requestId, "inputStarted");
@@ -171,7 +166,6 @@ internal static class Program
                 Respond(requestId, "foreground", new Dictionary<string, object>
                 {
                     { "window", foreground.Window },
-                    { "processId", foreground.ProcessId },
                     { "executable", foreground.Executable },
                     { "title", foreground.Title }
                 });

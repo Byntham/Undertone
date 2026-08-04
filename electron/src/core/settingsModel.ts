@@ -10,7 +10,6 @@ import {
 import type {
   CloudProviderId,
   LocalEngineSnapshot,
-  SettingsPatch,
   SettingsSnapshot,
 } from "../shared/settings";
 import { normalizeShortcut } from "./shortcuts";
@@ -347,7 +346,7 @@ function textMap(
 }
 
 function validateDistinctShortcuts(config: UndertoneConfig): void {
-  const bindings = [config.hotkey, config.repaste_hotkey, config.toggle_hotkey]
+  const bindings = [config.hotkey, config.repaste_hotkey]
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   if (new Set(bindings).size !== bindings.length) {

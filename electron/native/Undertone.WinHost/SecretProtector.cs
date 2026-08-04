@@ -17,7 +17,7 @@ internal static class SecretProtector
     public static string Unprotect(string value)
     {
         if (value == null || !value.StartsWith(Prefix, StringComparison.Ordinal))
-            return value ?? string.Empty;
+            return string.Empty;
         try
         {
             var protectedValue = Convert.FromBase64String(value.Substring(Prefix.Length));

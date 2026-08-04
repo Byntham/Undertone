@@ -27,12 +27,11 @@ class FakeRegistry implements RegistryRunner {
 }
 
 describe("Windows autostart", () => {
-  it("reconciles either legacy registration to one current executable", async () => {
+  it("reconciles the current registration to the current executable", async () => {
     const registry = new FakeRegistry();
-    registry.values.set("PushToTalkSTT", "legacy command");
+    registry.values.set("Undertone", "stale command");
     const manager = new AutostartManager(String.raw`C:\Program Files\Undertone\Undertone.exe`, registry);
     await manager.reconcile();
-    expect(registry.values.has("PushToTalkSTT")).toBe(false);
     expect(registry.values.get("Undertone")).toBe(
       String.raw`"C:\Program Files\Undertone\Undertone.exe" --autostart`,
     );
@@ -42,14 +41,13 @@ describe("Windows autostart", () => {
     expect([...registry.values.keys()]).toEqual(["Undertone"]);
   });
 
-  it("does not opt a user in while reconciling and disables both names", async () => {
+  it("does not opt a user in while reconciling and disables the current registration", async () => {
     const registry = new FakeRegistry();
     const manager = new AutostartManager("Undertone.exe", registry);
     await manager.reconcile();
     expect(registry.values.size).toBe(0);
 
     await manager.setEnabled(true);
-    registry.values.set("PushToTalkSTT", "stale");
     await manager.setEnabled(false);
     expect(registry.values.size).toBe(0);
   });

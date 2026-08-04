@@ -107,20 +107,6 @@ describe("local runtime", () => {
     await runtime.shutdown();
   });
 
-  it("uses an installed CUDA runtime despite legacy disabled state", async () => {
-    const root = await installedRoot("stt", true, true);
-    const host = new FakeHost();
-    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
-
-    await runtime.ensureReady();
-
-    expect(host.starts).toHaveLength(1);
-    expect(host.starts[0]?.file)
-      .toBe(path.join(root, "runtime", "cuda", "whisper-server.exe"));
-    expect(runtime.status().build).toBe("cuda");
-    await runtime.shutdown();
-  });
-
   it("warms cleanup single-flight without blocking the current caller", async () => {
     const root = await installedRoot("cleanup");
     const host = new FakeHost();
@@ -211,7 +197,6 @@ describe("local runtime", () => {
 async function installedRoot(
   kind: "stt" | "cleanup",
   cuda = false,
-  cudaDisabled = false,
 ): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "undertone-local-runtime-"));
   temporaryDirectories.push(root);
@@ -224,11 +209,6 @@ async function installedRoot(
     await touch(path.join(models, LOCAL_VAD_MODEL));
     if (cuda) {
       await touch(path.join(runtime, "cuda", "whisper-server.exe"));
-      await writeFile(
-        path.join(runtime, "runtime.json"),
-        JSON.stringify({ cuda_installed: true, cuda_disabled: cudaDisabled }),
-        "utf8",
-      );
     }
   } else {
     await touch(path.join(runtime, "llm-cpu", "llama-server.exe"));

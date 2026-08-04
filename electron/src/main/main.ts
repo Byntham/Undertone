@@ -35,7 +35,7 @@ import {
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
 import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
-import { ConfigStore, type ConfigStoreOptions } from "./configStore";
+import { ConfigStore } from "./configStore";
 import { AutostartManager } from "./autostart";
 import { AppUpdateService } from "./appUpdater";
 import { installFileLog } from "./fileLog";
@@ -117,7 +117,6 @@ if (!gotLock) {
   } : {});
   const pttShortcut = new ShortcutBinding(config.hotkey);
   const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
-  const toggleShortcut = new ShortcutBinding(config.toggle_hotkey, true);
   let overlayDisplayId: number | undefined;
   let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
@@ -223,12 +222,6 @@ if (!gotLock) {
     } catch {
       repasteShortcut.set("", true);
       showFeedback("The saved re-paste shortcut is unsupported", "warning");
-    }
-    try {
-      toggleShortcut.set(config.toggle_hotkey, true);
-    } catch {
-      toggleShortcut.set("", true);
-      showFeedback("The saved toggle shortcut is unsupported", "warning");
     }
   };
 
@@ -417,15 +410,7 @@ if (!gotLock) {
     const configPath = isolatedProfile
       ? path.join(app.getPath("userData"), "config.json")
       : path.join(app.getPath("appData"), "Undertone", "config.json");
-    const storeOptions: ConfigStoreOptions = { configPath, cipher: windowsHost };
-    if (!isolatedProfile) {
-      storeOptions.legacyConfigPath = path.join(
-        app.getPath("appData"),
-        "PushToTalkSTT",
-        "config.json",
-      );
-    }
-    configStore = new ConfigStore(storeOptions);
+    configStore = new ConfigStore({ configPath, cipher: windowsHost });
     config = await configStore.load();
     if (!electronPreview && !packagedSmoke) {
       try {
@@ -614,7 +599,6 @@ if (!gotLock) {
       if (store === null) throw new Error("Settings store is not ready");
       const previousHotkey = config.hotkey;
       const previousRepaste = config.repaste_hotkey;
-      const previousToggle = config.toggle_hotkey;
       if (isRecord(value) && value.startWithWindows !== undefined) {
         if (typeof value.startWithWindows !== "boolean") {
           throw new Error("startWithWindows must be boolean");
@@ -627,9 +611,7 @@ if (!gotLock) {
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
-      if (config.hotkey !== previousHotkey
-        || config.repaste_hotkey !== previousRepaste
-        || config.toggle_hotkey !== previousToggle) {
+      if (config.hotkey !== previousHotkey || config.repaste_hotkey !== previousRepaste) {
         gestures.cancel();
         configureShortcuts();
       }
@@ -1017,18 +999,15 @@ if (!gotLock) {
       }
       const ptt = pttShortcut.update(event);
       const repaste = repasteShortcut.update(event);
-      const toggle = toggleShortcut.update(event);
       if (ptt.pressed) gestures.press();
       if (ptt.released) gestures.release();
       // Wait until the physical re-paste chord is fully released. Sending
       // Ctrl+V while its Ctrl/Alt keys are still held turns the injected paste
       // back into the re-paste chord in the target application.
       if (repaste.completed) repasteLast();
-      if (toggle.pressed) gestures.toggle();
       if (event.eventType === "down"
         && !ptt.keyBelongsToShortcut
-        && !repaste.keyBelongsToShortcut
-        && !toggle.keyBelongsToShortcut) {
+        && !repaste.keyBelongsToShortcut) {
         insertionMemory.invalidate();
       }
     });

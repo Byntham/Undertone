@@ -117,7 +117,6 @@ async function startCapture(deviceName: string): Promise<void> {
   source.connect(worklet).connect(sink).connect(context.destination);
   await context.resume();
   session = { context, stream, source, worklet, sink, chunks, startedAt: performance.now() };
-  window.undertoneAudio.emit({ type: "started", sampleRate: context.sampleRate });
   await reportDevices("devices");
 }
 
@@ -173,10 +172,7 @@ async function stopCapture(discard: boolean): Promise<void> {
   for (const track of active.stream.getTracks()) track.stop();
   await active.context.close();
 
-  if (discard) {
-    window.undertoneAudio.emit({ type: "cancelled" });
-    return;
-  }
+  if (discard) return;
   const durationMs = Math.round(performance.now() - active.startedAt);
   const sourceSamples = joinFloat32(active.chunks);
   const samples = resampleLinear(sourceSamples, active.context.sampleRate, 16_000);
