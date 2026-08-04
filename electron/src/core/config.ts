@@ -9,7 +9,6 @@ export interface UndertoneConfig extends ConfigRecord {
   language: string;
   restore_clipboard: boolean;
   input_device: string;
-  onboarded: boolean;
   provider: ProviderId;
   stt_models: Record<string, string>;
   smart_formatting: boolean;
@@ -36,12 +35,11 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   language: "en",
   restore_clipboard: true,
   input_device: "",
-  onboarded: false,
-  provider: "xai",
+  provider: "local",
   stt_models: {},
   smart_formatting: true,
   ai_cleanup: true,
-  cleanup_provider: "xai",
+  cleanup_provider: "local",
   cleanup_models: {},
   sound_cues: true,
   vocabulary: [],

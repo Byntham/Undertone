@@ -35,6 +35,8 @@ describe("configuration", () => {
     const second = normalizeConfig(undefined);
     expect(first.language).toBe("fr");
     expect(second.language).toBe("en");
+    expect(second.provider).toBe("local");
+    expect(second.cleanup_provider).toBe("local");
     first.vocabulary.push("Undertone");
     first.corrections.test = "value";
     expect(second.vocabulary).toEqual([]);
@@ -47,6 +49,7 @@ describe("configuration", () => {
       language: "fr",
       sample_rate: 48_000,
       dev_mode: true,
+      onboarded: true,
       stt_model: "whisper-1",
       stt_models: "invalid",
       cleanup_models: null,
@@ -54,6 +57,7 @@ describe("configuration", () => {
     expect(config.language).toBe("fr");
     expect(config).not.toHaveProperty("sample_rate");
     expect(config).not.toHaveProperty("dev_mode");
+    expect(config).not.toHaveProperty("onboarded");
     expect(config).not.toHaveProperty("stt_model");
     expect(config.stt_models).toEqual({});
     expect(config.cleanup_models).toEqual({});

@@ -183,13 +183,6 @@ function General({
       <h1>General</h1>
       <p>Recording, output, and application behavior.</p>
     </header>
-    {!settings.onboarded && <div className="notice setupNotice">
-      <strong>Finish setting up Undertone</strong>
-      <span>Add or install your transcription provider, then mark setup complete.</span>
-      <button type="button" className="smallButton accent" onClick={() => {
-        void update({ onboarded: true });
-      }}>Finish setup</button>
-    </div>}
     <div className="card">
       <SettingRow title="Push-to-talk shortcut" description="Hold this shortcut while you speak.">
         <ShortcutControl
@@ -1002,15 +995,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     restoreClipboard: true,
     soundCues: true,
     startWithWindows: false,
-    onboarded: true,
     hotkey: "right ctrl",
     repasteHotkey: "ctrl+alt+v",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.6.0",
     preview: true,
-    provider: "xai",
-    cleanupProvider: "xai",
+    provider: "local",
+    cleanupProvider: "local",
     keyConfigured: { xai: false, openai: false, openrouter: false },
     sttModel: "",
     cleanupModel: "",

@@ -7,6 +7,7 @@ export interface ShortcutKeyEvent {
 export interface ShortcutTransition {
   pressed: boolean;
   released: boolean;
+  completed: boolean;
   keyBelongsToShortcut: boolean;
 }
 
@@ -92,6 +93,7 @@ export class ShortcutBinding {
   private parts: readonly ShortcutPart[] = [];
   private readonly down = new Set<number>();
   private active = false;
+  private completionPending = false;
 
   constructor(shortcut = "", allowEmpty = false) {
     this.set(shortcut, allowEmpty);
@@ -101,6 +103,7 @@ export class ShortcutBinding {
     this.parts = parseShortcut(shortcut, allowEmpty);
     this.down.clear();
     this.active = false;
+    this.completionPending = false;
   }
 
   update(event: ShortcutKeyEvent): ShortcutTransition {
@@ -108,9 +111,16 @@ export class ShortcutBinding {
     else this.down.delete(event.virtualKey);
     const nextActive = this.parts.length > 0
       && this.parts.every((part) => intersects(part.virtualKeys, this.down));
+    const pressed = nextActive && !this.active;
+    if (pressed) this.completionPending = true;
+    const completed = event.eventType === "up"
+      && this.completionPending
+      && !this.hasShortcutKeyDown();
+    if (completed) this.completionPending = false;
     const transition = {
-      pressed: nextActive && !this.active,
+      pressed,
       released: !nextActive && this.active,
+      completed,
       keyBelongsToShortcut: this.matchesKey(event.virtualKey),
     };
     this.active = nextActive;
@@ -119,6 +129,10 @@ export class ShortcutBinding {
 
   matchesKey(virtualKey: number): boolean {
     return this.parts.some((part) => part.virtualKeys.has(virtualKey));
+  }
+
+  private hasShortcutKeyDown(): boolean {
+    return this.parts.some((part) => intersects(part.virtualKeys, this.down));
   }
 }
 

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_CONFIG,
   modelOverride,
   providerKey,
   type UndertoneConfig,
@@ -48,7 +49,7 @@ export class DictationJobRunner {
     config: UndertoneConfig,
     feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
-    const provider = stringValue(config.provider, "xai");
+    const provider = stringValue(config.provider, DEFAULT_CONFIG.provider);
 
     let transcript: string;
     try {
