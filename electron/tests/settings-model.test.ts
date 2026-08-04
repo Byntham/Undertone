@@ -13,7 +13,6 @@ describe("settings model", () => {
       restoreClipboard: true,
       soundCues: true,
       startWithWindows: false,
-      onboarded: false,
       hotkey: "right ctrl",
       repasteHotkey: "ctrl+alt+v",
       inputDevice: "",
@@ -118,7 +117,6 @@ describe("settings model", () => {
       localIdleMinutes: 15,
       soundCues: false,
       startWithWindows: true,
-      onboarded: true,
       sttVocabHints: false,
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
@@ -135,7 +133,6 @@ describe("settings model", () => {
     expect(next.local_loaded).toBe(true);
     expect(next.local_idle_minutes).toBe(15);
     expect(next.sound_cues).toBe(false);
-    expect(next.onboarded).toBe(true);
     expect(next.stt_vocab_hints).toBe(false);
     expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
@@ -161,6 +158,8 @@ describe("settings model", () => {
   it("rejects unknown, mistyped, or malformed patches", () => {
     const config = normalizeConfig(undefined);
     expect(() => applySettingsPatch(config, { api_key: "steal-me" }))
+      .toThrow(/Unsupported settings field/u);
+    expect(() => applySettingsPatch(config, { onboarded: true }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { smartFormatting: "yes" }))
       .toThrow(/must be boolean/u);

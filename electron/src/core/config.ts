@@ -14,7 +14,6 @@ export interface UndertoneConfig extends ConfigRecord {
   restore_clipboard: boolean;
   sample_rate: number;
   input_device: string;
-  onboarded: boolean;
   provider: ProviderId;
   stt_models: Record<string, string>;
   smart_formatting: boolean;
@@ -43,7 +42,6 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   restore_clipboard: true,
   sample_rate: 16_000,
   input_device: "",
-  onboarded: false,
   provider: "xai",
   stt_models: {},
   smart_formatting: true,
@@ -75,6 +73,7 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   const config = cloneConfig(DEFAULT_CONFIG) as UndertoneConfig;
   if (isRecord(value)) Object.assign(config, value);
   delete config.dev_mode;
+  delete config.onboarded;
   cloneContainers(config);
   foldLegacyModels(config);
   foldLegacyLocal(config);
