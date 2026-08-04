@@ -39,6 +39,8 @@ describe("configuration", () => {
     const second = normalizeConfig(undefined);
     expect(first.language).toBe("fr");
     expect(second.language).toBe("en");
+    expect(second.provider).toBe("local");
+    expect(second.cleanup_provider).toBe("local");
     first.vocabulary.push("Undertone");
     first.corrections.test = "value";
     expect(second.vocabulary).toEqual([]);

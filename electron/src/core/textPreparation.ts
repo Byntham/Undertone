@@ -60,7 +60,7 @@ export async function prepareText(
     const app = identity.title === null || identity.title.length === 0
       ? executable
       : executable.length > 0 ? `${executable} (${identity.title})` : identity.title;
-    const provider = stringValue(config.cleanup_provider, "xai");
+    const provider = stringValue(config.cleanup_provider, DEFAULT_CONFIG.cleanup_provider);
     const cleaned = await dependencies.cleanup({
       transcript: applyCorrections(text, corrections),
       context: context.before,

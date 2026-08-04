@@ -20,8 +20,8 @@ describe("settings model", () => {
       microphones: [],
       appVersion: "1.3.0",
       preview: true,
-      provider: "xai",
-      cleanupProvider: "xai",
+      provider: "local",
+      cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
       sttModel: "",
       cleanupModel: "",
@@ -99,11 +99,11 @@ describe("settings model", () => {
     })).toThrow(/invalid/u);
   });
 
-  it("falls back to xAI when a corrupt config contains unknown providers", () => {
+  it("falls back to local when a corrupt config contains unknown providers", () => {
     const config = normalizeConfig({ provider: "broken", cleanup_provider: 42 });
     const snapshot = settingsSnapshot(config, "1.3.0", true);
-    expect(snapshot.provider).toBe("xai");
-    expect(snapshot.cleanupProvider).toBe("xai");
+    expect(snapshot.provider).toBe("local");
+    expect(snapshot.cleanupProvider).toBe("local");
   });
 
   it("applies supported fields without mutating the existing config", () => {
