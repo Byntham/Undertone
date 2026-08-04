@@ -12,8 +12,8 @@ DPAPI, paste injection, and supervised local-model processes.
 
 Builds produce two artifacts in `electron\release`:
 
-- `Undertone-Setup-1.6.0-x64.exe` - assisted per-user installer with in-app updates.
-- `Undertone-1.6.0-x64-portable.exe` - self-contained portable app (manual updates).
+- `Undertone-Setup-1.7.0-x64.exe` - assisted per-user installer with in-app updates.
+- `Undertone-1.7.0-x64-portable.exe` - self-contained portable app (manual updates).
 
 Windows SmartScreen may warn about an unsigned build. Settings are stored in
 `%APPDATA%\Undertone`; installed local engines and models are stored in
