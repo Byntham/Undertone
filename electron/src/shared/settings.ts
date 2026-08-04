@@ -42,7 +42,6 @@ export interface SettingsSnapshot {
   restoreClipboard: boolean;
   soundCues: boolean;
   startWithWindows: boolean;
-  onboarded: boolean;
   hotkey: string;
   repasteHotkey: string;
   inputDevice: string;
@@ -82,7 +81,6 @@ export interface SettingsPatch {
   restoreClipboard?: boolean;
   soundCues?: boolean;
   startWithWindows?: boolean;
-  onboarded?: boolean;
   hotkey?: string;
   repasteHotkey?: string;
   inputDevice?: string;

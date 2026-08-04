@@ -1039,7 +1039,7 @@ if (!gotLock) {
     updateTrayTooltip();
     const sttConfigured = config.provider === "local"
       || providerKey(config, config.provider).trim().length > 0;
-    if (packagedSmoke || !config.onboarded || !sttConfigured) openSettings();
+    if (packagedSmoke || !sttConfigured) openSettings();
     await windowsHost.startInput();
     if (updaterSupported) {
       setTimeout(() => {
