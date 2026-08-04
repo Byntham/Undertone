@@ -12,19 +12,17 @@ describe("Windows host", () => {
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     const ready = await host.start();
-    expect(ready.protocol).toBe(1);
+    expect(ready.protocol).toBe(2);
     expect(ready.keyboardHook).toBe(true);
     expect(ready.mouseHook).toBe(true);
-    await host.ping();
     const foreground = await host.getForeground();
     expect(typeof foreground.window).toBe("string");
-    expect(typeof foreground.processId).toBe("number");
     const caret = await host.getCaretContext(20, 20);
     expect(caret === null || typeof caret.before === "string").toBe(true);
     const protectedValue = await host.protectSecret("test-only-secret");
     expect(protectedValue).toMatch(/^dpapi:/);
     expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
-    expect(await host.unprotectSecret("legacy-plaintext")).toBe("legacy-plaintext");
+    expect(await host.unprotectSecret("plaintext")).toBe("");
     expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
     await host.startInput();
     await host.startShortcutCapture();
@@ -135,7 +133,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 1,
+        protocol: 2,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),

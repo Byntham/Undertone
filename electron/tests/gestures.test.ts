@@ -92,16 +92,6 @@ describe("TapStateMachine", () => {
     expect(machine.state).toBe(GestureState.held);
   });
 
-  it("round-trips the dedicated toggle", () => {
-    const { machine, actions } = make();
-    machine.toggle();
-    expect(machine.state).toBe(GestureState.locked);
-    expect(actions).toEqual(["start", "lock"]);
-    machine.toggle();
-    expect(machine.state).toBe(GestureState.idle);
-    expect(actions).toEqual(["start", "lock", "finish"]);
-  });
-
   it("stays idle when recording cannot start", () => {
     const { machine, actions } = make(false);
     machine.press();
@@ -127,7 +117,9 @@ describe("TapStateMachine", () => {
 
   it("cancels a locked recording", () => {
     const { machine, actions } = make();
-    machine.toggle();
+    machine.press();
+    machine.release();
+    machine.press();
     expect(machine.cancel()).toBe(true);
     expect(machine.state).toBe(GestureState.idle);
     expect(actions).toEqual(["start", "lock", "discard:cancel"]);

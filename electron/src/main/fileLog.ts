@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 
-export interface FileLog {
+interface FileLog {
   flush(): Promise<void>;
 }
 

@@ -6,6 +6,7 @@ const preload = path.resolve(__dirname, "../dist/main/preload/audioPreload.js");
 let audioWindow;
 let finished = false;
 let levelEvents = 0;
+let stopScheduled = false;
 
 function fail(message) {
   if (finished) return;
@@ -24,16 +25,18 @@ function succeed(byteLength, durationMs) {
 ipcMain.on("audio:event", (_event, payload) => {
   if (payload.type === "ready") {
     audioWindow.webContents.send("audio:command", { type: "start" });
-  } else if (payload.type === "started") {
-    setTimeout(() => {
-      audioWindow.webContents.send("audio:command", { type: "stop" });
-    }, 500);
   } else if (payload.type === "level") {
     if (typeof payload.rms !== "number" || !Number.isFinite(payload.rms)
         || payload.rms < 0 || payload.rms > 1) {
       fail("Audio smoke returned an invalid live level");
     } else {
       levelEvents += 1;
+      if (!stopScheduled) {
+        stopScheduled = true;
+        setTimeout(() => {
+          audioWindow.webContents.send("audio:command", { type: "stop" });
+        }, 500);
+      }
     }
   } else if (payload.type === "error") {
     fail(`Audio smoke error: ${payload.message}`);

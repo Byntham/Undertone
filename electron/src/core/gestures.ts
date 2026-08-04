@@ -68,22 +68,6 @@ export class TapStateMachine {
     }
   }
 
-  toggle(): void {
-    if (this.currentState === GestureState.idle) {
-      this.pressTimeMs = Date.now();
-      this.currentState = this.callbacks.onStart()
-        ? GestureState.locked
-        : GestureState.idle;
-      if (this.currentState === GestureState.locked) {
-        this.callbacks.onLock?.();
-      }
-    } else {
-      this.cancelTimer();
-      this.currentState = GestureState.idle;
-      this.callbacks.onFinish();
-    }
-  }
-
   cancel(): boolean {
     if (this.currentState === GestureState.idle) {
       return false;

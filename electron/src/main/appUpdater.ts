@@ -6,7 +6,7 @@ import type {
 
 import type { AppUpdateSnapshot } from "../shared/settings";
 
-export interface AppUpdateServiceOptions {
+interface AppUpdateServiceOptions {
   updater: AppUpdater | null;
   currentVersion: string;
   unavailableMessage: string;

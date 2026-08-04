@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 
 const RUN_KEY = String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`;
 const VALUE_NAME = "Undertone";
-const LEGACY_VALUE_NAME = "PushToTalkSTT";
 
 export interface RegistryRunner {
   run(arguments_: readonly string[]): Promise<number>;
@@ -15,12 +14,7 @@ export class AutostartManager {
   ) {}
 
   async reconcile(): Promise<void> {
-    const [current, legacy] = await Promise.all([
-      this.valueExists(VALUE_NAME),
-      this.valueExists(LEGACY_VALUE_NAME),
-    ]);
-    if (legacy) await this.deleteValue(LEGACY_VALUE_NAME);
-    if (current || legacy) await this.setEnabled(true);
+    if (await this.valueExists(VALUE_NAME)) await this.setEnabled(true);
   }
 
   async isEnabled(): Promise<boolean> {
@@ -30,7 +24,6 @@ export class AutostartManager {
   async setEnabled(enabled: boolean): Promise<void> {
     if (!enabled) {
       await this.deleteValue(VALUE_NAME);
-      await this.deleteValue(LEGACY_VALUE_NAME);
       return;
     }
     const command = `"${this.executable}" --autostart`;

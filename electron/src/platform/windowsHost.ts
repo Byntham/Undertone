@@ -3,13 +3,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const HOST_NAME = "Undertone.WinHost.exe";
 
-export interface HostReady {
+interface HostReady {
   protocol: number;
   type: "ready";
-  pid: number;
   keyboardHook: boolean;
   mouseHook: boolean;
 }
@@ -37,9 +36,8 @@ interface HostResponse extends Record<string, unknown> {
   requestId: string;
 }
 
-export interface ForegroundInfo {
+interface ForegroundInfo {
   window: string;
-  processId: number;
   executable: string | null;
   title: string | null;
 }
@@ -56,7 +54,7 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export interface WindowsHostOptions {
+interface WindowsHostOptions {
   executable?: string;
   requestTimeoutMs?: number;
 }
@@ -124,10 +122,6 @@ export class WindowsHost {
     return () => this.mouseListeners.delete(listener);
   }
 
-  async ping(): Promise<void> {
-    await this.request("ping", "pong");
-  }
-
   async startInput(): Promise<void> {
     await this.request("startInput", "inputStarted");
   }
@@ -147,14 +141,12 @@ export class WindowsHost {
   async getForeground(): Promise<ForegroundInfo> {
     const response = await this.request("getForeground", "foreground");
     if (typeof response.window !== "string"
-      || typeof response.processId !== "number"
       || !isNullableString(response.executable)
       || !isNullableString(response.title)) {
       throw new Error("Windows host returned an invalid foreground window");
     }
     return {
       window: response.window,
-      processId: response.processId,
       executable: response.executable,
       title: response.title,
     };
@@ -399,7 +391,6 @@ function isReady(value: unknown): value is HostReady {
   return isRecord(value)
     && value.type === "ready"
     && typeof value.protocol === "number"
-    && typeof value.pid === "number"
     && typeof value.keyboardHook === "boolean"
     && typeof value.mouseHook === "boolean";
 }
