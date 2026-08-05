@@ -14,3 +14,10 @@ export interface OverlayState {
   text: string;
   tone: OverlayTone;
 }
+
+/** Live open-turn draft shown while stack mode has fragments. */
+export interface TurnDraftView {
+  fragments: string[];
+  fragmentCount: number;
+  charCount: number;
+}

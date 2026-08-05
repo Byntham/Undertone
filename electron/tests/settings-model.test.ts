@@ -16,6 +16,8 @@ describe("settings model", () => {
       hotkey: "right ctrl",
       repasteHotkey: "ctrl+alt+v",
       commitHotkey: "ctrl+alt+enter",
+      scratchHotkey: "ctrl+alt+backspace",
+      discardHotkey: "ctrl+alt+shift+backspace",
       dictationMode: "stack",
       turnIdleMinutes: 15,
       inputDevice: "",

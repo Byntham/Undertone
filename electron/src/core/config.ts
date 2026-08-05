@@ -22,6 +22,8 @@ export interface UndertoneConfig extends ConfigRecord {
   stt_vocab_hints: boolean;
   repaste_hotkey: string;
   commit_hotkey: string;
+  scratch_hotkey: string;
+  discard_hotkey: string;
   dictation_mode: DictationMode;
   turn_idle_minutes: number;
   local_loaded: boolean;
@@ -51,6 +53,8 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   stt_vocab_hints: true,
   repaste_hotkey: "ctrl+alt+v",
   commit_hotkey: "ctrl+alt+enter",
+  scratch_hotkey: "ctrl+alt+backspace",
+  discard_hotkey: "ctrl+alt+shift+backspace",
   dictation_mode: "stack",
   turn_idle_minutes: 15,
   local_loaded: false,
@@ -81,6 +85,12 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   }
   if (typeof config.commit_hotkey !== "string") {
     config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;
+  }
+  if (typeof config.scratch_hotkey !== "string") {
+    config.scratch_hotkey = DEFAULT_CONFIG.scratch_hotkey;
+  }
+  if (typeof config.discard_hotkey !== "string") {
+    config.discard_hotkey = DEFAULT_CONFIG.discard_hotkey;
   }
   if (typeof config.turn_idle_minutes !== "number"
     || !Number.isFinite(config.turn_idle_minutes)

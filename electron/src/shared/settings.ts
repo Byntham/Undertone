@@ -2,7 +2,12 @@ export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
 export type CloudProviderId = Exclude<SettingsProviderId, "local">;
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
-export type ShortcutSetting = "hotkey" | "repasteHotkey" | "commitHotkey";
+export type ShortcutSetting =
+  | "hotkey"
+  | "repasteHotkey"
+  | "commitHotkey"
+  | "scratchHotkey"
+  | "discardHotkey";
 export type DictationModeSetting = "stack" | "instant";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
@@ -46,6 +51,8 @@ export interface SettingsSnapshot {
   hotkey: string;
   repasteHotkey: string;
   commitHotkey: string;
+  scratchHotkey: string;
+  discardHotkey: string;
   dictationMode: DictationModeSetting;
   turnIdleMinutes: number;
   inputDevice: string;
@@ -88,6 +95,8 @@ export interface SettingsPatch {
   hotkey?: string;
   repasteHotkey?: string;
   commitHotkey?: string;
+  scratchHotkey?: string;
+  discardHotkey?: string;
   dictationMode?: DictationModeSetting;
   turnIdleMinutes?: number;
   inputDevice?: string;

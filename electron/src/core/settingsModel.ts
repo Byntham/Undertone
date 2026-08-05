@@ -24,6 +24,8 @@ const PATCH_FIELDS = new Set([
   "hotkey",
   "repasteHotkey",
   "commitHotkey",
+  "scratchHotkey",
+  "discardHotkey",
   "dictationMode",
   "turnIdleMinutes",
   "inputDevice",
@@ -68,6 +70,8 @@ export function settingsSnapshot(
     hotkey: config.hotkey,
     repasteHotkey: config.repaste_hotkey,
     commitHotkey: config.commit_hotkey,
+    scratchHotkey: config.scratch_hotkey,
+    discardHotkey: config.discard_hotkey,
     dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
     turnIdleMinutes: config.turn_idle_minutes,
     inputDevice: config.input_device,
@@ -155,6 +159,20 @@ export function applySettingsPatch(
       throw new Error("commitHotkey must be a string");
     }
     next.commit_hotkey = normalizeShortcut(value.commitHotkey, true);
+    shortcutChanged = true;
+  }
+  if (value.scratchHotkey !== undefined) {
+    if (typeof value.scratchHotkey !== "string") {
+      throw new Error("scratchHotkey must be a string");
+    }
+    next.scratch_hotkey = normalizeShortcut(value.scratchHotkey, true);
+    shortcutChanged = true;
+  }
+  if (value.discardHotkey !== undefined) {
+    if (typeof value.discardHotkey !== "string") {
+      throw new Error("discardHotkey must be a string");
+    }
+    next.discard_hotkey = normalizeShortcut(value.discardHotkey, true);
     shortcutChanged = true;
   }
   if (shortcutChanged) validateDistinctShortcuts(next);
@@ -372,7 +390,13 @@ function textMap(
 }
 
 function validateDistinctShortcuts(config: UndertoneConfig): void {
-  const bindings = [config.hotkey, config.repaste_hotkey, config.commit_hotkey]
+  const bindings = [
+    config.hotkey,
+    config.repaste_hotkey,
+    config.commit_hotkey,
+    config.scratch_hotkey,
+    config.discard_hotkey,
+  ]
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   if (new Set(bindings).size !== bindings.length) {

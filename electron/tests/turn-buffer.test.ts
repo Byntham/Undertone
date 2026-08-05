@@ -45,6 +45,19 @@ describe("turn buffer", () => {
     expect(buffer.peekText()).toBe("Keep");
   });
 
+  it("exposes a draft snapshot for the open-turn panel", () => {
+    const buffer = new TurnBuffer(() => 60_000, () => 1_000);
+    expect(buffer.snapshot()).toBeNull();
+    buffer.append("one", "One");
+    buffer.append(" two", " two");
+    expect(buffer.snapshot()).toEqual({
+      fragments: ["One", " two"],
+      text: "One two",
+      fragmentCount: 2,
+      charCount: 7,
+    });
+  });
+
   it("scratches the last fragment and rebuilds joined text", () => {
     const buffer = new TurnBuffer(() => 60_000, () => 1_000);
     buffer.append("one", "One");

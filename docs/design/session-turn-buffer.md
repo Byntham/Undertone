@@ -1,7 +1,7 @@
 # Session turn buffer
 
 **Branch / worktree:** `feat/session-turn-buffer`  
-**Status:** phase 2 polish (scratch last, richer overlay); dogfood continues  
+**Status:** hotkeys + open-turn draft panel; dogfood continues  
 **Decision:** utterance = **fragment of a turn** — release stacks; commit sends.
 
 ## Problem

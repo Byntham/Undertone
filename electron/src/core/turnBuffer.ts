@@ -27,6 +27,13 @@ export interface TurnScratchResult {
   text: string;
 }
 
+export interface TurnDraftSnapshot {
+  fragments: string[];
+  text: string;
+  fragmentCount: number;
+  charCount: number;
+}
+
 export class TurnBuffer {
   private open: OpenTurn | null = null;
   private nextFragmentId = 1;
@@ -63,6 +70,18 @@ export class TurnBuffer {
     this.expireIfIdle();
     if (this.open === null || this.open.text.length === 0) return null;
     return this.open.text;
+  }
+
+  /** Full open-turn snapshot for the draft panel, or null when empty. */
+  snapshot(): TurnDraftSnapshot | null {
+    this.expireIfIdle();
+    if (this.open === null || this.open.fragments.length === 0) return null;
+    return {
+      fragments: this.open.fragments.map((fragment) => fragment.text),
+      text: this.open.text,
+      fragmentCount: this.open.fragments.length,
+      charCount: this.open.text.length,
+    };
   }
 
   append(raw: string, text: string): TurnAppendResult {

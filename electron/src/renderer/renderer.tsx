@@ -212,6 +212,28 @@ function General({
         />
       </SettingRow>
       <SettingRow
+        title="Scratch last fragment"
+        description="Drop only the newest fragment from the open turn."
+      >
+        <ShortcutControl
+          field="scratchHotkey"
+          value={settings.scratchHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Discard open turn"
+        description="Clear the whole unfinished turn without pasting."
+      >
+        <ShortcutControl
+          field="discardHotkey"
+          value={settings.discardHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
         title="Dictation mode"
         description="Stack builds a turn from fragments. Instant pastes each utterance."
       >
@@ -1047,6 +1069,8 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     hotkey: "right ctrl",
     repasteHotkey: "ctrl+alt+v",
     commitHotkey: "ctrl+alt+enter",
+    scratchHotkey: "ctrl+alt+backspace",
+    discardHotkey: "ctrl+alt+shift+backspace",
     dictationMode: "stack",
     turnIdleMinutes: 15,
     inputDevice: "",
@@ -1135,7 +1159,11 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
           ? "f13"
           : field === "commitHotkey"
             ? "ctrl+alt+enter"
-            : "ctrl+shift+v",
+            : field === "scratchHotkey"
+              ? "ctrl+alt+backspace"
+              : field === "discardHotkey"
+                ? "ctrl+alt+shift+backspace"
+                : "ctrl+shift+v",
       };
       return preview;
     },

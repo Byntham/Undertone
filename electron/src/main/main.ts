@@ -55,7 +55,7 @@ import type {
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
-import type { OverlayState, OverlayTone } from "../shared/overlay";
+import type { OverlayState, OverlayTone, TurnDraftView } from "../shared/overlay";
 
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
@@ -122,6 +122,8 @@ if (!gotLock) {
   const pttShortcut = new ShortcutBinding(config.hotkey);
   const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
   const commitShortcut = new ShortcutBinding(config.commit_hotkey, true);
+  const scratchShortcut = new ShortcutBinding(config.scratch_hotkey, true);
+  const discardShortcut = new ShortcutBinding(config.discard_hotkey, true);
   let overlayDisplayId: number | undefined;
   let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
@@ -149,6 +151,15 @@ if (!gotLock) {
     );
   };
 
+  const presentOverlayWindow = (): void => {
+    const overlay = overlayWindow;
+    if (overlay === null || overlay.isDestroyed()) return;
+    positionOverlay(overlay);
+    overlay.setAlwaysOnTop(true, "screen-saver");
+    if (!overlay.isVisible()) overlay.showInactive();
+    overlay.moveTop();
+  };
+
   const renderOverlay = (state: OverlayState): void => {
     const overlay = overlayWindow;
     if (overlay === null || overlay.isDestroyed()) return;
@@ -158,11 +169,21 @@ if (!gotLock) {
       overlay.webContents.send("overlay:state", state);
       return;
     }
-    positionOverlay(overlay);
-    overlay.setAlwaysOnTop(true, "screen-saver");
-    if (!overlay.isVisible()) overlay.showInactive();
-    overlay.moveTop();
+    presentOverlayWindow();
     overlay.webContents.send("overlay:state", state);
+  };
+
+  const publishTurnDraft = (): void => {
+    const overlay = overlayWindow;
+    if (overlay === null || overlay.isDestroyed()) return;
+    const snapshot = turnBuffer.snapshot();
+    const draft: TurnDraftView | null = snapshot === null ? null : {
+      fragments: snapshot.fragments,
+      fragmentCount: snapshot.fragmentCount,
+      charCount: snapshot.charCount,
+    };
+    if (draft !== null) presentOverlayWindow();
+    overlay.webContents.send("overlay:turnDraft", draft);
   };
 
   const overlayController = new OverlayController(renderOverlay);
@@ -242,6 +263,18 @@ if (!gotLock) {
     } catch {
       commitShortcut.set("", true);
       showFeedback("The saved commit shortcut is unsupported", "warning");
+    }
+    try {
+      scratchShortcut.set(config.scratch_hotkey, true);
+    } catch {
+      scratchShortcut.set("", true);
+      showFeedback("The saved scratch shortcut is unsupported", "warning");
+    }
+    try {
+      discardShortcut.set(config.discard_hotkey, true);
+    } catch {
+      discardShortcut.set("", true);
+      showFeedback("The saved discard shortcut is unsupported", "warning");
     }
   };
 
@@ -324,8 +357,8 @@ if (!gotLock) {
 
   const createOverlay = async (): Promise<void> => {
     const overlay = new BrowserWindow({
-      width: 420,
-      height: 52,
+      width: 540,
+      height: 280,
       show: false,
       frame: false,
       transparent: true,
@@ -347,6 +380,7 @@ if (!gotLock) {
     overlay.setAlwaysOnTop(true, "screen-saver");
     overlay.webContents.on("did-finish-load", () => {
       renderOverlay(overlayController.current());
+      publishTurnDraft();
     });
     overlay.webContents.on("render-process-gone", (_event, details) => {
       console.error("Overlay renderer exited", details);
@@ -399,19 +433,6 @@ if (!gotLock) {
     updateTrayTooltip();
     const menu = Menu.buildFromTemplate([
       { label: "Open Settings", click: () => openSettings() },
-      { type: "separator" },
-      {
-        label: "Commit turn",
-        click: () => commitOpenTurn(),
-      },
-      {
-        label: "Scratch last fragment",
-        click: () => scratchLastFragment(),
-      },
-      {
-        label: "Discard turn",
-        click: () => discardOpenTurn(),
-      },
       { type: "separator" },
       {
         label: "Pause dictation",
@@ -546,6 +567,7 @@ if (!gotLock) {
               overlayController.confirm("Text pasted", 1_000, overlayRevision);
             },
           });
+          if (isStackDictationMode(snapshot.dictation_mode)) publishTurnDraft();
         },
         repaste: async (text, snapshot) => {
           const generation = insertionMemory.captureGeneration();
@@ -560,18 +582,21 @@ if (!gotLock) {
             message: showFeedback,
             dismiss: () => { overlayController.confirm("Turn committed", 1_000); },
           });
+          publishTurnDraft();
         },
         discard: async () => {
           runner.discard({
             message: showFeedback,
             dismiss: () => { overlayController.confirm(); },
           });
+          publishTurnDraft();
         },
         scratch: async () => {
           runner.scratchLast({
             message: showFeedback,
             dismiss: () => { overlayController.confirm(); },
           });
+          publishTurnDraft();
         },
       },
     );
@@ -675,6 +700,8 @@ if (!gotLock) {
       const previousHotkey = config.hotkey;
       const previousRepaste = config.repaste_hotkey;
       const previousCommit = config.commit_hotkey;
+      const previousScratch = config.scratch_hotkey;
+      const previousDiscard = config.discard_hotkey;
       const previousMode = config.dictation_mode;
       if (isRecord(value) && value.startWithWindows !== undefined) {
         if (typeof value.startWithWindows !== "boolean") {
@@ -690,12 +717,15 @@ if (!gotLock) {
       config = next;
       if (config.hotkey !== previousHotkey
         || config.repaste_hotkey !== previousRepaste
-        || config.commit_hotkey !== previousCommit) {
+        || config.commit_hotkey !== previousCommit
+        || config.scratch_hotkey !== previousScratch
+        || config.discard_hotkey !== previousDiscard) {
         gestures.cancel();
         configureShortcuts();
       }
       if (previousMode === "stack" && config.dictation_mode === "instant") {
         turnBuffer.clear();
+        publishTurnDraft();
       }
       configureLocalResidency();
       updateTrayTooltip();
@@ -801,7 +831,9 @@ if (!gotLock) {
     if (!isRecord(value)
       || (value.field !== "hotkey"
         && value.field !== "repasteHotkey"
-        && value.field !== "commitHotkey")) {
+        && value.field !== "commitHotkey"
+        && value.field !== "scratchHotkey"
+        && value.field !== "discardHotkey")) {
       throw new Error("Invalid shortcut capture target");
     }
     return await captureShortcut(value.field);
@@ -1085,6 +1117,8 @@ if (!gotLock) {
       const ptt = pttShortcut.update(event);
       const repaste = repasteShortcut.update(event);
       const commit = commitShortcut.update(event);
+      const scratch = scratchShortcut.update(event);
+      const discard = discardShortcut.update(event);
       if (ptt.pressed) gestures.press();
       if (ptt.released) gestures.release();
       // Wait until the physical re-paste chord is fully released. Sending
@@ -1092,10 +1126,14 @@ if (!gotLock) {
       // back into the re-paste chord in the target application.
       if (repaste.completed) repasteLast();
       if (commit.completed) commitOpenTurn();
+      if (scratch.completed) scratchLastFragment();
+      if (discard.completed) discardOpenTurn();
       if (event.eventType === "down"
         && !ptt.keyBelongsToShortcut
         && !repaste.keyBelongsToShortcut
-        && !commit.keyBelongsToShortcut) {
+        && !commit.keyBelongsToShortcut
+        && !scratch.keyBelongsToShortcut
+        && !discard.keyBelongsToShortcut) {
         insertionMemory.invalidate();
       }
     });
