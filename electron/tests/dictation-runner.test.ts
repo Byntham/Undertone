@@ -7,6 +7,7 @@ import {
 } from "../src/core/dictationRunner";
 import { SessionHistory } from "../src/core/pipelineQueue";
 import { InsertionMemory } from "../src/core/textPreparation";
+import { TurnBuffer } from "../src/core/turnBuffer";
 
 const WAV = Uint8Array.of(1, 2, 3);
 
@@ -18,6 +19,7 @@ describe("dictation job runner", () => {
       WAV,
       { window: "42", executable: "editor.exe" },
       normalizeConfig({
+        dictation_mode: "instant",
         provider: "xai",
         api_key: "key",
         vocabulary: ["Undertone"],
@@ -41,6 +43,65 @@ describe("dictation job runner", () => {
     expect(state.dismissed).toBe(1);
   });
 
+  it("stacks fragments without pasting in stack mode", async () => {
+    const { dependencies, state } = harness();
+    const runner = new DictationJobRunner(dependencies);
+    await runner.run(WAV, { window: "42", executable: "editor.exe" }, normalizeConfig({
+      dictation_mode: "stack",
+    }));
+    await runner.run(WAV, { window: "42", executable: "editor.exe" }, normalizeConfig({
+      dictation_mode: "stack",
+    }));
+    expect(state.pasted).toEqual([]);
+    expect(state.restoreCalls).toBe(0);
+    expect(dependencies.turnBuffer.peekText()).toBe("Hello world.Hello world.");
+    expect(dependencies.history.snapshot()).toEqual([]);
+    expect(state.messages.map((entry) => entry.text)).toEqual([
+      "Turn · 1 · 12c · Hello world.",
+      "Turn · 2 · 24c · Hello world.",
+    ]);
+    expect(state.dismissed).toBe(0);
+  });
+
+  it("scratches the last stacked fragment", async () => {
+    const { dependencies, state } = harness();
+    dependencies.turnBuffer.append("Hello world.", "Hello world.");
+    dependencies.turnBuffer.append(" More.", " More.");
+    const runner = new DictationJobRunner(dependencies);
+    runner.scratchLast();
+    expect(dependencies.turnBuffer.peekText()).toBe("Hello world.");
+    expect(state.messages.at(-1)?.text).toBe("Scratched · 1 · 12c · Hello world.");
+    runner.scratchLast();
+    expect(dependencies.turnBuffer.peekText()).toBeNull();
+    expect(state.messages.at(-1)?.text).toBe("Last fragment scratched · turn empty");
+  });
+
+  it("commits the open turn once and clears the buffer", async () => {
+    const { dependencies, state } = harness();
+    dependencies.turnBuffer.append("Hello world.", "Hello world.");
+    const runner = new DictationJobRunner(dependencies);
+    await runner.commit(normalizeConfig({ dictation_mode: "stack" }));
+    expect(state.pasted).toEqual([{ text: "Hello world.", restore: true }]);
+    expect(dependencies.turnBuffer.peekText()).toBeNull();
+    expect(dependencies.history.latestSuccessText()).toBe("Hello world.");
+    expect(state.dismissed).toBe(1);
+  });
+
+  it("keeps the open turn when commit paste fails", async () => {
+    const { dependencies, state } = harness();
+    dependencies.turnBuffer.append("Keep me", "Keep me");
+    dependencies.paster.paste = async () => { throw new Error("paste failed"); };
+    const runner = new DictationJobRunner(dependencies);
+    await runner.commit(normalizeConfig({
+      dictation_mode: "stack",
+      commit_hotkey: "ctrl+alt+enter",
+    }));
+    expect(dependencies.turnBuffer.peekText()).toBe("Keep me");
+    expect(state.fallback).toBe("Keep me");
+    expect(dependencies.history.snapshot()).toEqual([]);
+    expect(state.messages.at(-1)?.kind).toBe("warning");
+  });
+
   it("parks text on clipboard and history when target restoration fails", async () => {
     const { dependencies, state } = harness();
     dependencies.restoreTarget = async () => {
@@ -49,6 +110,7 @@ describe("dictation job runner", () => {
     };
     const runner = new DictationJobRunner(dependencies);
     await runner.run(WAV, { window: "42", executable: "editor.exe" }, normalizeConfig({
+      dictation_mode: "instant",
       repaste_hotkey: "ctrl+alt+v",
     }));
     expect(state.restoreCalls).toBe(1);
@@ -65,7 +127,7 @@ describe("dictation job runner", () => {
     const { dependencies, state } = harness();
     dependencies.paster.paste = async () => { throw new Error("paste failed"); };
     const runner = new DictationJobRunner(dependencies);
-    await runner.run(WAV, null, normalizeConfig(undefined));
+    await runner.run(WAV, null, normalizeConfig({ dictation_mode: "instant" }));
     expect(state.restoreCalls).toBe(2);
     expect(state.fallback).toBe("Hello world.");
     expect(dependencies.history.latestSuccessText()).toBe("Hello world.");
@@ -76,7 +138,11 @@ describe("dictation job runner", () => {
     first.dependencies.transcriber.transcribe = async () => {
       throw new Error("Could not reach the xAI API");
     };
-    await new DictationJobRunner(first.dependencies).run(WAV, null, normalizeConfig(undefined));
+    await new DictationJobRunner(first.dependencies).run(
+      WAV,
+      null,
+      normalizeConfig({ dictation_mode: "instant" }),
+    );
     const failure = first.dependencies.history.snapshot()[0]!;
     expect(failure.ok).toBe(false);
     if (!failure.ok) expect(failure.wav).toEqual(WAV);
@@ -84,7 +150,11 @@ describe("dictation job runner", () => {
 
     const second = harness();
     second.dependencies.transcriber.transcribe = async () => "";
-    await new DictationJobRunner(second.dependencies).run(WAV, null, normalizeConfig(undefined));
+    await new DictationJobRunner(second.dependencies).run(
+      WAV,
+      null,
+      normalizeConfig({ dictation_mode: "instant" }),
+    );
     expect(second.dependencies.history.snapshot()).toEqual([]);
     expect(second.state.messages.at(-1)).toEqual({
       text: "No speech detected",
@@ -99,7 +169,10 @@ describe("dictation job runner", () => {
       dependencies.insertionMemory.invalidate();
     };
     const runner = new DictationJobRunner(dependencies);
-    await runner.run(WAV, null, normalizeConfig({ provider: "local" }));
+    await runner.run(WAV, null, normalizeConfig({
+      dictation_mode: "instant",
+      provider: "local",
+    }));
     expect(state.messages).toEqual([]);
     expect(state.dismissed).toBe(1);
     expect(await dependencies.insertionMemory.acquire({
@@ -160,6 +233,7 @@ function harness(): {
       },
       history: new SessionHistory(),
       insertionMemory: new InsertionMemory(() => 100),
+      turnBuffer: new TurnBuffer(() => 60_000, () => 100),
       feedback: {
         message(text, kind) {
           state.messages.push({ text, kind });

@@ -27,14 +27,40 @@ describe("dictation pipeline queue", () => {
         await tick();
         active -= 1;
       },
+      async commit() {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        events.push("commit");
+        await tick();
+        active -= 1;
+      },
+      async discard() {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        events.push("discard");
+        await tick();
+        active -= 1;
+      },
+      async scratch() {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        events.push("scratch");
+        await tick();
+        active -= 1;
+      },
     };
     const queue = new DictationPipelineQueue(() => normalizeConfig(undefined), handlers);
     await Promise.all([
       queue.enqueueDictation(Uint8Array.of(1), { window: "42", executable: "editor.exe" }),
       queue.enqueueRetry(Uint8Array.of(2)),
       queue.enqueueRepaste("again"),
+      queue.enqueueCommit(),
+      queue.enqueueDiscard(),
+      queue.enqueueScratch(),
     ]);
-    expect(events).toEqual(["dictate:1", "retry:2", "repaste:again"]);
+    expect(events).toEqual([
+      "dictate:1", "retry:2", "repaste:again", "commit", "discard", "scratch",
+    ]);
     expect(maximumActive).toBe(1);
   });
 
@@ -51,6 +77,9 @@ describe("dictation pipeline queue", () => {
       async repaste(_text, snapshot) {
         languages.push(snapshot.language);
       },
+      async commit() {},
+      async discard() {},
+      async scratch() {},
     };
     const queue = new DictationPipelineQueue(() => config, handlers);
     const first = queue.enqueueRetry(Uint8Array.of(1));
@@ -75,6 +104,9 @@ describe("dictation pipeline queue", () => {
         async repaste(text) {
           events.push(text);
         },
+        async commit() {},
+        async discard() {},
+        async scratch() {},
       },
     );
     const failed = queue.enqueueRetry(Uint8Array.of(1));

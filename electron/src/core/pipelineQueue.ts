@@ -13,6 +13,9 @@ export interface PipelineHandlers {
     overlayRevision: number | undefined,
   ): Promise<void>;
   repaste(text: string, config: UndertoneConfig): Promise<void>;
+  commit(config: UndertoneConfig): Promise<void>;
+  discard(): Promise<void>;
+  scratch(): Promise<void>;
 }
 
 type PipelineJob =
@@ -23,7 +26,10 @@ type PipelineJob =
     overlayRevision: number | undefined;
   }
   | { type: "retry"; wav: Uint8Array }
-  | { type: "repaste"; text: string };
+  | { type: "repaste"; text: string }
+  | { type: "commit" }
+  | { type: "discard" }
+  | { type: "scratch" };
 
 interface QueuedJob {
   job: PipelineJob;
@@ -61,6 +67,18 @@ export class DictationPipelineQueue {
     return this.enqueue({ type: "repaste", text });
   }
 
+  enqueueCommit(): Promise<void> {
+    return this.enqueue({ type: "commit" });
+  }
+
+  enqueueDiscard(): Promise<void> {
+    return this.enqueue({ type: "discard" });
+  }
+
+  enqueueScratch(): Promise<void> {
+    return this.enqueue({ type: "scratch" });
+  }
+
   private async enqueue(job: PipelineJob): Promise<void> {
     return await new Promise<void>((resolve, reject) => {
       this.queue.push({ job, resolve, reject });
@@ -85,8 +103,14 @@ export class DictationPipelineQueue {
             );
           } else if (queued.job.type === "retry") {
             await this.handlers.dictate(queued.job.wav, null, config, undefined);
-          } else {
+          } else if (queued.job.type === "repaste") {
             await this.handlers.repaste(queued.job.text, config);
+          } else if (queued.job.type === "commit") {
+            await this.handlers.commit(config);
+          } else if (queued.job.type === "discard") {
+            await this.handlers.discard();
+          } else {
+            await this.handlers.scratch();
           }
           queued.resolve();
         } catch (error) {

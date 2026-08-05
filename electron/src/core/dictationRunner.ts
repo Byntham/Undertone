@@ -7,6 +7,7 @@ import {
 import { InsertionMemory } from "./textPreparation";
 import { applyCorrections } from "./textproc";
 import { SessionHistory, type DictationTarget } from "./pipelineQueue";
+import { isStackDictationMode, type TurnBuffer } from "./turnBuffer";
 
 export interface TranscriberPort {
   transcribe(options: {
@@ -37,6 +38,7 @@ export interface DictationRunnerDependencies {
   paster: PasterPort;
   history: SessionHistory;
   insertionMemory: InsertionMemory;
+  turnBuffer: TurnBuffer;
   feedback: DictationFeedback;
 }
 
@@ -72,9 +74,20 @@ export class DictationJobRunner {
       return;
     }
 
-    let refocused = await this.dependencies.restoreTarget(target);
     const corrections = isStringMap(config.corrections) ? config.corrections : {};
     const raw = applyCorrections(transcript, corrections);
+
+    if (isStackDictationMode(config.dictation_mode)) {
+      const final = await this.dependencies.prepareText(transcript, config);
+      const stacked = this.dependencies.turnBuffer.append(raw, final);
+      feedback.message(
+        turnStatusFeedback(stacked.fragmentCount, stacked.charCount, stacked.lastFragment),
+        "normal",
+      );
+      return;
+    }
+
+    let refocused = await this.dependencies.restoreTarget(target);
     const final = await this.dependencies.prepareText(transcript, config);
     if (refocused) refocused = await this.dependencies.restoreTarget(target);
     const historyRaw = raw === final ? null : raw;
@@ -96,6 +109,61 @@ export class DictationJobRunner {
     feedback.dismiss();
   }
 
+  async commit(
+    config: UndertoneConfig,
+    feedback: DictationFeedback = this.dependencies.feedback,
+  ): Promise<void> {
+    const text = this.dependencies.turnBuffer.peekText();
+    if (text === null) {
+      feedback.message("Nothing to commit", "warning");
+      return;
+    }
+
+    const inputGeneration = this.dependencies.insertionMemory.captureGeneration();
+    try {
+      await this.dependencies.paster.paste(text, Boolean(config.restore_clipboard));
+    } catch {
+      // Keep the open turn so the user can retry commit; only stage clipboard.
+      this.dependencies.paster.copyFallback(text);
+      const shortcut = stringValue(config.commit_hotkey, "")
+        || stringValue(config.repaste_hotkey, "");
+      const message = shortcut.length > 0
+        ? `Couldn't paste — focus the target and press ${shortcut}`
+        : "Couldn't paste — the turn is on your clipboard and still open";
+      feedback.message(message, "warning");
+      return;
+    }
+    this.dependencies.turnBuffer.clear();
+    this.dependencies.history.registerSuccess(text, null);
+    const foreground = await this.dependencies.getForegroundWindow();
+    this.dependencies.insertionMemory.registerPaste(foreground, text, inputGeneration);
+    feedback.dismiss();
+  }
+
+  discard(feedback: DictationFeedback = this.dependencies.feedback): void {
+    if (!this.dependencies.turnBuffer.clear()) {
+      feedback.message("No open turn", "warning");
+      return;
+    }
+    feedback.message("Turn discarded", "normal");
+  }
+
+  scratchLast(feedback: DictationFeedback = this.dependencies.feedback): void {
+    const scratched = this.dependencies.turnBuffer.scratchLast();
+    if (scratched === null) {
+      feedback.message("Nothing to scratch", "warning");
+      return;
+    }
+    if (scratched.fragmentCount === 0) {
+      feedback.message("Last fragment scratched · turn empty", "normal");
+      return;
+    }
+    feedback.message(
+      turnStatusFeedback(scratched.fragmentCount, scratched.charCount, scratched.text, "Scratched"),
+      "normal",
+    );
+  }
+
   private clipboardFallback(
     final: string,
     raw: string | null,
@@ -110,6 +178,18 @@ export class DictationJobRunner {
       : "Couldn't paste — the text is on your clipboard";
     feedback.message(message, "warning");
   }
+}
+
+function turnStatusFeedback(
+  fragmentCount: number,
+  charCount: number,
+  previewSource: string,
+  prefix = "Turn",
+): string {
+  const preview = previewSource.trim().replace(/\s+/gu, " ");
+  const clipped = preview.length > 40 ? `${preview.slice(0, 37)}…` : preview;
+  const size = `${fragmentCount} · ${charCount}c`;
+  return clipped.length > 0 ? `${prefix} · ${size} · ${clipped}` : `${prefix} · ${size}`;
 }
 
 function vocabularyFor(config: UndertoneConfig): unknown[] {

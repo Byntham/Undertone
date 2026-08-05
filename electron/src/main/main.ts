@@ -34,6 +34,7 @@ import {
 } from "../core/pipelineQueue";
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
+import { isStackDictationMode, TurnBuffer } from "../core/turnBuffer";
 import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore } from "./configStore";
 import { AutostartManager } from "./autostart";
@@ -111,12 +112,16 @@ if (!gotLock) {
   } | null = null;
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
+  const turnBuffer = new TurnBuffer(
+    () => Math.max(0, Number(config.turn_idle_minutes) || 0) * 60_000,
+  );
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
   } : {});
   const pttShortcut = new ShortcutBinding(config.hotkey);
   const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
+  const commitShortcut = new ShortcutBinding(config.commit_hotkey, true);
   let overlayDisplayId: number | undefined;
   let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
@@ -205,9 +210,18 @@ if (!gotLock) {
   };
 
   const updateTrayTooltip = (): void => {
-    tray?.setToolTip(paused
-      ? "Undertone — paused"
-      : `Undertone — hold ${config.hotkey} to dictate`);
+    if (paused) {
+      tray?.setToolTip("Undertone — paused");
+      return;
+    }
+    if (isStackDictationMode(config.dictation_mode)) {
+      const commit = config.commit_hotkey.trim();
+      tray?.setToolTip(commit.length > 0
+        ? `Undertone — hold ${config.hotkey}; commit with ${commit}`
+        : `Undertone — hold ${config.hotkey} to stack a turn`);
+      return;
+    }
+    tray?.setToolTip(`Undertone — hold ${config.hotkey} to dictate`);
   };
 
   const configureShortcuts = (): void => {
@@ -223,6 +237,12 @@ if (!gotLock) {
       repasteShortcut.set("", true);
       showFeedback("The saved re-paste shortcut is unsupported", "warning");
     }
+    try {
+      commitShortcut.set(config.commit_hotkey, true);
+    } catch {
+      commitShortcut.set("", true);
+      showFeedback("The saved commit shortcut is unsupported", "warning");
+    }
   };
 
   const repasteLast = (): void => {
@@ -233,6 +253,24 @@ if (!gotLock) {
     }
     void pipeline?.enqueueRepaste(text).catch((error: unknown) => {
       showFeedback(error instanceof Error ? error.message : "Could not re-paste", "error");
+    });
+  };
+
+  const commitOpenTurn = (): void => {
+    void pipeline?.enqueueCommit().catch((error: unknown) => {
+      showFeedback(error instanceof Error ? error.message : "Could not commit turn", "error");
+    });
+  };
+
+  const discardOpenTurn = (): void => {
+    void pipeline?.enqueueDiscard().catch((error: unknown) => {
+      showFeedback(error instanceof Error ? error.message : "Could not discard turn", "error");
+    });
+  };
+
+  const scratchLastFragment = (): void => {
+    void pipeline?.enqueueScratch().catch((error: unknown) => {
+      showFeedback(error instanceof Error ? error.message : "Could not scratch fragment", "error");
     });
   };
 
@@ -363,6 +401,19 @@ if (!gotLock) {
       { label: "Open Settings", click: () => openSettings() },
       { type: "separator" },
       {
+        label: "Commit turn",
+        click: () => commitOpenTurn(),
+      },
+      {
+        label: "Scratch last fragment",
+        click: () => scratchLastFragment(),
+      },
+      {
+        label: "Discard turn",
+        click: () => discardOpenTurn(),
+      },
+      { type: "separator" },
+      {
         label: "Pause dictation",
         type: "checkbox",
         checked: false,
@@ -448,12 +499,17 @@ if (!gotLock) {
       transcriber: transcriberClient,
       async prepareText(transcript, snapshot) {
         return await prepareText(transcript, snapshot, {
-          acquireContext: async () => await insertionMemory.acquire({
-            getCaretContext: async (before, after) => (
-              await windowsHost.getCaretContext(before, after)
-            ),
-            getForegroundWindow: async () => (await windowsHost.getForeground()).window,
-          }),
+          acquireContext: async () => {
+            if (isStackDictationMode(snapshot.dictation_mode)) {
+              return { before: turnBuffer.contextBefore(), after: null };
+            }
+            return await insertionMemory.acquire({
+              getCaretContext: async (before, after) => (
+                await windowsHost.getCaretContext(before, after)
+              ),
+              getForegroundWindow: async () => (await windowsHost.getForeground()).window,
+            });
+          },
           getAppIdentity: async () => {
             const foreground = await windowsHost.getForeground();
             return {
@@ -474,6 +530,7 @@ if (!gotLock) {
       paster,
       history,
       insertionMemory,
+      turnBuffer,
       feedback: {
         message: showFeedback,
         dismiss: () => { overlayController.confirm(); },
@@ -497,6 +554,24 @@ if (!gotLock) {
           const foreground = await windowsHost.getForeground();
           insertionMemory.registerPaste(foreground.window, text, generation);
           overlayController.confirm();
+        },
+        commit: async (snapshot) => {
+          await runner.commit(snapshot, {
+            message: showFeedback,
+            dismiss: () => { overlayController.confirm("Turn committed", 1_000); },
+          });
+        },
+        discard: async () => {
+          runner.discard({
+            message: showFeedback,
+            dismiss: () => { overlayController.confirm(); },
+          });
+        },
+        scratch: async () => {
+          runner.scratchLast({
+            message: showFeedback,
+            dismiss: () => { overlayController.confirm(); },
+          });
         },
       },
     );
@@ -599,6 +674,8 @@ if (!gotLock) {
       if (store === null) throw new Error("Settings store is not ready");
       const previousHotkey = config.hotkey;
       const previousRepaste = config.repaste_hotkey;
+      const previousCommit = config.commit_hotkey;
+      const previousMode = config.dictation_mode;
       if (isRecord(value) && value.startWithWindows !== undefined) {
         if (typeof value.startWithWindows !== "boolean") {
           throw new Error("startWithWindows must be boolean");
@@ -611,9 +688,14 @@ if (!gotLock) {
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
-      if (config.hotkey !== previousHotkey || config.repaste_hotkey !== previousRepaste) {
+      if (config.hotkey !== previousHotkey
+        || config.repaste_hotkey !== previousRepaste
+        || config.commit_hotkey !== previousCommit) {
         gestures.cancel();
         configureShortcuts();
+      }
+      if (previousMode === "stack" && config.dictation_mode === "instant") {
+        turnBuffer.clear();
       }
       configureLocalResidency();
       updateTrayTooltip();
@@ -716,7 +798,10 @@ if (!gotLock) {
     if (event.sender !== settingsWindow?.webContents) {
       throw new Error("Shortcut capture came from an unauthorized renderer");
     }
-    if (!isRecord(value) || (value.field !== "hotkey" && value.field !== "repasteHotkey")) {
+    if (!isRecord(value)
+      || (value.field !== "hotkey"
+        && value.field !== "repasteHotkey"
+        && value.field !== "commitHotkey")) {
       throw new Error("Invalid shortcut capture target");
     }
     return await captureShortcut(value.field);
@@ -999,15 +1084,18 @@ if (!gotLock) {
       }
       const ptt = pttShortcut.update(event);
       const repaste = repasteShortcut.update(event);
+      const commit = commitShortcut.update(event);
       if (ptt.pressed) gestures.press();
       if (ptt.released) gestures.release();
       // Wait until the physical re-paste chord is fully released. Sending
       // Ctrl+V while its Ctrl/Alt keys are still held turns the injected paste
       // back into the re-paste chord in the target application.
       if (repaste.completed) repasteLast();
+      if (commit.completed) commitOpenTurn();
       if (event.eventType === "down"
         && !ptt.keyBelongsToShortcut
-        && !repaste.keyBelongsToShortcut) {
+        && !repaste.keyBelongsToShortcut
+        && !commit.keyBelongsToShortcut) {
         insertionMemory.invalidate();
       }
     });

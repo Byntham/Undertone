@@ -200,6 +200,52 @@ function General({
           capture={captureShortcut}
         />
       </SettingRow>
+      <SettingRow
+        title="Commit open turn"
+        description="In stack mode, paste the full turn into the focused app."
+      >
+        <ShortcutControl
+          field="commitHotkey"
+          value={settings.commitHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Dictation mode"
+        description="Stack builds a turn from fragments. Instant pastes each utterance."
+      >
+        <select
+          aria-label="Dictation mode"
+          value={settings.dictationMode}
+          onChange={(event) => {
+            void update({
+              dictationMode: event.target.value === "instant" ? "instant" : "stack",
+            });
+          }}
+        >
+          <option value="stack">Stack fragments (commit to send)</option>
+          <option value="instant">Instant paste</option>
+        </select>
+      </SettingRow>
+      <SettingRow
+        title="Open turn idle timeout"
+        description="Discard an unfinished turn after this much inactivity."
+      >
+        <select
+          aria-label="Open turn idle timeout"
+          value={String(settings.turnIdleMinutes)}
+          onChange={(event) => {
+            void update({ turnIdleMinutes: Number(event.target.value) });
+          }}
+        >
+          <option value="0">Never</option>
+          <option value="5">5 minutes</option>
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">60 minutes</option>
+        </select>
+      </SettingRow>
       <SettingRow title="Microphone" description="Select the input device by its Windows name.">
         <div className="microphoneControl">
           <select
@@ -245,7 +291,10 @@ function General({
     </div>
     <h2>Output</h2>
     <div className="card">
-      <SettingRow title="Smart formatting" description="Use caret context for spacing and capitalization.">
+      <SettingRow
+        title="Smart formatting"
+        description="Use surrounding context for spacing and capitalization (turn buffer in stack mode)."
+      >
         <Toggle
           label="Smart formatting"
           checked={settings.smartFormatting}
@@ -997,6 +1046,9 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     startWithWindows: false,
     hotkey: "right ctrl",
     repasteHotkey: "ctrl+alt+v",
+    commitHotkey: "ctrl+alt+enter",
+    dictationMode: "stack",
+    turnIdleMinutes: 15,
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.7.0",
@@ -1079,7 +1131,11 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       preview = {
         ...preview,
-        [field]: field === "hotkey" ? "f13" : "ctrl+shift+v",
+        [field]: field === "hotkey"
+          ? "f13"
+          : field === "commitHotkey"
+            ? "ctrl+alt+enter"
+            : "ctrl+shift+v",
       };
       return preview;
     },

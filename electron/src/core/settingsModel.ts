@@ -23,6 +23,9 @@ const PATCH_FIELDS = new Set([
   "startWithWindows",
   "hotkey",
   "repasteHotkey",
+  "commitHotkey",
+  "dictationMode",
+  "turnIdleMinutes",
   "inputDevice",
   "provider",
   "cleanupProvider",
@@ -64,6 +67,9 @@ export function settingsSnapshot(
     startWithWindows,
     hotkey: config.hotkey,
     repasteHotkey: config.repaste_hotkey,
+    commitHotkey: config.commit_hotkey,
+    dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
+    turnIdleMinutes: config.turn_idle_minutes,
     inputDevice: config.input_device,
     microphones: [...microphones],
     appVersion,
@@ -144,7 +150,27 @@ export function applySettingsPatch(
     next.repaste_hotkey = normalizeShortcut(value.repasteHotkey, true);
     shortcutChanged = true;
   }
+  if (value.commitHotkey !== undefined) {
+    if (typeof value.commitHotkey !== "string") {
+      throw new Error("commitHotkey must be a string");
+    }
+    next.commit_hotkey = normalizeShortcut(value.commitHotkey, true);
+    shortcutChanged = true;
+  }
   if (shortcutChanged) validateDistinctShortcuts(next);
+  if (value.dictationMode !== undefined) {
+    if (value.dictationMode !== "stack" && value.dictationMode !== "instant") {
+      throw new Error("dictationMode must be stack or instant");
+    }
+    next.dictation_mode = value.dictationMode;
+  }
+  if (value.turnIdleMinutes !== undefined) {
+    if (typeof value.turnIdleMinutes !== "number"
+      || ![0, 5, 15, 30, 60].includes(value.turnIdleMinutes)) {
+      throw new Error("turnIdleMinutes is invalid");
+    }
+    next.turn_idle_minutes = value.turnIdleMinutes;
+  }
   if (value.inputDevice !== undefined) {
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);
   }
@@ -346,7 +372,7 @@ function textMap(
 }
 
 function validateDistinctShortcuts(config: UndertoneConfig): void {
-  const bindings = [config.hotkey, config.repaste_hotkey]
+  const bindings = [config.hotkey, config.repaste_hotkey, config.commit_hotkey]
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   if (new Set(bindings).size !== bindings.length) {

@@ -1,4 +1,5 @@
 export type ProviderId = "xai" | "openai" | "openrouter" | "local";
+export type DictationMode = "stack" | "instant";
 export type ConfigRecord = Record<string, unknown>;
 
 export interface UndertoneConfig extends ConfigRecord {
@@ -20,6 +21,9 @@ export interface UndertoneConfig extends ConfigRecord {
   corrections: Record<string, string>;
   stt_vocab_hints: boolean;
   repaste_hotkey: string;
+  commit_hotkey: string;
+  dictation_mode: DictationMode;
+  turn_idle_minutes: number;
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
@@ -46,6 +50,9 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   corrections: {},
   stt_vocab_hints: true,
   repaste_hotkey: "ctrl+alt+v",
+  commit_hotkey: "ctrl+alt+enter",
+  dictation_mode: "stack",
+  turn_idle_minutes: 15,
   local_loaded: false,
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
@@ -69,6 +76,17 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   cloneContainers(config);
   ensureStringMap(config, "stt_models");
   ensureStringMap(config, "cleanup_models");
+  if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
+    config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
+  }
+  if (typeof config.commit_hotkey !== "string") {
+    config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;
+  }
+  if (typeof config.turn_idle_minutes !== "number"
+    || !Number.isFinite(config.turn_idle_minutes)
+    || config.turn_idle_minutes < 0) {
+    config.turn_idle_minutes = DEFAULT_CONFIG.turn_idle_minutes;
+  }
   return config as UndertoneConfig;
 }
 
