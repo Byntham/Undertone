@@ -89,7 +89,9 @@ window.undertoneOverlay?.onTurnDraft((view) => {
   }
   draft.classList.remove("hidden");
   draft.removeAttribute("aria-hidden");
-  draftMeta.textContent = `Open turn · ${view.fragmentCount} · ${view.charCount}c`;
+  draftMeta.textContent = view.fragmentCount === 1
+    ? "Open turn · 1 fragment"
+    : `Open turn · ${view.fragmentCount} fragments`;
   const maxVisible = 8;
   const fragments = view.fragments;
   const start = Math.max(0, fragments.length - maxVisible);

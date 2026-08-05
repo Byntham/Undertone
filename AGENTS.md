@@ -61,17 +61,25 @@ native handles stay in the main process.
 
 The main process owns one ordered dictation queue. Each job snapshots config at
 dequeue. Clipboard restoration, insertion memory, history, target restoration,
-and paste sequencing assume this single-writer design.
+turn-buffer commit/scratch/discard, and paste sequencing assume this
+single-writer design.
+
+Stack dictation mode owns an in-memory open turn: PTT releases append fragments;
+formatting uses the buffer tail; paste happens only on explicit commit. Instant
+mode keeps paste-per-release. See `docs/handoff/session-turn-buffer.md` for
+intent, architecture, and handoff context (major product direction).
 
 All native-host messages are versioned JSON over local pipes. Keep Windows API
 work in the host rather than expanding renderer or main-process privileges.
 
 ## Product invariants
 
-- Password fields are never read. Context order is UI Automation, Win32 edit,
-  then insertion memory.
-- Only left-side caret context may reach AI cleanup. Right-side context remains
-  local and is used only for deterministic formatting seams.
+- Password fields are never read. Instant-mode context order is UI Automation,
+  Win32 edit, then insertion memory. Stack mode formats against the open turn
+  buffer and does not require caret reads.
+- Only left-side context may reach AI cleanup (caret before, or buffer tail in
+  stack mode). Right-side context remains local and is used only for
+  deterministic formatting seams.
 - Vocabulary hints are xAI-only. Do not send prompt-style vocabulary to other
   speech providers.
 - Local cleanup never blocks the current dictation while a cold model loads;

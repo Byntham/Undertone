@@ -57,8 +57,8 @@ describe("dictation job runner", () => {
     expect(dependencies.turnBuffer.peekText()).toBe("Hello world.Hello world.");
     expect(dependencies.history.snapshot()).toEqual([]);
     expect(state.messages.map((entry) => entry.text)).toEqual([
-      "Turn · 1 · 12c · Hello world.",
-      "Turn · 2 · 24c · Hello world.",
+      "Turn · 1 · Hello world.",
+      "Turn · 2 · Hello world.",
     ]);
     expect(state.dismissed).toBe(0);
   });
@@ -70,7 +70,7 @@ describe("dictation job runner", () => {
     const runner = new DictationJobRunner(dependencies);
     runner.scratchLast();
     expect(dependencies.turnBuffer.peekText()).toBe("Hello world.");
-    expect(state.messages.at(-1)?.text).toBe("Scratched · 1 · 12c · Hello world.");
+    expect(state.messages.at(-1)?.text).toBe("Scratched · 1 · Hello world.");
     runner.scratchLast();
     expect(dependencies.turnBuffer.peekText()).toBeNull();
     expect(state.messages.at(-1)?.text).toBe("Last fragment scratched · turn empty");

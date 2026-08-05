@@ -81,7 +81,7 @@ export class DictationJobRunner {
       const final = await this.dependencies.prepareText(transcript, config);
       const stacked = this.dependencies.turnBuffer.append(raw, final);
       feedback.message(
-        turnStatusFeedback(stacked.fragmentCount, stacked.charCount, stacked.lastFragment),
+        turnStatusFeedback(stacked.fragmentCount, stacked.lastFragment),
         "normal",
       );
       return;
@@ -159,7 +159,7 @@ export class DictationJobRunner {
       return;
     }
     feedback.message(
-      turnStatusFeedback(scratched.fragmentCount, scratched.charCount, scratched.text, "Scratched"),
+      turnStatusFeedback(scratched.fragmentCount, scratched.text, "Scratched"),
       "normal",
     );
   }
@@ -182,14 +182,14 @@ export class DictationJobRunner {
 
 function turnStatusFeedback(
   fragmentCount: number,
-  charCount: number,
   previewSource: string,
   prefix = "Turn",
 ): string {
   const preview = previewSource.trim().replace(/\s+/gu, " ");
   const clipped = preview.length > 40 ? `${preview.slice(0, 37)}…` : preview;
-  const size = `${fragmentCount} · ${charCount}c`;
-  return clipped.length > 0 ? `${prefix} · ${size} · ${clipped}` : `${prefix} · ${size}`;
+  return clipped.length > 0
+    ? `${prefix} · ${fragmentCount} · ${clipped}`
+    : `${prefix} · ${fragmentCount}`;
 }
 
 function vocabularyFor(config: UndertoneConfig): unknown[] {
