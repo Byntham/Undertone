@@ -10,10 +10,9 @@ DPAPI, paste injection, and supervised local-model processes.
 
 ## Install
 
-Builds produce two artifacts in `electron\release`:
+Builds produce the installer in `electron\release`:
 
-- `Undertone-Setup-1.7.0-x64.exe` - assisted per-user installer with in-app updates.
-- `Undertone-1.7.0-x64-portable.exe` - self-contained portable app (manual updates).
+- `Undertone-Setup-1.7.1-x64.exe` - assisted per-user installer with in-app updates.
 
 Windows SmartScreen may warn about an unsigned build. Settings are stored in
 `%APPDATA%\Undertone`; installed local engines and models are stored in
@@ -64,11 +63,10 @@ cd ..
 build.bat
 ```
 
-`build.bat` produces the portable app and NSIS installer. `run.bat` builds and
-launches Undertone from source. Installed NSIS builds check the public GitHub
+`build.bat` produces the NSIS installer. `run.bat` builds and launches Undertone
+from source. Installed builds check the public GitHub
 Releases channel after launch and can download, restart, and install updates
 from **Settings -> General**. The desktop shortcut is recreated during upgrades.
-Portable builds remain manually updated.
 
 Useful direct commands:
 
@@ -80,6 +78,30 @@ npm run smoke:package
 npm run smoke:package:local
 npm run smoke:audio
 ```
+
+## Development worktrees
+
+Installed Undertone can supervise development builds without running a launcher
+from each worktree. Right-click the tray icon and open **Development**. Undertone
+automatically discovers T3 Code's Undertone worktrees and lists them by readable
+branch name. Choose one to enable development and build it. **Choose repository
+folder…** is available only as a fallback when automatic discovery is unavailable.
+
+Selecting a worktree builds it into `%LOCALAPPDATA%\Undertone\DevBuilds` while
+production remains active. After a successful build, the controller releases
+input handling and starts the selected build without a second tray icon. Use
+**Rebuild active worktree** after source changes, or select **Production** to
+return. If the development process fails, production input is restored.
+
+Development uses `%LOCALAPPDATA%\Undertone\ManagedDev` for configuration. The
+production configuration is copied there only when the development profile is
+first created. Local engines and models remain shared.
+
+Worktrees must contain the current `undertoneDevProtocol` package marker. Update
+older branches from `main` when the menu marks them incompatible. To test several
+features together, maintain a `dev/integration` worktree and merge checkpoint
+commits from the selected feature branches into it; uncommitted changes remain
+local to their individual worktrees.
 
 ## Privacy and platform notes
 
