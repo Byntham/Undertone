@@ -12,7 +12,7 @@ describe("Windows host", () => {
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     const ready = await host.start();
-    expect(ready.protocol).toBe(2);
+    expect(ready.protocol).toBe(3);
     expect(ready.keyboardHook).toBe(true);
     expect(ready.mouseHook).toBe(true);
     const foreground = await host.getForeground();
@@ -121,6 +121,62 @@ describe("Windows host", () => {
     }
   });
 
+  it("reports exit codes and terminates an individual process tree", async () => {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-tree-"));
+    const scriptPath = path.join(temporary, "tree.ps1");
+    const childIdPath = path.join(temporary, "child.txt");
+    const host = new WindowsHost();
+    const previousRemoveValue = process.env.UNDERTONE_REMOVE_ME;
+    let rootProcessId: number | undefined;
+    let childProcessId: number | undefined;
+    try {
+      process.env.UNDERTONE_REMOVE_ME = "present";
+      await writeFile(scriptPath, [
+        "Start-Sleep -Milliseconds 300",
+        "$child = Start-Process ping.exe -ArgumentList '127.0.0.1 -n 30' -PassThru -WindowStyle Hidden",
+        `[IO.File]::WriteAllText('${childIdPath.replaceAll("'", "''")}', $child.Id.ToString())`,
+        "$child.WaitForExit()",
+      ].join("\r\n"), "utf8");
+      await host.start();
+      rootProcessId = await host.spawnSupervised(
+        "powershell.exe",
+        `-NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
+        temporary,
+      );
+      childProcessId = Number(await waitForTextFile(childIdPath));
+      expect(isProcessAlive(rootProcessId)).toBe(true);
+      expect(isProcessAlive(childProcessId)).toBe(true);
+      expect(await host.stopSupervised(rootProcessId)).toBe(true);
+      await waitUntilStopped(rootProcessId);
+      await waitUntilStopped(childProcessId);
+      expect(isProcessAlive(rootProcessId)).toBe(false);
+      expect(isProcessAlive(childProcessId)).toBe(false);
+
+      const exitProcessId = await host.spawnSupervised(
+        "cmd.exe",
+        "/d /s /c \"if defined UNDERTONE_REMOVE_ME (exit /b 9) else (exit /b %UNDERTONE_TEST_EXIT%)\"",
+        temporary,
+        "",
+        { UNDERTONE_REMOVE_ME: null, UNDERTONE_TEST_EXIT: "7" },
+      );
+      expect(await waitForProcessStatus(host, exitProcessId)).toEqual({
+        running: false,
+        exitCode: 7,
+      });
+    } finally {
+      if (previousRemoveValue === undefined) delete process.env.UNDERTONE_REMOVE_ME;
+      else process.env.UNDERTONE_REMOVE_ME = previousRemoveValue;
+      await host.stop();
+      if (rootProcessId !== undefined && isProcessAlive(rootProcessId)) {
+        process.kill(rootProcessId);
+      }
+      if (childProcessId !== undefined && isProcessAlive(childProcessId)) {
+        process.kill(childProcessId);
+      }
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
   it("terminates supervised processes when the host is forcibly killed", async () => {
     const child = spawn(resolveWindowsHost(), [], {
       windowsHide: true,
@@ -133,7 +189,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 2,
+        protocol: 3,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -396,4 +452,17 @@ async function waitUntilStopped(processId: number): Promise<void> {
   while (Date.now() < deadline && isProcessAlive(processId)) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+async function waitForProcessStatus(
+  host: WindowsHost,
+  processId: number,
+): Promise<{ running: boolean; exitCode: number | null }> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const status = await host.supervisedProcessStatus(processId);
+    if (!status.running && status.exitCode !== null) return status;
+    await delay(25);
+  }
+  throw new Error(`Process status did not settle: ${processId}`);
 }

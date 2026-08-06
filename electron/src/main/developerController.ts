@@ -1,6 +1,17 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 const DEV_PROTOCOL = 1;
@@ -32,13 +43,29 @@ interface ManagedRuntime {
   electronExecutable: string;
   readyFile: string;
   worktree: DeveloperWorktree;
-  child: ChildProcess | null;
+  processId: number | null;
   intentionalStop: boolean;
+}
+
+export interface DeveloperProcessHost {
+  spawnSupervised(
+    file: string,
+    argumentsValue?: string,
+    workingDirectory?: string,
+    logFile?: string,
+    environment?: Readonly<Record<string, string | null>>,
+  ): Promise<number>;
+  supervisedProcessStatus(processId: number): Promise<{
+    running: boolean;
+    exitCode: number | null;
+  }>;
+  stopSupervised(processId: number): Promise<boolean>;
 }
 
 interface DeveloperControllerOptions {
   configPath: string;
   buildRoot: string;
+  processHost: DeveloperProcessHost;
   onBeforeDevStart(): Promise<void>;
   onDevUnavailable(): Promise<void>;
   onStateChange(snapshot: DeveloperSnapshot): void;
@@ -51,6 +78,7 @@ export class DeveloperController {
   private phase: DeveloperPhase = "production";
   private message = "Production active";
   private disposed = false;
+  private readonly buildProcessIds = new Set<number>();
 
   constructor(private readonly options: DeveloperControllerOptions) {}
 
@@ -64,6 +92,7 @@ export class DeveloperController {
     } catch {
       this.repositoryRoot = null;
     }
+    await this.cleanupPartialBuilds().catch(() => undefined);
     this.emit();
   }
 
@@ -138,25 +167,44 @@ export class DeveloperController {
       if (!worktree.compatible) {
         throw new Error(worktree.compatibilityError ?? "This worktree is incompatible");
       }
+      const dependencyHash = await dependencyFingerprint(worktree.electronRoot);
+      const installDependencies = await dependenciesNeedInstall(
+        worktree.electronRoot,
+        dependencyHash,
+      );
+      const activeBeforeBuild = this.active;
+      if (installDependencies
+        && activeBeforeBuild !== null
+        && samePath(activeBeforeBuild.worktree.root, worktree.root)) {
+        await this.stopRuntime(activeBeforeBuild);
+        this.active = null;
+        await this.options.onDevUnavailable();
+      }
       this.phase = "building";
       this.message = `Building ${worktree.branch}`;
       this.emit();
-      const candidate = await this.build(worktree);
+      const candidate = await this.build(worktree, dependencyHash, installDependencies);
+      if (this.disposed) {
+        await rm(candidate.appRoot, { recursive: true, force: true });
+        throw new Error("Development build cancelled");
+      }
       const previous = this.active;
-      if (previous === null) await this.options.onBeforeDevStart();
-      else await this.stopRuntime(previous);
       try {
+        if (previous === null) await this.options.onBeforeDevStart();
+        else await this.stopRuntime(previous);
         await this.launchRuntime(candidate);
         this.active = candidate;
+        this.monitorRuntime(candidate);
         this.phase = "dev";
         this.message = `${worktree.branch} active`;
         this.emit();
         await this.cleanupBuilds(candidate.appRoot).catch(() => undefined);
       } catch (error) {
-        if (previous !== null) {
+        if (previous !== null && !this.disposed) {
           try {
             await this.launchRuntime(previous);
             this.active = previous;
+            this.monitorRuntime(previous);
             this.phase = "dev";
             this.message = `${previous.worktree.branch} restored after launch failure`;
             this.emit();
@@ -166,8 +214,9 @@ export class DeveloperController {
           }
         } else {
           this.active = null;
-          await this.options.onDevUnavailable();
+          if (!this.disposed) await this.options.onDevUnavailable();
         }
+        await rm(candidate.appRoot, { recursive: true, force: true }).catch(() => undefined);
         throw error;
       }
     }).catch((error: unknown) => {
@@ -215,65 +264,104 @@ export class DeveloperController {
 
   async dispose(): Promise<void> {
     this.disposed = true;
-    const runtime = this.active;
-    if (runtime !== null) await this.stopRuntime(runtime);
+    const processes = [...this.buildProcessIds];
+    await Promise.all(processes.map(async (processId) => {
+      await this.options.processHost.stopSupervised(processId).catch(() => false);
+    }));
+    const initialRuntime = this.active;
+    if (initialRuntime !== null) await this.stopRuntime(initialRuntime);
+    await this.operation.catch(() => undefined);
+    const finalRuntime = this.active;
+    if (finalRuntime !== null && finalRuntime !== initialRuntime) {
+      await this.stopRuntime(finalRuntime);
+    }
     this.active = null;
   }
 
-  private async build(worktree: DeveloperWorktree): Promise<ManagedRuntime> {
+  private async build(
+    worktree: DeveloperWorktree,
+    dependencyHash: string,
+    installDependencies: boolean,
+  ): Promise<ManagedRuntime> {
+    await mkdir(this.options.buildRoot, { recursive: true });
+    if (installDependencies) {
+      const installCode = await this.runCommand("npm.cmd", ["ci"], worktree.electronRoot);
+      if (installCode !== 0) throw new Error("Dependency installation failed");
+      await writeFile(dependencyStamp(worktree.electronRoot), dependencyHash, "utf8");
+    }
     const electronPackage = path.join(
       worktree.electronRoot, "node_modules", "electron", "package.json",
     );
     if (!existsSync(electronPackage)) {
-      const installCode = await run("npm.cmd", ["ci"], worktree.electronRoot, true);
-      if (installCode !== 0) throw new Error("Dependency installation failed");
+      throw new Error("Dependency installation did not provide Electron");
     }
     const electronExecutable = path.join(
       worktree.electronRoot, "node_modules", "electron", "dist", "electron.exe",
     );
     if (!existsSync(electronExecutable)) {
-      const prepareCode = await run(
-        "node.exe", ["-e", "require('electron')"], worktree.electronRoot,
+      const prepareCode = await this.runCommand(
+        "node.exe",
+        ["-e", "require('electron')"],
+        worktree.electronRoot,
       );
       if (prepareCode !== 0 || !existsSync(electronExecutable)) {
         throw new Error("Electron runtime setup failed");
       }
     }
-    const buildCode = await run("npm.cmd", ["run", "build"], worktree.electronRoot, true);
+    const buildCode = await this.runCommand(
+      "npm.cmd",
+      ["run", "build"],
+      worktree.electronRoot,
+    );
     if (buildCode !== 0) throw new Error(`Build failed for ${worktree.branch}`);
 
-    await mkdir(this.options.buildRoot, { recursive: true });
+    const buildName = `${safeName(worktree.branch)}-${Date.now()}`;
     const appRoot = path.join(
       this.options.buildRoot,
-      `${safeName(worktree.branch)}-${Date.now()}`,
+      buildName,
     );
+    const partialRoot = path.join(this.options.buildRoot, `.partial-${buildName}`);
     if (!isWithin(appRoot, this.options.buildRoot)) {
       throw new Error("Invalid development build path");
     }
-    await mkdir(appRoot, { recursive: true });
-    await cp(path.join(worktree.electronRoot, "dist"), path.join(appRoot, "dist"), {
-      recursive: true,
-    });
-    await cp(path.join(worktree.electronRoot, "package.json"), path.join(appRoot, "package.json"));
-    await cp(path.join(worktree.root, "assets"), path.join(appRoot, "assets"), {
-      recursive: true,
-    });
-    await symlink(
-      path.join(worktree.electronRoot, "node_modules"),
-      path.join(appRoot, "node_modules"),
-      "junction",
-    );
-    await writeFile(
-      path.join(appRoot, "build.json"),
-      JSON.stringify({ branch: worktree.branch, source: worktree.root, createdAt: Date.now() }, null, 2),
-      "utf8",
-    );
+    try {
+      await mkdir(partialRoot, { recursive: true });
+      await cp(path.join(worktree.electronRoot, "dist"), path.join(partialRoot, "dist"), {
+        recursive: true,
+      });
+      await cp(
+        path.join(worktree.electronRoot, "package.json"),
+        path.join(partialRoot, "package.json"),
+      );
+      await cp(path.join(worktree.root, "assets"), path.join(partialRoot, "assets"), {
+        recursive: true,
+      });
+      await symlink(
+        path.join(worktree.electronRoot, "node_modules"),
+        path.join(partialRoot, "node_modules"),
+        "junction",
+      );
+      await writeFile(
+        path.join(partialRoot, "build.json"),
+        JSON.stringify({
+          branch: worktree.branch,
+          source: worktree.root,
+          dependencyHash,
+          createdAt: Date.now(),
+        }, null, 2),
+        "utf8",
+      );
+      await rename(partialRoot, appRoot);
+    } catch (error) {
+      await rm(partialRoot, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
     return {
       appRoot,
       electronExecutable,
       readyFile: path.join(appRoot, "ready"),
       worktree,
-      child: null,
+      processId: null,
       intentionalStop: false,
     };
   }
@@ -281,40 +369,40 @@ export class DeveloperController {
   private async launchRuntime(runtime: ManagedRuntime): Promise<void> {
     await rm(runtime.readyFile, { force: true });
     runtime.intentionalStop = false;
-    const child = spawn(runtime.electronExecutable, [runtime.appRoot], {
-      cwd: runtime.appRoot,
-      env: managedEnvironment(runtime),
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    runtime.child = child;
-    child.once("error", () => undefined);
-    child.once("close", () => {
-      runtime.child = null;
-      if (!runtime.intentionalStop && this.active === runtime && !this.disposed) {
-        this.active = null;
-        this.phase = "error";
-        this.message = `${runtime.worktree.branch} exited; production restored`;
-        this.emit();
-        void this.options.onDevUnavailable();
-      }
-    });
+    const processId = await this.options.processHost.spawnSupervised(
+      runtime.electronExecutable,
+      windowsArguments([runtime.appRoot]),
+      runtime.appRoot,
+      path.join(runtime.appRoot, "runtime.log"),
+      managedEnvironmentOverrides(runtime),
+    );
+    runtime.processId = processId;
     const deadline = Date.now() + 15_000;
     while (!existsSync(runtime.readyFile)) {
-      if (child.exitCode !== null) throw new Error(`${runtime.worktree.branch} exited during startup`);
+      const status = await this.options.processHost.supervisedProcessStatus(processId);
+      if (!status.running) {
+        runtime.processId = null;
+        throw await runtimeStartupError(runtime);
+      }
       if (Date.now() >= deadline) {
         runtime.intentionalStop = true;
-        child.kill();
+        await this.options.processHost.stopSupervised(processId).catch(() => false);
+        runtime.processId = null;
         throw new Error(`${runtime.worktree.branch} did not become ready`);
       }
       await delay(100);
     }
+    const status = await this.options.processHost.supervisedProcessStatus(processId);
+    if (!status.running) {
+      runtime.processId = null;
+      throw await runtimeStartupError(runtime);
+    }
   }
 
   private async stopRuntime(runtime: ManagedRuntime): Promise<void> {
-    const child = runtime.child;
+    const processId = runtime.processId;
     runtime.intentionalStop = true;
-    if (child === null || child.exitCode !== null) return;
+    if (processId === null) return;
     const request = spawn(runtime.electronExecutable, [runtime.appRoot, "--undertone-dev-quit"], {
       cwd: runtime.appRoot,
       env: managedEnvironment(runtime),
@@ -322,10 +410,75 @@ export class DeveloperController {
       windowsHide: true,
     });
     request.once("error", () => undefined);
-    await Promise.race([waitForExit(child), delay(5_000)]);
-    if (child.exitCode === null) {
-      child.kill();
-      await Promise.race([waitForExit(child), delay(2_000)]);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const status = await this.options.processHost.supervisedProcessStatus(processId)
+        .catch(() => ({ running: false, exitCode: null }));
+      if (!status.running) {
+        runtime.processId = null;
+        return;
+      }
+      await delay(100);
+    }
+    await this.options.processHost.stopSupervised(processId).catch(() => false);
+    runtime.processId = null;
+  }
+
+  private monitorRuntime(runtime: ManagedRuntime): void {
+    void (async () => {
+      while (!this.disposed && !runtime.intentionalStop && this.active === runtime) {
+        await delay(250);
+        const processId = runtime.processId;
+        if (processId === null) break;
+        const status = await this.options.processHost.supervisedProcessStatus(processId)
+          .catch(() => ({ running: false, exitCode: null }));
+        if (status.running) continue;
+        runtime.processId = null;
+        if (this.disposed || runtime.intentionalStop || this.active !== runtime) return;
+        this.active = null;
+        this.phase = "error";
+        this.message = `${runtime.worktree.branch} exited; production restored`;
+        this.emit();
+        await this.options.onDevUnavailable().catch(() => undefined);
+        return;
+      }
+    })();
+  }
+
+  private async runCommand(
+    command: string,
+    args: readonly string[],
+    cwd: string,
+  ): Promise<number> {
+    const commandFile = command.toLowerCase().endsWith(".cmd") ? "cmd.exe" : command;
+    const commandArgs = commandFile === "cmd.exe"
+      ? ["/d", "/s", "/c", windowsArguments([command, ...args])]
+      : [...args];
+    const processId = await this.options.processHost.spawnSupervised(
+      commandFile,
+      windowsArguments(commandArgs),
+      cwd,
+      path.join(this.options.buildRoot, "build.log"),
+    );
+    this.buildProcessIds.add(processId);
+    try {
+      const missingExitCodeDeadline = Date.now() + 2_000;
+      while (true) {
+        if (this.disposed) {
+          await this.options.processHost.stopSupervised(processId).catch(() => false);
+          return 1;
+        }
+        const status = await this.options.processHost.supervisedProcessStatus(processId);
+        if (status.running) {
+          await delay(100);
+          continue;
+        }
+        if (status.exitCode !== null) return status.exitCode;
+        if (Date.now() >= missingExitCodeDeadline) return 1;
+        await delay(25);
+      }
+    } finally {
+      this.buildProcessIds.delete(processId);
     }
   }
 
@@ -347,6 +500,18 @@ export class DeveloperController {
         await rm(build.root, { recursive: true, force: true });
       }
     }
+  }
+
+  private async cleanupPartialBuilds(): Promise<void> {
+    const entries = await readdir(this.options.buildRoot, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(".partial-"))
+      .map(async (entry) => {
+        const root = path.join(this.options.buildRoot, entry.name);
+        if (isWithin(root, this.options.buildRoot)) {
+          await rm(root, { recursive: true, force: true });
+        }
+      }));
   }
 }
 
@@ -433,6 +598,46 @@ async function isUndertoneRoot(root: string): Promise<boolean> {
   }
 }
 
+async function dependencyFingerprint(electronRoot: string): Promise<string> {
+  const [packageValue, lockValue] = await Promise.all([
+    readFile(path.join(electronRoot, "package.json")),
+    readFile(path.join(electronRoot, "package-lock.json")),
+  ]);
+  return createHash("sha256")
+    .update(packageValue)
+    .update("\0")
+    .update(lockValue)
+    .digest("hex");
+}
+
+async function dependenciesNeedInstall(
+  electronRoot: string,
+  expectedHash: string,
+): Promise<boolean> {
+  if (!existsSync(path.join(electronRoot, "node_modules", "electron", "package.json"))) {
+    return true;
+  }
+  const installedHash = await readFile(dependencyStamp(electronRoot), "utf8")
+    .then((value) => value.trim())
+    .catch(() => "");
+  return installedHash !== expectedHash;
+}
+
+function dependencyStamp(electronRoot: string): string {
+  return path.join(electronRoot, "node_modules", ".undertone-dependency-hash");
+}
+
+function managedEnvironmentOverrides(
+  runtime: ManagedRuntime,
+): Readonly<Record<string, string | null>> {
+  return {
+    ELECTRON_RUN_AS_NODE: null,
+    UNDERTONE_MANAGED_DEV: "1",
+    UNDERTONE_DEV_BRANCH: runtime.worktree.branch,
+    UNDERTONE_MANAGED_READY_FILE: runtime.readyFile,
+  };
+}
+
 function managedEnvironment(runtime: ManagedRuntime): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -468,17 +673,35 @@ async function capture(command: string, args: readonly string[]): Promise<string
   return output;
 }
 
-async function waitForExit(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
-  await new Promise<void>((resolve) => child.once("close", () => resolve()));
-}
-
 async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function runtimeStartupError(runtime: ManagedRuntime): Promise<Error> {
+  const detail = await readFile(path.join(runtime.appRoot, "runtime.log"), "utf8")
+    .then((value) => value.trim().slice(-500))
+    .catch(() => "");
+  const suffix = detail.length > 0 ? `: ${detail}` : "";
+  return new Error(`${runtime.worktree.branch} exited during startup${suffix}`);
+}
+
 function safeName(value: string): string {
   return value.replace(/[^a-z0-9.-]+/giu, "-").replace(/^-+|-+$/gu, "") || "worktree";
+}
+
+function samePath(left: string, right: string): boolean {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+function windowsArguments(values: readonly string[]): string {
+  return values.map(quoteWindowsArgument).join(" ");
+}
+
+function quoteWindowsArgument(value: string): string {
+  if (value.length > 0 && !/[\s"]/u.test(value)) return value;
+  return `"${value
+    .replace(/(\\*)"/gu, "$1$1\\\"")
+    .replace(/(\\+)$/u, "$1$1")}"`;
 }
 
 function isWithin(candidate: string, parent: string): boolean {

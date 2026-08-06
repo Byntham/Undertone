@@ -620,6 +620,7 @@ if (!gotLock || devQuitRequest) {
     const controller = new DeveloperController({
       configPath: path.join(app.getPath("appData"), "Undertone", "developer.json"),
       buildRoot: path.join(localAppData, "Undertone", "DevBuilds"),
+      processHost: windowsHost,
       onBeforeDevStart: async () => {
         if (productionPausedForDev) return;
         const developmentConfig = path.join(localAppData, "Undertone", "ManagedDev", "config.json");

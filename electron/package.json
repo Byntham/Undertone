@@ -7,6 +7,7 @@
   "main": "dist/main/main/main.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
+    "postinstall": "node scripts/stamp-dependencies.mjs",
     "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",

@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +8,7 @@ import {
   parseWorktreeList,
   worktreeDisplayName,
 } from "../src/main/developerController";
+import { resolveWindowsHost, WindowsHost } from "../src/platform/windowsHost";
 
 describe("developer controller", () => {
   it("parses branch and detached worktrees", () => {
@@ -43,11 +45,23 @@ describe("developer controller", () => {
       const repositoryRoot = path.resolve(__dirname, "../..");
       const localAppData = process.env.LOCALAPPDATA;
       if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
-      const configPath = path.join(__dirname, "../test-output/developer-controller.json");
+      const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-developer-e2e-"));
+      const configPath = path.join(temporary, "developer.json");
+      const buildRoot = path.join(
+        localAppData,
+        "Undertone",
+        "DevBuilds",
+        `e2e-${process.pid}-${Date.now()}`,
+      );
+      const hostExecutable = path.join(temporary, "Undertone.WinHost.exe");
+      await copyFile(resolveWindowsHost(), hostExecutable);
+      const processHost = new WindowsHost({ executable: hostExecutable });
+      await processHost.start();
       let paused = false;
       const controller = new DeveloperController({
         configPath,
-        buildRoot: path.join(localAppData, "Undertone", "DevBuilds"),
+        buildRoot,
+        processHost,
         onBeforeDevStart: async () => { paused = true; },
         onDevUnavailable: async () => { paused = false; },
         onStateChange: () => undefined,
@@ -67,9 +81,11 @@ describe("developer controller", () => {
         expect(paused).toBe(false);
       } finally {
         await controller.dispose();
-        await rm(configPath, { force: true });
+        await processHost.stop();
+        await rm(temporary, { recursive: true, force: true });
+        await rm(buildRoot, { recursive: true, force: true });
       }
     },
-    60_000,
+    120_000,
   );
 });

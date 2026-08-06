@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 2;
+    private const int ProtocolVersion = 3;
     private const int WhKeyboardLl = 13;
     private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
@@ -219,7 +219,8 @@ internal static class Program
                     StringValue(command, "file"),
                     StringValue(command, "arguments"),
                     StringValue(command, "workingDirectory"),
-                    StringValue(command, "logFile"));
+                    StringValue(command, "logFile"),
+                    StringMap(command, "environment"));
                 Respond(requestId, "processStarted", new Dictionary<string, object>
                 {
                     { "processId", processId }
@@ -236,9 +237,12 @@ internal static class Program
             else if (type == "isSupervisedRunning")
             {
                 var processId = BoundedInt(command, "processId", 0, 1, int.MaxValue);
+                int exitCode;
+                var hasExitCode = _supervisor.TryGetExitCode(processId, out exitCode);
                 Respond(requestId, "processStatus", new Dictionary<string, object>
                 {
-                    { "running", _supervisor.IsRunning(processId) }
+                    { "running", _supervisor.IsRunning(processId) },
+                    { "exitCode", hasExitCode ? (object)exitCode : null }
                 });
             }
             else if (type == "extractSubset")
@@ -328,6 +332,24 @@ internal static class Program
         {
             if (item != null)
                 result.Add(Convert.ToString(item));
+        }
+        return result;
+    }
+
+    private static Dictionary<string, string> StringMap(
+        Dictionary<string, object> values,
+        string key)
+    {
+        object value;
+        var result = new Dictionary<string, string>();
+        if (!values.TryGetValue(key, out value) || value == null)
+            return result;
+        var dictionary = value as Dictionary<string, object>;
+        if (dictionary == null)
+            return result;
+        foreach (var pair in dictionary)
+        {
+            result[pair.Key] = pair.Value == null ? null : Convert.ToString(pair.Value);
         }
         return result;
     }
