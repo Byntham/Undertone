@@ -22,7 +22,7 @@ npm run smoke:package:local
 ```
 
 From the repository root, `run.bat` builds and launches the source app and
-`build.bat` creates the NSIS and portable artifacts in `electron\release`.
+`build.bat` creates the NSIS installer in `electron\release`.
 
 Opt-in tests:
 
@@ -38,7 +38,7 @@ The desktop test steals focus and is valid only while the desktop is idle.
   stay in sync.
 - Use a minor version for a feature batch and a patch version for a fix-only
   release.
-- `npm run package` builds x64 NSIS and portable artifacts. They are unsigned
+- `npm run package` builds the x64 NSIS installer. It is unsigned
   unless a release certificate is supplied externally.
 - Never commit `electron/node_modules`, `electron/dist`, `electron/release`,
   test output, user configuration, API keys, models, or runtime downloads.

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Build the primary portable and per-user installer artifacts.
+rem Build the per-user installer artifact.
 cd /d "%~dp0electron"
 if not exist "node_modules\electron\dist\electron.exe" (
     call npm ci

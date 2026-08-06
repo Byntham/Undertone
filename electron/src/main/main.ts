@@ -2,8 +2,10 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   ipcMain,
   Menu,
+  type MenuItemConstructorOptions,
   nativeImage,
   screen,
   session,
@@ -11,7 +13,8 @@ import {
   Tray,
 } from "electron";
 import electronUpdater = require("electron-updater");
-import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CleanupClient } from "../core/cleanup";
@@ -38,6 +41,13 @@ import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
 import { ConfigStore } from "./configStore";
 import { AutostartManager } from "./autostart";
 import { AppUpdateService } from "./appUpdater";
+import {
+  DeveloperController,
+  worktreeDisplayName,
+  type DeveloperRepositoryDiscovery,
+  type DeveloperSnapshot,
+  type DeveloperWorktree,
+} from "./developerController";
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
@@ -56,10 +66,15 @@ import type {
 } from "../shared/settings";
 import type { OverlayState, OverlayTone } from "../shared/overlay";
 
+const DEV_QUIT_ARGUMENT = "--undertone-dev-quit";
+const OPEN_SETTINGS_ARGUMENT = "--undertone-open-settings";
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
+const managedDev = process.env.UNDERTONE_MANAGED_DEV === "1";
 const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIEW === "1";
+const devBranch = electronPreview ? process.env.UNDERTONE_DEV_BRANCH?.trim() : undefined;
+const devQuitRequest = electronPreview && process.argv.includes(DEV_QUIT_ARGUMENT);
 const isolatedProfile = electronPreview || packagedSmoke;
 if (packagedSmoke) {
   const profilePath = process.env.UNDERTONE_PACKAGE_SMOKE_PROFILE;
@@ -67,6 +82,9 @@ if (packagedSmoke) {
     throw new Error("Packaged smoke profile path is invalid");
   }
   app.setPath("userData", profilePath);
+} else if (managedDev) {
+  const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
+  app.setPath("userData", path.join(previewRoot, "Undertone", "ManagedDev"));
 } else if (electronPreview) {
   const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
   app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
@@ -74,7 +92,7 @@ if (packagedSmoke) {
 const gotLock = app.requestSingleInstanceLock();
 const fileLog = installFileLog(path.join(app.getPath("userData"), "app.log"));
 
-if (!gotLock) {
+if (!gotLock || devQuitRequest) {
   app.quit();
 } else {
   let settingsWindow: BrowserWindow | null = null;
@@ -95,6 +113,16 @@ if (!gotLock) {
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
   let appUpdateService: AppUpdateService | null = null;
+  let developerController: DeveloperController | null = null;
+  let discoveredDeveloperRepository: DeveloperRepositoryDiscovery | null = null;
+  let developerWorktrees: DeveloperWorktree[] = [];
+  let developerSnapshot: DeveloperSnapshot = {
+    phase: "production",
+    repositoryRoot: null,
+    activeWorktree: null,
+    message: "Production active",
+  };
+  let productionPausedForDev = false;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
@@ -205,9 +233,15 @@ if (!gotLock) {
   };
 
   const updateTrayTooltip = (): void => {
-    tray?.setToolTip(paused
+    const activeDevBranch = developerSnapshot.activeWorktree?.branch;
+    const tooltip = activeDevBranch !== undefined
+      ? `Undertone — Dev: ${activeDevBranch}`
+      : paused
       ? "Undertone — paused"
-      : `Undertone — hold ${config.hotkey} to dictate`);
+      : `Undertone — hold ${config.hotkey} to dictate`;
+    tray?.setToolTip(devBranch === undefined || devBranch.length === 0
+      ? tooltip
+      : `${tooltip}\nDev: ${devBranch}`);
   };
 
   const configureShortcuts = (): void => {
@@ -354,18 +388,187 @@ if (!gotLock) {
     );
   };
 
-  const createTray = (): void => {
-    normalTrayImage = nativeImage.createFromPath(resolveAsset("icon.png"));
-    recordingTrayImage = nativeImage.createFromDataURL(recordingTraySvg());
-    tray = new Tray(normalTrayImage);
-    updateTrayTooltip();
-    const menu = Menu.buildFromTemplate([
-      { label: "Open Settings", click: () => openSettings() },
+  const refreshDeveloperWorktrees = async (): Promise<void> => {
+    const controller = developerController;
+    if (controller === null) return;
+    try {
+      if (controller.snapshot().repositoryRoot === null) {
+        discoveredDeveloperRepository = await controller.discoverT3Repository(
+          path.join(app.getPath("home"), ".t3", "worktrees", "Undertone"),
+        );
+        developerWorktrees = discoveredDeveloperRepository?.worktrees ?? [];
+      } else {
+        discoveredDeveloperRepository = null;
+        developerWorktrees = await controller.worktrees();
+      }
+    } catch (error) {
+      discoveredDeveloperRepository = null;
+      developerWorktrees = [];
+      console.warn("Could not discover Undertone worktrees", error);
+    }
+    rebuildTrayMenu();
+  };
+
+  const runDeveloperAction = async (
+    action: () => Promise<void>,
+    successMessage: string,
+  ): Promise<void> => {
+    try {
+      await action();
+      showFeedback(successMessage, "normal");
+    } catch (error) {
+      showFeedback(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
+  const confirmDeveloperAccess = async (): Promise<boolean> => {
+    const confirmation = await dialog.showMessageBox({
+      type: "warning",
+      title: "Enable Undertone development controls?",
+      message: "Development builds run local worktree code with your Windows user permissions.",
+      detail: "Enable this only for an Undertone repository that you trust.",
+      buttons: ["Cancel", "Enable development"],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    return confirmation.response === 1;
+  };
+
+  const chooseDeveloperRepository = async (): Promise<void> => {
+    const controller = developerController;
+    if (controller === null) return;
+    if (controller.snapshot().repositoryRoot === null && !await confirmDeveloperAccess()) return;
+    const result = await dialog.showOpenDialog({
+      title: "Choose the main Undertone repository folder",
+      properties: ["openDirectory"],
+    });
+    const selected = result.filePaths[0];
+    if (result.canceled || selected === undefined) return;
+    await runDeveloperAction(async () => {
+      await controller.setRepository(selected);
+      await refreshDeveloperWorktrees();
+    }, "Development repository configured");
+  };
+
+  const activateDeveloperWorktree = async (worktree: DeveloperWorktree): Promise<void> => {
+    const controller = developerController;
+    if (controller === null) return;
+    let repositoryToConfigure: string | null = null;
+    if (controller.snapshot().repositoryRoot === null) {
+      const discovery = discoveredDeveloperRepository;
+      if (discovery === null || !await confirmDeveloperAccess()) return;
+      repositoryToConfigure = discovery.repositoryRoot;
+    }
+    const displayName = worktreeDisplayName(worktree.branch);
+    showFeedback(`Building ${displayName}`, "normal");
+    await runDeveloperAction(
+      async () => {
+        if (repositoryToConfigure !== null) {
+          await controller.setRepository(repositoryToConfigure);
+          await refreshDeveloperWorktrees();
+        }
+        await controller.activate(worktree);
+      },
+      `${displayName} is active`,
+    );
+  };
+
+  const developerMenu = (): MenuItemConstructorOptions[] => {
+    const controller = developerController;
+    if (controller === null) return [];
+    const activeRoot = developerSnapshot.activeWorktree?.root;
+    const items: MenuItemConstructorOptions[] = [
+      {
+        label: "Production",
+        type: "radio",
+        checked: activeRoot === undefined,
+        click: () => {
+          void runDeveloperAction(
+            async () => await controller.returnToProduction(),
+            "Production Undertone restored",
+          );
+        },
+      },
+    ];
+    if (developerSnapshot.repositoryRoot !== null || discoveredDeveloperRepository !== null) {
+      if (developerSnapshot.repositoryRoot === null) {
+        items.push(
+          { type: "separator" },
+          { label: "Available worktrees", enabled: false },
+        );
+      }
+      for (const worktree of developerWorktrees) {
+        const displayBranch = worktreeDisplayName(worktree.branch);
+        items.push({
+          label: worktree.compatible
+            ? displayBranch
+            : `${displayBranch} — ${worktree.compatibilityError ?? "incompatible"}`,
+          type: "radio",
+          checked: activeRoot !== undefined
+            && path.resolve(activeRoot).toLowerCase() === path.resolve(worktree.root).toLowerCase(),
+          enabled: worktree.compatible && developerSnapshot.phase !== "building",
+          click: () => { void activateDeveloperWorktree(worktree); },
+        });
+      }
+      items.push({ type: "separator" });
+      if (developerSnapshot.repositoryRoot !== null) {
+        items.push({
+          label: "Rebuild active worktree",
+          enabled: developerSnapshot.activeWorktree !== null
+            && developerSnapshot.phase !== "building",
+          click: () => {
+            showFeedback("Building active worktree", "normal");
+            void runDeveloperAction(
+              async () => await controller.rebuildActive(),
+              "Development build updated",
+            );
+          },
+        });
+      }
+      items.push({
+        label: "Refresh worktrees",
+        click: () => { void refreshDeveloperWorktrees(); },
+      });
+    }
+    items.push(
+      { type: "separator" },
+      {
+        label: developerSnapshot.repositoryRoot === null
+          ? "Choose repository folder…"
+          : "Choose another repository…",
+        click: () => { void chooseDeveloperRepository(); },
+      },
+    );
+    if (developerSnapshot.repositoryRoot !== null) {
+      items.push({
+        label: "Disable development",
+        click: () => {
+          void runDeveloperAction(async () => {
+            await controller.disable();
+            await refreshDeveloperWorktrees();
+          }, "Developer mode disabled");
+        },
+      });
+    }
+    return items;
+  };
+
+  const rebuildTrayMenu = (): void => {
+    if (tray === null) return;
+    const devActive = developerSnapshot.activeWorktree !== null;
+    const template: MenuItemConstructorOptions[] = [
+      {
+        label: "Open Settings",
+        click: () => {
+          if (!developerController?.openDevSettings()) openSettings();
+        },
+      },
       { type: "separator" },
       {
         label: "Pause dictation",
         type: "checkbox",
-        checked: false,
+        checked: paused,
+        enabled: !devActive,
         click: (item) => {
           if (shortcutCapture !== null) {
             item.checked = paused;
@@ -395,15 +598,81 @@ if (!gotLock) {
       },
       { type: "separator" },
       {
+        label: "Development",
+        submenu: developerMenu(),
+      },
+      { type: "separator" },
+      {
         label: "Quit",
         click: () => {
           quitting = true;
           app.quit();
         },
       },
-    ]);
-    tray.setContextMenu(menu);
-    tray.on("double-click", () => openSettings());
+    ];
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    updateTrayTooltip();
+  };
+
+  const initializeDeveloperController = async (): Promise<void> => {
+    if (managedDev || packagedSmoke) return;
+    const localAppData = process.env.LOCALAPPDATA ?? app.getPath("appData");
+    const controller = new DeveloperController({
+      configPath: path.join(app.getPath("appData"), "Undertone", "developer.json"),
+      buildRoot: path.join(localAppData, "Undertone", "DevBuilds"),
+      processHost: windowsHost,
+      onBeforeDevStart: async () => {
+        if (productionPausedForDev) return;
+        const developmentConfig = path.join(localAppData, "Undertone", "ManagedDev", "config.json");
+        const productionConfig = path.join(app.getPath("appData"), "Undertone", "config.json");
+        if (!existsSync(developmentConfig) && existsSync(productionConfig)) {
+          await mkdir(path.dirname(developmentConfig), { recursive: true });
+          await copyFile(productionConfig, developmentConfig);
+        }
+        productionPausedForDev = true;
+        try {
+          gestures.cancel();
+          await windowsHost.stopInput();
+          await Promise.all([
+            localStt?.eject() ?? Promise.resolve(),
+            localCleanup?.eject() ?? Promise.resolve(),
+          ]);
+        } catch (error) {
+          productionPausedForDev = false;
+          if (!paused && !quitting) await windowsHost.startInput().catch(() => undefined);
+          throw error;
+        }
+      },
+      onDevUnavailable: async () => {
+        if (!productionPausedForDev) return;
+        productionPausedForDev = false;
+        if (!paused && !quitting) {
+          await windowsHost.startInput();
+          configureLocalResidency();
+        }
+      },
+      onStateChange: (snapshot) => {
+        developerSnapshot = snapshot;
+        rebuildTrayMenu();
+      },
+    });
+    developerController = controller;
+    await controller.load();
+    const environmentRepository = process.env.UNDERTONE_DEV_REPOSITORY;
+    if (environmentRepository !== undefined && environmentRepository.trim().length > 0) {
+      await controller.setRepository(environmentRepository);
+    }
+    await refreshDeveloperWorktrees();
+  };
+
+  const createTray = (): void => {
+    normalTrayImage = nativeImage.createFromPath(resolveAsset("icon.png"));
+    recordingTrayImage = nativeImage.createFromDataURL(recordingTraySvg());
+    tray = new Tray(normalTrayImage);
+    rebuildTrayMenu();
+    tray.on("double-click", () => {
+      if (!developerController?.openDevSettings()) openSettings();
+    });
   };
 
   const initializePipeline = async (): Promise<void> => {
@@ -523,6 +792,7 @@ if (!gotLock) {
       microphoneTest = null;
     }
     await Promise.all([
+      developerController?.dispose() ?? Promise.resolve(),
       localStt?.shutdown() ?? Promise.resolve(),
       localCleanup?.shutdown() ?? Promise.resolve(),
     ]);
@@ -693,7 +963,17 @@ if (!gotLock) {
     }
   };
 
-  app.on("second-instance", openSettings);
+  app.on("second-instance", (_event, argv) => {
+    if (electronPreview && argv.includes(DEV_QUIT_ARGUMENT)) {
+      app.quit();
+      return;
+    }
+    if (argv.includes(OPEN_SETTINGS_ARGUMENT)) {
+      openSettings();
+      return;
+    }
+    openSettings();
+  });
   app.on("before-quit", (event) => {
     quitting = true;
     if (shutdownComplete) return;
@@ -957,17 +1237,14 @@ if (!gotLock) {
   });
   app.whenReady().then(async () => {
     app.setAppUserModelId("com.undertone.desktop");
-    const portableBuild = process.env.PORTABLE_EXECUTABLE_FILE !== undefined;
-    const updaterSupported = app.isPackaged && !packagedSmoke && !portableBuild;
+    const updaterSupported = app.isPackaged && !packagedSmoke;
     const { autoUpdater } = electronUpdater;
     appUpdateService = new AppUpdateService({
       updater: updaterSupported ? autoUpdater : null,
       currentVersion: app.getVersion(),
       unavailableMessage: electronPreview
         ? "Update checks are available in the installed app."
-        : portableBuild
-          ? "Portable builds cannot update in place. Install Undertone once to enable updates."
-          : "Updates are unavailable in this build.",
+        : "Updates are unavailable in this build.",
       prepareToInstall: async () => {
         quitting = true;
         await finishShutdown();
@@ -1014,15 +1291,25 @@ if (!gotLock) {
     windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
     await initializePipeline();
-    createTray();
+    await initializeDeveloperController();
+    if (!managedDev) createTray();
     updateTrayTooltip();
     const sttConfigured = config.provider === "local"
       || providerKey(config, config.provider).trim().length > 0;
     if (packagedSmoke || !sttConfigured) openSettings();
     await windowsHost.startInput();
+    if (managedDev) {
+      const readyFile = process.env.UNDERTONE_MANAGED_READY_FILE;
+      const localAppData = process.env.LOCALAPPDATA ?? app.getPath("appData");
+      const buildRoot = path.join(localAppData, "Undertone", "DevBuilds");
+      if (readyFile === undefined || !isWithin(readyFile, buildRoot)) {
+        throw new Error("Managed development readiness path is invalid");
+      }
+      await writeFile(readyFile, "ready", "utf8");
+    }
     if (updaterSupported) {
       setTimeout(() => {
-        void appUpdateService?.check();
+        if (developerSnapshot.activeWorktree === null) void appUpdateService?.check();
       }, 15_000);
     }
     if (packagedSmoke) {
@@ -1125,6 +1412,7 @@ function isWithin(candidate: string, parent: string): boolean {
 }
 
 function resolveAsset(name: "icon.png" | "icon.ico"): string {
+  if (managedDev) return path.join(app.getAppPath(), "assets", name);
   return app.isPackaged
     ? path.join(process.resourcesPath, "assets", name)
     : path.resolve(__dirname, "../../../../assets", name);
