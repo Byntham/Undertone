@@ -9,6 +9,7 @@ import type {
   LocalEngineSnapshot,
   HistoryAction,
   HistorySnapshotEntry,
+  ProviderModelCatalogSnapshot,
   ProviderTestKind,
   SettingsPatch,
   SettingsProviderId,
@@ -559,27 +560,29 @@ function SpeechAi({
     </div>
     <details className="advancedSection">
       <summary>Advanced</summary>
-      <div className="advancedGroup">
-        <h3>Model overrides</h3>
+      {(settings.provider !== "local" || settings.cleanupProvider !== "local") && <div className="advancedGroup">
+        <h3>Model selection</h3>
         <div className="card modelCard">
-          <ModelControl
+          {settings.provider !== "local" && <ModelControl
             key={`stt-${settings.provider}`}
             label="Transcription model"
             kind="stt"
             provider={settings.provider}
             current={settings.sttModel}
+            configured={settings.keyConfigured[settings.provider]}
             update={update}
-          />
-          <ModelControl
+          />}
+          {settings.cleanupProvider !== "local" && <ModelControl
             key={`cleanup-${settings.cleanupProvider}`}
             label="Cleanup model"
             kind="cleanup"
             provider={settings.cleanupProvider}
             current={settings.cleanupModel}
+            configured={settings.keyConfigured[settings.cleanupProvider]}
             update={update}
-          />
+          />}
         </div>
-      </div>
+      </div>}
       <div className="advancedGroup">
         <h3>On-device behavior</h3>
         <div className="card">
@@ -826,15 +829,47 @@ function ModelControl({
   kind,
   provider,
   current,
+  configured,
   update,
 }: {
   label: string;
   kind: "stt" | "cleanup";
-  provider: SettingsProviderId;
+  provider: CloudProviderId;
   current: string;
+  configured: boolean;
   update: (patch: SettingsPatch) => Promise<boolean>;
 }): React.JSX.Element {
-  const [value, setValue] = useState(current);
+  const customOption = "__undertone_custom_model__";
+  const [selection, setSelection] = useState(current);
+  const [customValue, setCustomValue] = useState(current);
+  const [catalog, setCatalog] = useState<ProviderModelCatalogSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const loadModels = async (refresh: boolean): Promise<void> => {
+    if (!configured && !(provider === "xai" && kind === "stt")) return;
+    setLoading(true);
+    setCatalogError(null);
+    try {
+      setCatalog(await settingsApi.providerModels(provider, kind, refresh));
+    } catch (reason) {
+      setCatalogError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void loadModels(false); }, [provider, kind, configured]);
+  if (catalog?.selectable === false) {
+    return <div className="modelControl modelManaged">
+      <strong>{label}</strong>
+      <small>xAI manages the transcription model for its speech-to-text endpoint.</small>
+    </div>;
+  }
+  const discovered = catalog?.models ?? [];
+  const currentIsDiscovered = discovered.some((model) => model.id === current);
+  const value = selection === customOption ? customValue : selection;
+  const defaultLabel = catalog?.defaultModel === null || catalog?.defaultModel === undefined
+    ? "Provider default"
+    : `Provider default (${catalog.defaultModel})`;
   const save = (): void => {
     const model = { provider, value };
     void update(kind === "stt" ? { sttModel: model } : { cleanupModel: model });
@@ -842,16 +877,52 @@ function ModelControl({
   return <form className="modelControl" onSubmit={(event) => { event.preventDefault(); save(); }}>
     <label htmlFor={`${kind}-model`}>{label}</label>
     <div className="modelEntry">
-      <input
+      <select
         id={`${kind}-model`}
-        value={value}
-        placeholder="Provider default"
-        spellCheck={false}
-        onChange={(event) => setValue(event.target.value)}
-      />
-      <button type="submit" className="smallButton accent">Save</button>
+        value={selection}
+        onChange={(event) => {
+          const next = event.target.value;
+          setSelection(next);
+          if (next === customOption && !currentIsDiscovered) setCustomValue(current);
+        }}
+      >
+        <option value="">{defaultLabel}</option>
+        {current.length > 0 && !currentIsDiscovered
+          && <option value={current}>Current: {current}</option>}
+        {discovered.map((model) => <option key={model.id} value={model.id}>
+          {model.name === model.id ? model.id : `${model.name} — ${model.id}`}
+        </option>)}
+        <option value={customOption}>Custom model…</option>
+      </select>
+      <button
+        type="button"
+        className="smallButton"
+        disabled={loading || !configured}
+        onClick={() => { void loadModels(true); }}
+      >
+        {loading ? "Loading…" : "Refresh"}
+      </button>
+      <button
+        type="submit"
+        className="smallButton accent"
+        disabled={selection === customOption && customValue.trim().length === 0}
+      >
+        Save
+      </button>
     </div>
-    <small>Empty uses the {providerLabel(provider)} default.</small>
+    {selection === customOption && <input
+      className="modelCustomInput"
+      aria-label={`Custom ${label.toLowerCase()}`}
+      value={customValue}
+      placeholder="Enter a model ID"
+      spellCheck={false}
+      onChange={(event) => setCustomValue(event.target.value)}
+    />}
+    {!configured
+      ? <small>Save the {providerLabel(provider)} API key to load available models.</small>
+      : catalogError !== null
+        ? <small className="fieldError" role="status">{catalogError} The saved selection is unchanged.</small>
+        : <small>{loading ? "Loading available models…" : "Model selections are saved until you change them."}</small>}
   </form>;
 }
 
@@ -1001,9 +1072,9 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.8.0",
     preview: true,
-    provider: "local",
-    cleanupProvider: "local",
-    keyConfigured: { xai: false, openai: false, openrouter: false },
+    provider: "openai",
+    cleanupProvider: "openai",
+    keyConfigured: { xai: false, openai: true, openrouter: false },
     sttModel: "",
     cleanupModel: "",
     localLoaded: false,
@@ -1127,6 +1198,24 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     async historyAction() {},
     async systemAction() {},
     async providerTest(kind) { return `${kind} works`; },
+    async providerModels(provider, kind) {
+      const models = kind === "stt"
+        ? [
+            { id: "gpt-4o-mini-transcribe", name: "GPT-4o mini Transcribe" },
+            { id: "gpt-4o-transcribe", name: "GPT-4o Transcribe" },
+          ]
+        : [
+            { id: "gpt-4o-mini", name: "GPT-4o mini" },
+            { id: "gpt-4.1-mini", name: "GPT-4.1 mini" },
+          ];
+      return {
+        provider,
+        kind,
+        selectable: !(provider === "xai" && kind === "stt"),
+        defaultModel: kind === "stt" ? "gpt-4o-mini-transcribe" : "gpt-4o-mini",
+        models,
+      };
+    },
     async microphoneTest() { return 0.18; },
     async updateStatus() { return previewUpdate; },
     async checkForUpdates() { return previewUpdate; },

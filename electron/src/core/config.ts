@@ -67,8 +67,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     }
   }
   cloneContainers(config);
-  ensureStringMap(config, "stt_models");
-  ensureStringMap(config, "cleanup_models");
+  const sttModels = ensureStringMap(config, "stt_models");
+  const cleanupModels = ensureStringMap(config, "cleanup_models");
+  delete sttModels.local;
+  delete cleanupModels.local;
   return config as UndertoneConfig;
 }
 

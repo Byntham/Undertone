@@ -96,6 +96,9 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, {
       cleanupModel: { provider: "xai", value: "bad\nmodel" },
     })).toThrow(/invalid/u);
+    expect(() => applySettingsPatch(config, {
+      sttModel: { provider: "local", value: "other.bin" },
+    })).toThrow(/cloud provider/u);
   });
 
   it("falls back to local when a corrupt config contains unknown providers", () => {

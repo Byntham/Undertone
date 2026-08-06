@@ -71,6 +71,21 @@ describe("dictation job runner", () => {
     expect(dependencies.history.latestSuccessText()).toBe("Hello world.");
   });
 
+  it("keeps cleanup fallback visible after a successful paste", async () => {
+    const { dependencies, state } = harness();
+    dependencies.prepareText = async () => ({
+      text: "Hello world.",
+      cleanupFailed: true,
+    });
+    await new DictationJobRunner(dependencies).run(WAV, null, normalizeConfig(undefined));
+    expect(state.pasted).toEqual([{ text: "Hello world.", restore: true }]);
+    expect(state.dismissed).toBe(0);
+    expect(state.messages.at(-1)).toEqual({
+      text: "AI cleanup failed — used basic formatting",
+      kind: "warning",
+    });
+  });
+
   it("retains failed audio for retry and handles empty speech without a history failure", async () => {
     const first = harness();
     first.dependencies.transcriber.transcribe = async () => {
@@ -141,7 +156,7 @@ function harness(): {
         },
       },
       async prepareText() {
-        return "Hello world.";
+        return { text: "Hello world.", cleanupFailed: false };
       },
       async restoreTarget() {
         state.restoreCalls += 1;

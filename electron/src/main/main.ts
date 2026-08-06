@@ -29,6 +29,7 @@ import {
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import { OverlayController } from "../core/overlayController";
+import { ProviderModelCatalog } from "../core/providerModels";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
   DictationPipelineQueue,
@@ -61,6 +62,7 @@ import type {
   LocalEngineKind,
   LocalEngineSnapshot,
   HistoryAction,
+  CloudProviderId,
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
@@ -125,6 +127,7 @@ if (!gotLock || devQuitRequest) {
   let productionPausedForDev = false;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
+  let providerModelCatalog: ProviderModelCatalog | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
     stt: { installing: false, phase: "", fraction: 0 },
     cleanup: { installing: false, phase: "", fraction: 0 },
@@ -706,6 +709,7 @@ if (!gotLock || devQuitRequest) {
     const http = new FetchHttpClient();
     transcriberClient = new Transcriber(http, localStt);
     cleanupClient = new CleanupClient(http, localCleanup);
+    providerModelCatalog = new ProviderModelCatalog(http);
     const paster = new ClipboardPaster(
       {
         readText: () => clipboard.readText(),
@@ -880,6 +884,11 @@ if (!gotLock || devQuitRequest) {
       }
       const next = applySettingsPatch(config, value);
       await store.save(next);
+      for (const provider of ["xai", "openai", "openrouter"] as const) {
+        if (providerKey(config, provider) !== providerKey(next, provider)) {
+          providerModelCatalog?.clear(provider);
+        }
+      }
       config = next;
       if (config.hotkey !== previousHotkey || config.repaste_hotkey !== previousRepaste) {
         gestures.cancel();
@@ -1134,9 +1143,27 @@ if (!gotLock || devQuitRequest) {
       model,
       timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
       systemPrompt: config.cleanup_prompt,
+      throwOnError: true,
     });
-    if (cleaned === null) throw new Error("Cleanup test failed — check the provider and key");
+    if (cleaned === null) throw new Error("Cleanup test failed");
     return `Cleanup works (${providerName(provider)}).`;
+  });
+  ipcMain.handle("provider:models", async (event, value: unknown) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!isRecord(value)
+      || !isCloudProvider(value.provider)
+      || (value.kind !== "stt" && value.kind !== "cleanup")
+      || typeof value.refresh !== "boolean") {
+      throw new Error("Invalid provider model request");
+    }
+    const catalog = providerModelCatalog;
+    if (catalog === null) throw new Error("Provider model discovery is not ready");
+    return await catalog.list(
+      value.provider,
+      value.kind,
+      providerKey(config, value.provider),
+      value.refresh,
+    );
   });
   ipcMain.handle("microphone:test", async (event) => {
     authorizeSettingsSender(event.sender, settingsWindow);
@@ -1376,6 +1403,10 @@ function authorizeSettingsSender(
   if (sender !== settingsWindow?.webContents) {
     throw new Error("Request came from an unauthorized renderer");
   }
+}
+
+function isCloudProvider(value: unknown): value is CloudProviderId {
+  return value === "xai" || value === "openai" || value === "openrouter";
 }
 
 async function delay(milliseconds: number): Promise<void> {

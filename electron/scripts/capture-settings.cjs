@@ -114,6 +114,13 @@ app.whenReady().then(async () => {
     if (otherCredentials) otherCredentials.open = false;
     const advanced = document.querySelector('details.advancedSection');
     if (advanced) advanced.open = true;
+    const modelSelection = advanced?.querySelector('.advancedGroup');
+    if (modelSelection) modelSelection.scrollIntoView({ block: 'start' });
+  }`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const speechAiModelSelection = await win.webContents.capturePage();
+  await writeFile(path.join(output, "speech-ai-model-selection.png"), speechAiModelSelection.toPNG());
+  await win.webContents.executeJavaScript(`{
     const main = document.querySelector('main');
     if (main) main.scrollTop = main.scrollHeight;
   }`);

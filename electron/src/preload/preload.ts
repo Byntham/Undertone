@@ -5,6 +5,8 @@ import type {
   LocalEngineAction,
   LocalEngineKind,
   HistoryAction,
+  CloudProviderId,
+  ProviderModelKind,
   ProviderTestKind,
   SettingsApi,
   SettingsPatch,
@@ -39,6 +41,13 @@ const api: SettingsApi = {
   providerTest: async (kind: ProviderTestKind) => (
     await ipcRenderer.invoke("provider:test", { kind }) as string
   ),
+  providerModels: async (
+    provider: CloudProviderId,
+    kind: ProviderModelKind,
+    refresh = false,
+  ) => await ipcRenderer.invoke("provider:models", { provider, kind, refresh }) as Awaited<
+    ReturnType<SettingsApi["providerModels"]>
+  >,
   microphoneTest: async () => await ipcRenderer.invoke("microphone:test") as number,
   updateStatus: async () => await ipcRenderer.invoke("update:status") as AppUpdateSnapshot,
   checkForUpdates: async () => await ipcRenderer.invoke("update:check") as AppUpdateSnapshot,

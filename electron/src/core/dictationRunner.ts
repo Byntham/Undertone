@@ -5,6 +5,7 @@ import {
   type UndertoneConfig,
 } from "./config";
 import { InsertionMemory } from "./textPreparation";
+import type { TextPreparationResult } from "./textPreparation";
 import { applyCorrections } from "./textproc";
 import { SessionHistory, type DictationTarget } from "./pipelineQueue";
 
@@ -31,7 +32,7 @@ export interface DictationFeedback {
 
 export interface DictationRunnerDependencies {
   transcriber: TranscriberPort;
-  prepareText(text: string, config: UndertoneConfig): Promise<string>;
+  prepareText(text: string, config: UndertoneConfig): Promise<TextPreparationResult>;
   restoreTarget(target: DictationTarget | null): Promise<boolean>;
   getForegroundWindow(): Promise<string>;
   paster: PasterPort;
@@ -75,7 +76,8 @@ export class DictationJobRunner {
     let refocused = await this.dependencies.restoreTarget(target);
     const corrections = isStringMap(config.corrections) ? config.corrections : {};
     const raw = applyCorrections(transcript, corrections);
-    const final = await this.dependencies.prepareText(transcript, config);
+    const prepared = await this.dependencies.prepareText(transcript, config);
+    const final = prepared.text;
     if (refocused) refocused = await this.dependencies.restoreTarget(target);
     const historyRaw = raw === final ? null : raw;
     if (!refocused) {
@@ -93,7 +95,11 @@ export class DictationJobRunner {
     this.dependencies.history.registerSuccess(final, historyRaw);
     const foreground = await this.dependencies.getForegroundWindow();
     this.dependencies.insertionMemory.registerPaste(foreground, final, inputGeneration);
-    feedback.dismiss();
+    if (prepared.cleanupFailed) {
+      feedback.message("AI cleanup failed — used basic formatting", "warning");
+    } else {
+      feedback.dismiss();
+    }
   }
 
   private clipboardFallback(
