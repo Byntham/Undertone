@@ -75,13 +75,17 @@ describe("dictation job runner", () => {
       stack_cleanup_strategy: "commit-full",
     });
     await runner.run(WAV, null, config);
-    await runner.run(WAV, null, config);
+    const changedConfig = normalizeConfig({
+      dictation_mode: "stack",
+      stack_cleanup_strategy: "live-full",
+    });
+    await runner.run(WAV, null, changedConfig);
     expect(state.preparations).toEqual([
       { text: "hello world.", aiCleanup: false, context: "isolated" },
       { text: "hello world. hello world.", aiCleanup: false, context: "isolated" },
     ]);
 
-    await runner.commit(config);
+    await runner.commit(changedConfig);
     expect(state.preparations.at(-1)).toEqual({
       text: "hello world. hello world.",
       aiCleanup: true,
@@ -92,8 +96,8 @@ describe("dictation job runner", () => {
 
   it("scratches the last stacked fragment", async () => {
     const { dependencies, state } = harness();
-    dependencies.turnBuffer.append("Hello world.", "Hello world.");
-    dependencies.turnBuffer.append("More.", "Hello world. More.");
+    dependencies.turnBuffer.append("Hello world.", "Hello world.", "live-full");
+    dependencies.turnBuffer.append("More.", "Hello world. More.", "live-full");
     const runner = new DictationJobRunner(dependencies);
     runner.scratchLast();
     expect(dependencies.turnBuffer.peekText()).toBe("Hello world.");
@@ -105,7 +109,7 @@ describe("dictation job runner", () => {
 
   it("commits the open turn once and clears the buffer", async () => {
     const { dependencies, state } = harness();
-    dependencies.turnBuffer.append("Hello world.", "Hello world.");
+    dependencies.turnBuffer.append("Hello world.", "Hello world.", "live-full");
     const runner = new DictationJobRunner(dependencies);
     await runner.commit(normalizeConfig({ dictation_mode: "stack" }));
     expect(state.pasted).toEqual([{ text: "Hello world.", restore: true }]);
@@ -116,7 +120,7 @@ describe("dictation job runner", () => {
 
   it("keeps the open turn when commit paste fails", async () => {
     const { dependencies, state } = harness();
-    dependencies.turnBuffer.append("Keep me", "Keep me");
+    dependencies.turnBuffer.append("Keep me", "Keep me", "live-full");
     dependencies.paster.paste = async () => { throw new Error("paste failed"); };
     const runner = new DictationJobRunner(dependencies);
     await runner.commit(normalizeConfig({

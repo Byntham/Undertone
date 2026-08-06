@@ -5,6 +5,12 @@ export interface DictationTarget {
   executable: string | null;
 }
 
+export interface PendingDictation {
+  wav: Uint8Array;
+  target: DictationTarget;
+  overlayRevision: number | undefined;
+}
+
 export interface PipelineHandlers {
   dictate(
     wav: Uint8Array,
@@ -21,9 +27,7 @@ export interface PipelineHandlers {
 type PipelineJob =
   | {
     type: "dictate";
-    wav: Uint8Array;
-    target: DictationTarget | null;
-    overlayRevision: number | undefined;
+    pending: Promise<PendingDictation | null>;
   }
   | { type: "retry"; wav: Uint8Array }
   | { type: "repaste"; text: string }
@@ -52,12 +56,16 @@ export class DictationPipelineQueue {
     target: DictationTarget,
     overlayRevision?: number,
   ): Promise<void> {
-    return this.enqueue({
-      type: "dictate",
+    return this.enqueuePendingDictation(Promise.resolve({
       wav: wav.slice(),
       target: { ...target },
       overlayRevision,
-    });
+    }));
+  }
+
+  /** Reserve queue order while the audio renderer finishes the recording. */
+  enqueuePendingDictation(pending: Promise<PendingDictation | null>): Promise<void> {
+    return this.enqueue({ type: "dictate", pending });
   }
 
   enqueueRetry(wav: Uint8Array): Promise<void> {
@@ -104,12 +112,15 @@ export class DictationPipelineQueue {
           } else {
             const config = normalizeConfig(this.configSource());
             if (queued.job.type === "dictate") {
-              await this.handlers.dictate(
-                queued.job.wav,
-                queued.job.target,
-                config,
-                queued.job.overlayRevision,
-              );
+              const pending = await queued.job.pending;
+              if (pending !== null) {
+                await this.handlers.dictate(
+                  pending.wav.slice(),
+                  { ...pending.target },
+                  config,
+                  pending.overlayRevision,
+                );
+              }
             } else if (queued.job.type === "retry") {
               await this.handlers.dictate(queued.job.wav, null, config, undefined);
             } else if (queued.job.type === "repaste") {

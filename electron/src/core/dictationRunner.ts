@@ -121,7 +121,7 @@ export class DictationJobRunner {
       feedback.message("Nothing to commit", "warning");
       return;
     }
-    if (config.stack_cleanup_strategy !== "live-full") {
+    if (this.dependencies.turnBuffer.activeCleanupStrategy() !== "live-full") {
       const rawTurn = this.dependencies.turnBuffer.rawText();
       if (rawTurn === null) {
         feedback.message("Nothing to commit", "warning");
@@ -156,8 +156,10 @@ export class DictationJobRunner {
     transcript: string,
     config: UndertoneConfig,
   ): Promise<ReturnType<TurnBuffer["append"]>> {
+    const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
+      ?? config.stack_cleanup_strategy;
     const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
-    const preparationConfig = config.stack_cleanup_strategy === "commit-full"
+    const preparationConfig = cleanupStrategy === "commit-full"
       ? { ...config, ai_cleanup: false }
       : config;
     const snapshot = await this.dependencies.prepareText(
@@ -165,7 +167,7 @@ export class DictationJobRunner {
       preparationConfig,
       "isolated",
     );
-    return this.dependencies.turnBuffer.append(transcript, snapshot);
+    return this.dependencies.turnBuffer.append(transcript, snapshot, cleanupStrategy);
   }
 
   discard(feedback: DictationFeedback = this.dependencies.feedback): void {
@@ -206,6 +208,7 @@ export class DictationJobRunner {
       : "Couldn't paste — the text is on your clipboard";
     feedback.message(message, "warning");
   }
+
 }
 
 function turnStatusFeedback(

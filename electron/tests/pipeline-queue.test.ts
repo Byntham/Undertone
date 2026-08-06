@@ -119,6 +119,42 @@ describe("dictation pipeline queue", () => {
     expect(modes).toEqual(["stack", "instant"]);
   });
 
+  it("reserves queue order while a recording finishes", async () => {
+    const events: string[] = [];
+    let finishRecording!: (value: {
+      wav: Uint8Array;
+      target: { window: string; executable: string | null };
+      overlayRevision: number | undefined;
+    }) => void;
+    const recording = new Promise<{
+      wav: Uint8Array;
+      target: { window: string; executable: string | null };
+      overlayRevision: number | undefined;
+    }>((resolve) => { finishRecording = resolve; });
+    const queue = new DictationPipelineQueue(
+      () => normalizeConfig(undefined),
+      {
+        async dictate() { events.push("dictate"); },
+        async repaste() {},
+        async commit() { events.push("commit"); },
+        async discard() {},
+        async scratch() { events.push("scratch"); },
+      },
+    );
+    const dictate = queue.enqueuePendingDictation(recording);
+    const scratch = queue.enqueueScratch();
+    const commit = queue.enqueueCommit();
+    await tick();
+    expect(events).toEqual([]);
+    finishRecording({
+      wav: Uint8Array.of(1),
+      target: { window: "42", executable: "editor.exe" },
+      overlayRevision: undefined,
+    });
+    await Promise.all([dictate, scratch, commit]);
+    expect(events).toEqual(["dictate", "scratch", "commit"]);
+  });
+
   it("rejects a failed job without stalling later work", async () => {
     const events: string[] = [];
     const queue = new DictationPipelineQueue(

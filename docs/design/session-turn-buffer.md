@@ -68,6 +68,8 @@ Default for this feature: **stack mode** (fragment of a turn).
 Stack mode exposes two interchangeable strategies. They share the same raw
 fragment source and display-snapshot buffer, so unwanted strategies can be
 deleted after dogfood without changing the rest of the turn pipeline.
+The selected strategy is fixed when an open turn begins; setting changes apply
+to the next turn.
 
 | Strategy | On each fragment | On commit |
 |----------|------------------|-----------|

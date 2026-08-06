@@ -31,6 +31,7 @@ import {
   DictationPipelineQueue,
   SessionHistory,
   type DictationTarget,
+  type PendingDictation,
 } from "../core/pipelineQueue";
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
@@ -113,7 +114,11 @@ if (!gotLock) {
   };
   let shutdownComplete = false;
   let shutdownPromise: Promise<void> | null = null;
-  let pendingTarget: Promise<DictationTarget | null> | null = null;
+  const pendingAudioFinalizations = new Map<number, {
+    resolve: (wav: Uint8Array | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  let nextAudioFinalizationId = 1;
   let shortcutCapture: {
     collector: ShortcutCapture;
     completed: boolean;
@@ -133,7 +138,6 @@ if (!gotLock) {
   const discardShortcut = new ActionShortcutBinding(config.discard_hotkey, "trigger", true);
   let overlayDisplayId: number | undefined;
   let turnDraftUserPositioned = false;
-  let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
   let recordingTrayImage: Electron.NativeImage | null = null;
   let microphoneTest: {
@@ -343,9 +347,23 @@ if (!gotLock) {
   };
 
   const commitOpenTurn = (): void => {
-    void pipeline?.enqueueCommit().catch((error: unknown) => {
+    const activePipeline = pipeline;
+    if (activePipeline === null) {
+      showFeedback("Dictation service is not ready", "error");
+      return;
+    }
+    void activePipeline.enqueueCommit().catch((error: unknown) => {
       showFeedback(error instanceof Error ? error.message : "Could not commit turn", "error");
     });
+  };
+
+  const captureForegroundTarget = async (): Promise<DictationTarget | null> => {
+    try {
+      const foreground = await windowsHost.getForeground();
+      return { window: foreground.window, executable: foreground.executable };
+    } catch {
+      return null;
+    }
   };
 
   const discardOpenTurn = (): void => {
@@ -381,18 +399,42 @@ if (!gotLock) {
       return true;
     },
     onFinish: () => {
-      pendingTarget = windowsHost.getForeground().then((foreground) => ({
-        window: foreground.window,
-        executable: foreground.executable,
-      })).catch(() => null);
-      audioWindow?.webContents.send("audio:command", { type: "stop" });
+      const activePipeline = pipeline;
+      const requestId = nextAudioFinalizationId++;
+      const target = captureForegroundTarget();
+      const overlayRevision = overlayController.transcribing();
+      if (activePipeline !== null) {
+        let resolveAudio!: (wav: Uint8Array | null) => void;
+        const audio = new Promise<Uint8Array | null>((resolve) => { resolveAudio = resolve; });
+        const timer = setTimeout(() => {
+          const pending = pendingAudioFinalizations.get(requestId);
+          if (pending === undefined) return;
+          pendingAudioFinalizations.delete(requestId);
+          pending.resolve(null);
+          showFeedback("Audio finalization timed out", "error");
+        }, 5_000);
+        pendingAudioFinalizations.set(requestId, { resolve: resolveAudio, timer });
+        const pending = Promise.all([audio, target]).then<PendingDictation | null>(
+          ([wav, capturedTarget]) => wav === null ? null : {
+            wav,
+            target: capturedTarget ?? { window: "0", executable: null },
+            overlayRevision,
+          },
+        );
+        void activePipeline.enqueuePendingDictation(pending).catch((error: unknown) => {
+          showFeedback(
+            error instanceof Error ? error.message : "The dictation pipeline failed",
+            "error",
+          );
+        });
+      } else {
+        showFeedback("Dictation service is not ready", "error");
+      }
+      audioWindow?.webContents.send("audio:command", { type: "stop", requestId });
       playCue("stop");
       setTrayRecording(false);
-      pendingOverlayRevision = overlayController.transcribing();
     },
     onDiscard: (reason) => {
-      pendingTarget = null;
-      pendingOverlayRevision = undefined;
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       playCue("cancel");
       setTrayRecording(false);
@@ -711,6 +753,11 @@ if (!gotLock) {
 
   async function shutdownServices(): Promise<void> {
     overlayController.dispose();
+    for (const pending of pendingAudioFinalizations.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(null);
+    }
+    pendingAudioFinalizations.clear();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -1147,34 +1194,27 @@ if (!gotLock) {
         activeTest.reject(new Error("Microphone test returned an invalid level"));
       }
     } else if (payload.type === "stopped") {
+      const requestId = typeof payload.requestId === "number" ? payload.requestId : -1;
+      const pending = pendingAudioFinalizations.get(requestId);
+      if (pending === undefined) return;
+      pendingAudioFinalizations.delete(requestId);
+      clearTimeout(pending.timer);
       const wav = toByteArray(payload.wav);
-      const target = pendingTarget;
-      const overlayRevision = pendingOverlayRevision;
-      pendingTarget = null;
-      pendingOverlayRevision = undefined;
       const durationMs = typeof payload.durationMs === "number" ? payload.durationMs : 0;
       if (wav === null || wav.byteLength <= 44 || durationMs < 300) {
+        pending.resolve(null);
         showFeedback("Too short — hold the key while you speak", "warning");
         return;
       }
-      const activePipeline = pipeline;
-      if (activePipeline === null) {
-        showFeedback("Dictation service is not ready", "error");
-        return;
-      }
-      void (async () => {
-        await activePipeline.enqueueDictation(wav, await target ?? {
-          window: "0",
-          executable: null,
-        }, overlayRevision);
-      })().catch((error: unknown) => {
-        showFeedback(
-          error instanceof Error ? error.message : "The dictation pipeline failed",
-          "error",
-        );
-      });
+      pending.resolve(wav);
     } else if (payload.type === "error") {
-      pendingTarget = null;
+      const requestId = typeof payload.requestId === "number" ? payload.requestId : -1;
+      const pending = pendingAudioFinalizations.get(requestId);
+      if (pending !== undefined) {
+        pendingAudioFinalizations.delete(requestId);
+        clearTimeout(pending.timer);
+        pending.resolve(null);
+      }
       gestures.cancel();
       showFeedback(
         typeof payload.message === "string" ? payload.message : "Microphone unavailable",
@@ -1257,7 +1297,7 @@ if (!gotLock) {
         const snapshot = turnBuffer.snapshot();
         if (snapshot !== null) return;
         const text = "Full-app native test fragment. ";
-        turnBuffer.append(text, text);
+        turnBuffer.append(text, text, "live-full");
         publishTurnDraft();
       };
       updateDraft();

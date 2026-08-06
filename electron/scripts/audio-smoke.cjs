@@ -34,7 +34,7 @@ ipcMain.on("audio:event", (_event, payload) => {
       if (!stopScheduled) {
         stopScheduled = true;
         setTimeout(() => {
-          audioWindow.webContents.send("audio:command", { type: "stop" });
+          audioWindow.webContents.send("audio:command", { type: "stop", requestId: 1 });
         }, 500);
       }
     }

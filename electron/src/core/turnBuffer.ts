@@ -1,3 +1,5 @@
+import type { StackCleanupStrategy } from "./config";
+
 export interface TurnFragment {
   id: string;
   raw: string;
@@ -9,6 +11,7 @@ export interface OpenTurn {
   id: string;
   fragments: TurnFragment[];
   text: string;
+  cleanupStrategy: StackCleanupStrategy;
   startedAt: number;
   updatedAt: number;
 }
@@ -74,13 +77,18 @@ export class TurnBuffer {
   }
 
   /** Append a raw fragment and the complete display-text snapshot it produced. */
-  append(raw: string, text: string): TurnAppendResult {
+  append(
+    raw: string,
+    text: string,
+    cleanupStrategy: StackCleanupStrategy,
+  ): TurnAppendResult {
     const createdAt = Date.now();
     if (this.open === null) {
       this.open = {
         id: String(this.nextTurnId++),
         fragments: [],
         text: "",
+        cleanupStrategy,
         startedAt: createdAt,
         updatedAt: createdAt,
       };
@@ -98,6 +106,11 @@ export class TurnBuffer {
       charCount: this.open.text.length,
       text: this.open.text,
     };
+  }
+
+  /** Cleanup timing is fixed when a turn starts and changes with the next turn. */
+  activeCleanupStrategy(): StackCleanupStrategy | null {
+    return this.open?.cleanupStrategy ?? null;
   }
 
   /** Replace the current display snapshot, preserving the raw fragments for later cleanup. */
