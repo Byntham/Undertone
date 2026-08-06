@@ -64,10 +64,10 @@ native handles stay in the main process.
 The main process owns one ordered dictation queue. Each job snapshots config at
 dequeue. Clipboard restoration, insertion memory, history, target restoration,
 turn-buffer commit/scratch/discard, and paste sequencing assume this
-single-writer design.
+single-writer design. Dictation-mode transitions also run through this queue.
 
 Stack dictation mode owns an in-memory open turn: PTT releases append fragments;
-formatting uses the buffer tail; paste happens only on explicit commit. Instant
+formatting regenerates the accumulated raw turn; paste happens only on explicit commit. Instant
 mode keeps paste-per-release. See `docs/design/session-turn-buffer.md` for the
 feature intent and architecture.
 
@@ -79,8 +79,9 @@ work in the host rather than expanding renderer or main-process privileges.
 - Password fields are never read. Instant-mode context order is UI Automation,
   Win32 edit, then insertion memory. Stack mode formats against the open turn
   buffer and does not require caret reads.
-- Only left-side context may reach AI cleanup (caret before, or buffer tail in
-  stack mode). Right-side context remains local and is used only for
+- Only left-side context may reach AI cleanup. Instant mode may send caret-before
+  context; stack mode sends the accumulated raw turn with no OS context.
+  Right-side context remains local and is used only for
   deterministic formatting seams.
 - Vocabulary hints are xAI-only. Do not send prompt-style vocabulary to other
   speech providers.

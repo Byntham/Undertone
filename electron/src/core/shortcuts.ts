@@ -14,6 +14,7 @@ export interface ShortcutTransition {
 interface ShortcutPart {
   name: string;
   virtualKeys: ReadonlySet<number>;
+  modifier: boolean;
 }
 
 const NAMED_KEYS: Readonly<Record<string, readonly number[]>> = {
@@ -136,6 +137,98 @@ export class ShortcutBinding {
   }
 }
 
+/**
+ * A one-shot shortcut with one non-modifier trigger key. The configured
+ * modifiers must match exactly when the trigger goes down. Key-repeat events
+ * are ignored, but another trigger tap can fire while modifiers remain held.
+ */
+export class ActionShortcutBinding {
+  private parts: readonly ShortcutPart[] = [];
+  private modifiers: readonly ShortcutPart[] = [];
+  private trigger: ShortcutPart | null = null;
+  private readonly down = new Set<number>();
+  private armed = false;
+  private blockedUntilRelease = false;
+
+  constructor(
+    shortcut = "",
+    private readonly completeOn: "trigger" | "release" = "trigger",
+    allowEmpty = false,
+  ) {
+    this.set(shortcut, allowEmpty);
+  }
+
+  set(shortcut: string, allowEmpty = false): void {
+    const parts = this.completeOn === "trigger"
+      ? parseTriggerShortcut(shortcut, allowEmpty)
+      : parseReleaseShortcut(shortcut, allowEmpty);
+    this.parts = parts;
+    this.modifiers = parts.filter((part) => part.modifier);
+    this.trigger = parts.find((part) => !part.modifier) ?? null;
+    this.down.clear();
+    this.armed = false;
+    this.blockedUntilRelease = false;
+  }
+
+  update(event: ShortcutKeyEvent): ShortcutTransition {
+    const repeated = event.eventType === "down" && this.down.has(event.virtualKey);
+    if (event.eventType === "down") this.down.add(event.virtualKey);
+    else this.down.delete(event.virtualKey);
+    const newKeyDown = !repeated && event.eventType === "down";
+    if (this.completeOn === "release"
+      && this.armed
+      && newKeyDown
+      && !this.matchesKey(event.virtualKey)) {
+      this.armed = false;
+      this.blockedUntilRelease = true;
+    }
+    const triggerPressed = newKeyDown
+      && this.trigger?.virtualKeys.has(event.virtualKey) === true
+      && this.modifiersMatchExactly();
+    const modifierChordPressed = newKeyDown
+      && this.trigger === null
+      && this.parts.length > 0
+      && this.modifiersMatchExactly()
+      && [...this.down].every(isModifierVirtualKey);
+    const pressed = !this.blockedUntilRelease
+      && (triggerPressed || modifierChordPressed);
+    if (pressed && this.completeOn === "release") this.armed = true;
+    const released = event.eventType === "up"
+      && this.armed
+      && !this.hasShortcutKeyDown()
+      && ![...this.down].some(isModifierVirtualKey);
+    const completed = this.completeOn === "trigger" ? pressed : released;
+    if (released) this.armed = false;
+    if (this.blockedUntilRelease && !this.hasShortcutKeyDown()) {
+      this.blockedUntilRelease = false;
+    }
+    return {
+      pressed,
+      released,
+      completed,
+      keyBelongsToShortcut: this.matchesKey(event.virtualKey),
+    };
+  }
+
+  matchesKey(virtualKey: number): boolean {
+    return this.parts.some((part) => part.virtualKeys.has(virtualKey));
+  }
+
+  private modifiersMatchExactly(): boolean {
+    if (!this.modifiers.every((part) => intersects(part.virtualKeys, this.down))) {
+      return false;
+    }
+    return [...this.down].every((virtualKey) => (
+      !isModifierVirtualKey(virtualKey)
+      || this.modifiers.some((part) => part.virtualKeys.has(virtualKey))
+    ));
+  }
+
+  private hasShortcutKeyDown(): boolean {
+    return this.parts.some((part) => intersects(part.virtualKeys, this.down));
+  }
+}
+
 export class ShortcutCapture {
   private readonly down = new Set<number>();
   private readonly captured: string[] = [];
@@ -166,6 +259,14 @@ export function normalizeShortcut(shortcut: string, allowEmpty = false): string 
   return parseShortcut(shortcut, allowEmpty).map((part) => part.name).join("+");
 }
 
+export function normalizeTriggerShortcut(shortcut: string, allowEmpty = false): string {
+  return parseTriggerShortcut(shortcut, allowEmpty).map((part) => part.name).join("+");
+}
+
+export function normalizeReleaseShortcut(shortcut: string, allowEmpty = false): string {
+  return parseReleaseShortcut(shortcut, allowEmpty).map((part) => part.name).join("+");
+}
+
 function keyName(virtualKey: number): string | null {
   if (virtualKey >= 0x41 && virtualKey <= 0x5a) {
     return String.fromCharCode(virtualKey).toLowerCase();
@@ -191,8 +292,25 @@ function parseShortcut(shortcut: string, allowEmpty: boolean): readonly Shortcut
   return names.map((name) => {
     const virtualKeys = virtualKeysForName(name);
     if (virtualKeys === null) throw new Error(`'${name}' is not a supported key name`);
-    return { name, virtualKeys: new Set(virtualKeys) };
+    return { name, virtualKeys: new Set(virtualKeys), modifier: isModifierName(name) };
   });
+}
+
+function parseTriggerShortcut(shortcut: string, allowEmpty: boolean): readonly ShortcutPart[] {
+  const parts = parseShortcut(shortcut, allowEmpty);
+  if (parts.length === 0) return parts;
+  if (parts.filter((part) => !part.modifier).length !== 1) {
+    throw new Error("Choose exactly one non-modifier trigger key");
+  }
+  return parts;
+}
+
+function parseReleaseShortcut(shortcut: string, allowEmpty: boolean): readonly ShortcutPart[] {
+  const parts = parseShortcut(shortcut, allowEmpty);
+  if (parts.filter((part) => !part.modifier).length > 1) {
+    throw new Error("Choose at most one non-modifier trigger key");
+  }
+  return parts;
 }
 
 function virtualKeysForName(name: string): readonly number[] | null {
@@ -210,4 +328,18 @@ function virtualKeysForName(name: string): readonly number[] | null {
 function intersects(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
   for (const value of left) if (right.has(value)) return true;
   return false;
+}
+
+function isModifierName(name: string): boolean {
+  return name === "ctrl" || name === "left ctrl" || name === "right ctrl"
+    || name === "shift" || name === "left shift" || name === "right shift"
+    || name === "alt" || name === "left alt" || name === "right alt"
+    || name === "windows" || name === "left windows" || name === "right windows";
+}
+
+function isModifierVirtualKey(virtualKey: number): boolean {
+  return NAMED_KEYS.ctrl!.includes(virtualKey)
+    || NAMED_KEYS.shift!.includes(virtualKey)
+    || NAMED_KEYS.alt!.includes(virtualKey)
+    || NAMED_KEYS.windows!.includes(virtualKey);
 }

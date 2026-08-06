@@ -3,53 +3,32 @@ import { describe, expect, it } from "vitest";
 import { TurnBuffer } from "../src/core/turnBuffer";
 
 describe("turn buffer", () => {
-  it("appends fragments and exposes joined text as left context", () => {
-    const buffer = new TurnBuffer(() => 60_000, () => 1_000);
-    expect(buffer.contextBefore()).toBe("");
+  it("appends raw fragments and complete display snapshots", () => {
+    const buffer = new TurnBuffer();
     expect(buffer.append("hello", "Hello")).toMatchObject({
       fragmentCount: 1,
       text: "Hello",
-      lastFragment: "Hello",
     });
-    expect(buffer.contextBefore()).toBe("Hello");
-    buffer.append(" world", " world");
+    buffer.append("world", "Hello world");
     expect(buffer.peekText()).toBe("Hello world");
+    expect(buffer.rawText()).toBe("hello world");
+    expect(buffer.rawText("again")).toBe("hello world again");
     expect(buffer.fragmentCount()).toBe(2);
   });
 
   it("clears only when there was content", () => {
-    const buffer = new TurnBuffer(() => 60_000, () => 1_000);
+    const buffer = new TurnBuffer();
     expect(buffer.clear()).toBe(false);
     buffer.append("a", "A");
     expect(buffer.clear()).toBe(true);
     expect(buffer.peekText()).toBeNull();
-    expect(buffer.contextBefore()).toBe("");
-  });
-
-  it("expires an idle open turn", () => {
-    let now = 1_000;
-    const buffer = new TurnBuffer(() => 5_000, () => now);
-    buffer.append("one", "One");
-    now = 5_999;
-    expect(buffer.peekText()).toBe("One");
-    now = 6_000;
-    expect(buffer.peekText()).toBeNull();
-    expect(buffer.contextBefore()).toBe("");
-  });
-
-  it("never expires when idle limit is zero", () => {
-    let now = 1_000;
-    const buffer = new TurnBuffer(() => 0, () => now);
-    buffer.append("keep", "Keep");
-    now = 1_000_000;
-    expect(buffer.peekText()).toBe("Keep");
   });
 
   it("exposes a draft snapshot for the open-turn panel", () => {
-    const buffer = new TurnBuffer(() => 60_000, () => 1_000);
+    const buffer = new TurnBuffer();
     expect(buffer.snapshot()).toBeNull();
     buffer.append("one", "One");
-    buffer.append(" two", " two");
+    buffer.append("two", "One two");
     expect(buffer.snapshot()).toEqual({
       text: "One two",
       fragmentCount: 2,
@@ -57,13 +36,13 @@ describe("turn buffer", () => {
     });
   });
 
-  it("scratches the last fragment and rebuilds joined text", () => {
-    const buffer = new TurnBuffer(() => 60_000, () => 1_000);
+  it("scratches the last fragment and restores the preceding snapshot", () => {
+    const buffer = new TurnBuffer();
     buffer.append("one", "One");
-    buffer.append(" two", " two");
-    buffer.append(" three", " three");
+    buffer.append("two", "One two");
+    buffer.append("three", "One, two, and three");
     expect(buffer.scratchLast()).toEqual({
-      removed: " three",
+      removed: "One, two, and three",
       fragmentCount: 2,
       charCount: 7,
       text: "One two",
@@ -77,5 +56,15 @@ describe("turn buffer", () => {
       text: "",
     });
     expect(buffer.scratchLast()).toBeNull();
+  });
+
+  it("replaces the latest snapshot without losing raw fragments", () => {
+    const buffer = new TurnBuffer();
+    buffer.append("one", "One");
+    buffer.append("two", "One two");
+    buffer.replaceText("One and two.");
+    expect(buffer.peekText()).toBe("One and two.");
+    expect(buffer.rawText()).toBe("one two");
+    expect(buffer.scratchLast()?.text).toBe("One");
   });
 });

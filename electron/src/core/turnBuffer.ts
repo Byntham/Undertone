@@ -17,7 +17,6 @@ export interface TurnAppendResult {
   fragmentCount: number;
   charCount: number;
   text: string;
-  lastFragment: string;
 }
 
 export interface TurnScratchResult {
@@ -38,42 +37,34 @@ export class TurnBuffer {
   private nextFragmentId = 1;
   private nextTurnId = 1;
 
-  constructor(
-    private readonly idleMs: () => number = () => 15 * 60_000,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
-
-  /** Left context for formatting: full open turn, or "" at start of turn. */
-  contextBefore(): string {
-    this.expireIfIdle();
-    return this.open?.text ?? "";
-  }
-
   hasOpenTurn(): boolean {
-    this.expireIfIdle();
     return this.open !== null && this.open.text.length > 0;
   }
 
   fragmentCount(): number {
-    this.expireIfIdle();
     return this.open?.fragments.length ?? 0;
   }
 
   charCount(): number {
-    this.expireIfIdle();
     return this.open?.text.length ?? 0;
   }
 
   /** Peek joined turn text without clearing. */
   peekText(): string | null {
-    this.expireIfIdle();
     if (this.open === null || this.open.text.length === 0) return null;
     return this.open.text;
   }
 
+  /** Raw transcriptions joined as a complete turn, including an optional next fragment. */
+  rawText(nextFragment?: string): string | null {
+    const fragments = this.open?.fragments.map((fragment) => fragment.raw) ?? [];
+    if (nextFragment !== undefined) fragments.push(nextFragment);
+    const text = fragments.map((fragment) => fragment.trim()).filter(Boolean).join(" ");
+    return text.length > 0 ? text : null;
+  }
+
   /** Full open-turn snapshot for the draft panel, or null when empty. */
   snapshot(): TurnDraftSnapshot | null {
-    this.expireIfIdle();
     if (this.open === null || this.open.fragments.length === 0) return null;
     return {
       text: this.open.text,
@@ -82,9 +73,9 @@ export class TurnBuffer {
     };
   }
 
+  /** Append a raw fragment and the complete display-text snapshot it produced. */
   append(raw: string, text: string): TurnAppendResult {
-    this.expireIfIdle();
-    const createdAt = this.now();
+    const createdAt = Date.now();
     if (this.open === null) {
       this.open = {
         id: String(this.nextTurnId++),
@@ -100,19 +91,25 @@ export class TurnBuffer {
       text,
       createdAt,
     });
-    this.open.text += text;
+    this.open.text = text;
     this.open.updatedAt = createdAt;
     return {
       fragmentCount: this.open.fragments.length,
       charCount: this.open.text.length,
       text: this.open.text,
-      lastFragment: text,
     };
   }
 
-  /** Remove the last fragment and rebuild joined text. */
+  /** Replace the current display snapshot, preserving the raw fragments for later cleanup. */
+  replaceText(text: string): void {
+    if (this.open === null || this.open.fragments.length === 0) return;
+    this.open.text = text;
+    this.open.fragments.at(-1)!.text = text;
+    this.open.updatedAt = Date.now();
+  }
+
+  /** Remove the last fragment and restore the preceding display snapshot. */
   scratchLast(): TurnScratchResult | null {
-    this.expireIfIdle();
     if (this.open === null || this.open.fragments.length === 0) return null;
     const removed = this.open.fragments.pop()!;
     if (this.open.fragments.length === 0) {
@@ -124,8 +121,8 @@ export class TurnBuffer {
         text: "",
       };
     }
-    this.open.text = this.open.fragments.map((fragment) => fragment.text).join("");
-    this.open.updatedAt = this.now();
+    this.open.text = this.open.fragments.at(-1)!.text;
+    this.open.updatedAt = Date.now();
     return {
       removed: removed.text,
       fragmentCount: this.open.fragments.length,
@@ -139,13 +136,6 @@ export class TurnBuffer {
     const had = this.open !== null && this.open.text.length > 0;
     this.open = null;
     return had;
-  }
-
-  private expireIfIdle(): void {
-    if (this.open === null) return;
-    const limit = this.idleMs();
-    if (limit <= 0) return;
-    if (this.now() - this.open.updatedAt >= limit) this.open = null;
   }
 }
 

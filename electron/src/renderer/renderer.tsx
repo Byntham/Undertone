@@ -251,21 +251,23 @@ function General({
         </select>
       </SettingRow>
       <SettingRow
-        title="Open turn idle timeout"
-        description="Discard an unfinished turn after this much inactivity."
+        title="Stack cleanup timing"
+        description="Choose when AI cleanup rewrites an open turn. Instant mode is unaffected."
       >
         <select
-          aria-label="Open turn idle timeout"
-          value={String(settings.turnIdleMinutes)}
+          aria-label="Stack cleanup timing"
+          value={settings.stackCleanupStrategy}
+          disabled={settings.dictationMode !== "stack"}
           onChange={(event) => {
-            void update({ turnIdleMinutes: Number(event.target.value) });
+            void update({
+              stackCleanupStrategy: event.target.value === "commit-full"
+                ? "commit-full"
+                : "live-full",
+            });
           }}
         >
-          <option value="0">Never</option>
-          <option value="5">5 minutes</option>
-          <option value="15">15 minutes</option>
-          <option value="30">30 minutes</option>
-          <option value="60">60 minutes</option>
+          <option value="live-full">Whole turn after every fragment</option>
+          <option value="commit-full">Whole turn only when committing</option>
         </select>
       </SettingRow>
       <SettingRow title="Microphone" description="Select the input device by its Windows name.">
@@ -1072,7 +1074,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     scratchHotkey: "ctrl+alt+backspace",
     discardHotkey: "ctrl+alt+shift+backspace",
     dictationMode: "stack",
-    turnIdleMinutes: 15,
+    stackCleanupStrategy: "live-full",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.7.0",

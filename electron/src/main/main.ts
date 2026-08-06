@@ -35,7 +35,11 @@ import {
 import { InsertionMemory, prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
 import { isStackDictationMode, TurnBuffer } from "../core/turnBuffer";
-import { ShortcutBinding, ShortcutCapture } from "../core/shortcuts";
+import {
+  ActionShortcutBinding,
+  ShortcutBinding,
+  ShortcutCapture,
+} from "../core/shortcuts";
 import { ConfigStore } from "./configStore";
 import { AutostartManager } from "./autostart";
 import { AppUpdateService } from "./appUpdater";
@@ -117,18 +121,16 @@ if (!gotLock) {
   } | null = null;
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
-  const turnBuffer = new TurnBuffer(
-    () => Math.max(0, Number(config.turn_idle_minutes) || 0) * 60_000,
-  );
+  const turnBuffer = new TurnBuffer();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
   } : {});
   const pttShortcut = new ShortcutBinding(config.hotkey);
-  const repasteShortcut = new ShortcutBinding(config.repaste_hotkey, true);
-  const commitShortcut = new ShortcutBinding(config.commit_hotkey, true);
-  const scratchShortcut = new ShortcutBinding(config.scratch_hotkey, true);
-  const discardShortcut = new ShortcutBinding(config.discard_hotkey, true);
+  const repasteShortcut = new ActionShortcutBinding(config.repaste_hotkey, "release", true);
+  const commitShortcut = new ActionShortcutBinding(config.commit_hotkey, "release", true);
+  const scratchShortcut = new ActionShortcutBinding(config.scratch_hotkey, "trigger", true);
+  const discardShortcut = new ActionShortcutBinding(config.discard_hotkey, "trigger", true);
   let overlayDisplayId: number | undefined;
   let turnDraftUserPositioned = false;
   let pendingOverlayRevision: number | undefined;
@@ -610,11 +612,11 @@ if (!gotLock) {
     );
     const runner = new DictationJobRunner({
       transcriber: transcriberClient,
-      async prepareText(transcript, snapshot) {
+      async prepareText(transcript, snapshot, contextSource) {
         return await prepareText(transcript, snapshot, {
           acquireContext: async () => {
-            if (isStackDictationMode(snapshot.dictation_mode)) {
-              return { before: turnBuffer.contextBefore(), after: null };
+            if (contextSource === "isolated") {
+              return { before: null, after: null };
             }
             return await insertionMemory.acquire({
               getCaretContext: async (before, after) => (
@@ -806,7 +808,17 @@ if (!gotLock) {
       }
       const next = applySettingsPatch(config, value);
       await store.save(next);
-      config = next;
+      if (previousMode !== next.dictation_mode && pipeline !== null) {
+        await pipeline.enqueueTransition(() => {
+          config = next;
+          if (previousMode === "stack" && next.dictation_mode === "instant") {
+            turnBuffer.clear();
+            publishTurnDraft();
+          }
+        });
+      } else {
+        config = next;
+      }
       if (config.hotkey !== previousHotkey
         || config.repaste_hotkey !== previousRepaste
         || config.commit_hotkey !== previousCommit
@@ -814,10 +826,6 @@ if (!gotLock) {
         || config.discard_hotkey !== previousDiscard) {
         gestures.cancel();
         configureShortcuts();
-      }
-      if (previousMode === "stack" && config.dictation_mode === "instant") {
-        turnBuffer.clear();
-        publishTurnDraft();
       }
       configureLocalResidency();
       updateTrayTooltip();

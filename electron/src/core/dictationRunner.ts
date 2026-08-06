@@ -32,7 +32,11 @@ export interface DictationFeedback {
 
 export interface DictationRunnerDependencies {
   transcriber: TranscriberPort;
-  prepareText(text: string, config: UndertoneConfig): Promise<string>;
+  prepareText(
+    text: string,
+    config: UndertoneConfig,
+    context: "insertion" | "isolated",
+  ): Promise<string>;
   restoreTarget(target: DictationTarget | null): Promise<boolean>;
   getForegroundWindow(): Promise<string>;
   paster: PasterPort;
@@ -78,17 +82,16 @@ export class DictationJobRunner {
     const raw = applyCorrections(transcript, corrections);
 
     if (isStackDictationMode(config.dictation_mode)) {
-      const final = await this.dependencies.prepareText(transcript, config);
-      const stacked = this.dependencies.turnBuffer.append(raw, final);
+      const stacked = await this.appendToTurn(transcript, config);
       feedback.message(
-        turnStatusFeedback(stacked.fragmentCount, stacked.lastFragment),
+        turnStatusFeedback(stacked.fragmentCount, transcript),
         "normal",
       );
       return;
     }
 
     let refocused = await this.dependencies.restoreTarget(target);
-    const final = await this.dependencies.prepareText(transcript, config);
+    const final = await this.dependencies.prepareText(transcript, config, "insertion");
     if (refocused) refocused = await this.dependencies.restoreTarget(target);
     const historyRaw = raw === final ? null : raw;
     if (!refocused) {
@@ -113,10 +116,19 @@ export class DictationJobRunner {
     config: UndertoneConfig,
     feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
-    const text = this.dependencies.turnBuffer.peekText();
+    let text = this.dependencies.turnBuffer.peekText();
     if (text === null) {
       feedback.message("Nothing to commit", "warning");
       return;
+    }
+    if (config.stack_cleanup_strategy !== "live-full") {
+      const rawTurn = this.dependencies.turnBuffer.rawText();
+      if (rawTurn === null) {
+        feedback.message("Nothing to commit", "warning");
+        return;
+      }
+      text = await this.dependencies.prepareText(rawTurn, config, "isolated");
+      this.dependencies.turnBuffer.replaceText(text);
     }
 
     const inputGeneration = this.dependencies.insertionMemory.captureGeneration();
@@ -138,6 +150,22 @@ export class DictationJobRunner {
     const foreground = await this.dependencies.getForegroundWindow();
     this.dependencies.insertionMemory.registerPaste(foreground, text, inputGeneration);
     feedback.dismiss();
+  }
+
+  private async appendToTurn(
+    transcript: string,
+    config: UndertoneConfig,
+  ): Promise<ReturnType<TurnBuffer["append"]>> {
+    const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
+    const preparationConfig = config.stack_cleanup_strategy === "commit-full"
+      ? { ...config, ai_cleanup: false }
+      : config;
+    const snapshot = await this.dependencies.prepareText(
+      rawTurn,
+      preparationConfig,
+      "isolated",
+    );
+    return this.dependencies.turnBuffer.append(transcript, snapshot);
   }
 
   discard(feedback: DictationFeedback = this.dependencies.feedback): void {

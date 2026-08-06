@@ -92,6 +92,33 @@ describe("dictation pipeline queue", () => {
     expect(languages).toEqual(["en", "fr"]);
   });
 
+  it("applies a transition between earlier and later dictation jobs", async () => {
+    const config = normalizeConfig({ dictation_mode: "stack" });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const modes: string[] = [];
+    const handlers: PipelineHandlers = {
+      async dictate(_wav, _target, snapshot) {
+        modes.push(snapshot.dictation_mode);
+        if (modes.length === 1) await firstGate;
+      },
+      async repaste() {},
+      async commit() {},
+      async discard() {},
+      async scratch() {},
+    };
+    const queue = new DictationPipelineQueue(() => config, handlers);
+    const first = queue.enqueueRetry(Uint8Array.of(1));
+    const transition = queue.enqueueTransition(() => {
+      config.dictation_mode = "instant";
+    });
+    const second = queue.enqueueRetry(Uint8Array.of(2));
+    await tick();
+    releaseFirst!();
+    await Promise.all([first, transition, second]);
+    expect(modes).toEqual(["stack", "instant"]);
+  });
+
   it("rejects a failed job without stalling later work", async () => {
     const events: string[] = [];
     const queue = new DictationPipelineQueue(

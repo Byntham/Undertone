@@ -29,7 +29,8 @@ type PipelineJob =
   | { type: "repaste"; text: string }
   | { type: "commit" }
   | { type: "discard" }
-  | { type: "scratch" };
+  | { type: "scratch" }
+  | { type: "transition"; apply: () => void };
 
 interface QueuedJob {
   job: PipelineJob;
@@ -79,6 +80,11 @@ export class DictationPipelineQueue {
     return this.enqueue({ type: "scratch" });
   }
 
+  /** Apply a synchronous state transition after all earlier jobs finish. */
+  enqueueTransition(apply: () => void): Promise<void> {
+    return this.enqueue({ type: "transition", apply });
+  }
+
   private async enqueue(job: PipelineJob): Promise<void> {
     return await new Promise<void>((resolve, reject) => {
       this.queue.push({ job, resolve, reject });
@@ -92,25 +98,29 @@ export class DictationPipelineQueue {
     try {
       while (this.queue.length > 0) {
         const queued = this.queue.shift()!;
-        const config = normalizeConfig(this.configSource());
         try {
-          if (queued.job.type === "dictate") {
-            await this.handlers.dictate(
-              queued.job.wav,
-              queued.job.target,
-              config,
-              queued.job.overlayRevision,
-            );
-          } else if (queued.job.type === "retry") {
-            await this.handlers.dictate(queued.job.wav, null, config, undefined);
-          } else if (queued.job.type === "repaste") {
-            await this.handlers.repaste(queued.job.text, config);
-          } else if (queued.job.type === "commit") {
-            await this.handlers.commit(config);
-          } else if (queued.job.type === "discard") {
-            await this.handlers.discard();
+          if (queued.job.type === "transition") {
+            queued.job.apply();
           } else {
-            await this.handlers.scratch();
+            const config = normalizeConfig(this.configSource());
+            if (queued.job.type === "dictate") {
+              await this.handlers.dictate(
+                queued.job.wav,
+                queued.job.target,
+                config,
+                queued.job.overlayRevision,
+              );
+            } else if (queued.job.type === "retry") {
+              await this.handlers.dictate(queued.job.wav, null, config, undefined);
+            } else if (queued.job.type === "repaste") {
+              await this.handlers.repaste(queued.job.text, config);
+            } else if (queued.job.type === "commit") {
+              await this.handlers.commit(config);
+            } else if (queued.job.type === "discard") {
+              await this.handlers.discard();
+            } else {
+              await this.handlers.scratch();
+            }
           }
           queued.resolve();
         } catch (error) {

@@ -12,7 +12,11 @@ import type {
   LocalEngineSnapshot,
   SettingsSnapshot,
 } from "../shared/settings";
-import { normalizeShortcut } from "./shortcuts";
+import {
+  normalizeReleaseShortcut,
+  normalizeShortcut,
+  normalizeTriggerShortcut,
+} from "./shortcuts";
 
 const PATCH_FIELDS = new Set([
   "language",
@@ -27,7 +31,7 @@ const PATCH_FIELDS = new Set([
   "scratchHotkey",
   "discardHotkey",
   "dictationMode",
-  "turnIdleMinutes",
+  "stackCleanupStrategy",
   "inputDevice",
   "provider",
   "cleanupProvider",
@@ -73,7 +77,7 @@ export function settingsSnapshot(
     scratchHotkey: config.scratch_hotkey,
     discardHotkey: config.discard_hotkey,
     dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
-    turnIdleMinutes: config.turn_idle_minutes,
+    stackCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
     microphones: [...microphones],
     appVersion,
@@ -151,28 +155,28 @@ export function applySettingsPatch(
     if (typeof value.repasteHotkey !== "string") {
       throw new Error("repasteHotkey must be a string");
     }
-    next.repaste_hotkey = normalizeShortcut(value.repasteHotkey, true);
+    next.repaste_hotkey = normalizeReleaseShortcut(value.repasteHotkey, true);
     shortcutChanged = true;
   }
   if (value.commitHotkey !== undefined) {
     if (typeof value.commitHotkey !== "string") {
       throw new Error("commitHotkey must be a string");
     }
-    next.commit_hotkey = normalizeShortcut(value.commitHotkey, true);
+    next.commit_hotkey = normalizeReleaseShortcut(value.commitHotkey, true);
     shortcutChanged = true;
   }
   if (value.scratchHotkey !== undefined) {
     if (typeof value.scratchHotkey !== "string") {
       throw new Error("scratchHotkey must be a string");
     }
-    next.scratch_hotkey = normalizeShortcut(value.scratchHotkey, true);
+    next.scratch_hotkey = normalizeTriggerShortcut(value.scratchHotkey, true);
     shortcutChanged = true;
   }
   if (value.discardHotkey !== undefined) {
     if (typeof value.discardHotkey !== "string") {
       throw new Error("discardHotkey must be a string");
     }
-    next.discard_hotkey = normalizeShortcut(value.discardHotkey, true);
+    next.discard_hotkey = normalizeTriggerShortcut(value.discardHotkey, true);
     shortcutChanged = true;
   }
   if (shortcutChanged) validateDistinctShortcuts(next);
@@ -182,12 +186,12 @@ export function applySettingsPatch(
     }
     next.dictation_mode = value.dictationMode;
   }
-  if (value.turnIdleMinutes !== undefined) {
-    if (typeof value.turnIdleMinutes !== "number"
-      || ![0, 5, 15, 30, 60].includes(value.turnIdleMinutes)) {
-      throw new Error("turnIdleMinutes is invalid");
+  if (value.stackCleanupStrategy !== undefined) {
+    if (value.stackCleanupStrategy !== "live-full"
+      && value.stackCleanupStrategy !== "commit-full") {
+      throw new Error("stackCleanupStrategy is invalid");
     }
-    next.turn_idle_minutes = value.turnIdleMinutes;
+    next.stack_cleanup_strategy = value.stackCleanupStrategy;
   }
   if (value.inputDevice !== undefined) {
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);

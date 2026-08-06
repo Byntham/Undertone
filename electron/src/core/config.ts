@@ -1,5 +1,6 @@
 export type ProviderId = "xai" | "openai" | "openrouter" | "local";
 export type DictationMode = "stack" | "instant";
+export type StackCleanupStrategy = "live-full" | "commit-full";
 export type ConfigRecord = Record<string, unknown>;
 
 export interface UndertoneConfig extends ConfigRecord {
@@ -25,7 +26,7 @@ export interface UndertoneConfig extends ConfigRecord {
   scratch_hotkey: string;
   discard_hotkey: string;
   dictation_mode: DictationMode;
-  turn_idle_minutes: number;
+  stack_cleanup_strategy: StackCleanupStrategy;
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
@@ -56,7 +57,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   scratch_hotkey: "ctrl+alt+backspace",
   discard_hotkey: "ctrl+alt+shift+backspace",
   dictation_mode: "stack",
-  turn_idle_minutes: 15,
+  stack_cleanup_strategy: "live-full",
   local_loaded: false,
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
@@ -83,6 +84,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
     config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
   }
+  if (config.stack_cleanup_strategy !== "live-full"
+    && config.stack_cleanup_strategy !== "commit-full") {
+    config.stack_cleanup_strategy = DEFAULT_CONFIG.stack_cleanup_strategy;
+  }
   if (typeof config.commit_hotkey !== "string") {
     config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;
   }
@@ -91,11 +96,6 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   }
   if (typeof config.discard_hotkey !== "string") {
     config.discard_hotkey = DEFAULT_CONFIG.discard_hotkey;
-  }
-  if (typeof config.turn_idle_minutes !== "number"
-    || !Number.isFinite(config.turn_idle_minutes)
-    || config.turn_idle_minutes < 0) {
-    config.turn_idle_minutes = DEFAULT_CONFIG.turn_idle_minutes;
   }
   return config as UndertoneConfig;
 }

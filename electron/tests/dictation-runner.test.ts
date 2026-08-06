@@ -43,7 +43,7 @@ describe("dictation job runner", () => {
     expect(state.dismissed).toBe(1);
   });
 
-  it("stacks fragments without pasting in stack mode", async () => {
+  it("regenerates the whole turn after each fragment", async () => {
     const { dependencies, state } = harness();
     const runner = new DictationJobRunner(dependencies);
     await runner.run(WAV, { window: "42", executable: "editor.exe" }, normalizeConfig({
@@ -54,19 +54,46 @@ describe("dictation job runner", () => {
     }));
     expect(state.pasted).toEqual([]);
     expect(state.restoreCalls).toBe(0);
-    expect(dependencies.turnBuffer.peekText()).toBe("Hello world.Hello world.");
+    expect(dependencies.turnBuffer.peekText()).toBe("Hello world. hello world.");
+    expect(state.preparations).toEqual([
+      { text: "hello world.", aiCleanup: true, context: "isolated" },
+      { text: "hello world. hello world.", aiCleanup: true, context: "isolated" },
+    ]);
     expect(dependencies.history.snapshot()).toEqual([]);
     expect(state.messages.map((entry) => entry.text)).toEqual([
-      "Turn · 1 · Hello world.",
-      "Turn · 2 · Hello world.",
+      "Turn · 1 · hello world.",
+      "Turn · 2 · hello world.",
     ]);
     expect(state.dismissed).toBe(0);
+  });
+
+  it("uses a deterministic live preview and cleans the whole turn on commit", async () => {
+    const { dependencies, state } = harness();
+    const runner = new DictationJobRunner(dependencies);
+    const config = normalizeConfig({
+      dictation_mode: "stack",
+      stack_cleanup_strategy: "commit-full",
+    });
+    await runner.run(WAV, null, config);
+    await runner.run(WAV, null, config);
+    expect(state.preparations).toEqual([
+      { text: "hello world.", aiCleanup: false, context: "isolated" },
+      { text: "hello world. hello world.", aiCleanup: false, context: "isolated" },
+    ]);
+
+    await runner.commit(config);
+    expect(state.preparations.at(-1)).toEqual({
+      text: "hello world. hello world.",
+      aiCleanup: true,
+      context: "isolated",
+    });
+    expect(state.pasted.at(-1)?.text).toBe("Hello world. hello world.");
   });
 
   it("scratches the last stacked fragment", async () => {
     const { dependencies, state } = harness();
     dependencies.turnBuffer.append("Hello world.", "Hello world.");
-    dependencies.turnBuffer.append(" More.", " More.");
+    dependencies.turnBuffer.append("More.", "Hello world. More.");
     const runner = new DictationJobRunner(dependencies);
     runner.scratchLast();
     expect(dependencies.turnBuffer.peekText()).toBe("Hello world.");
@@ -191,6 +218,11 @@ function harness(): {
     dismissed: number;
     messages: Array<{ text: string; kind: "normal" | "warning" | "error" | undefined }>;
     transcribeOptions: Record<string, unknown> | null;
+    preparations: Array<{
+      text: string;
+      aiCleanup: boolean;
+      context: "insertion" | "isolated";
+    }>;
   };
 } {
   const state = {
@@ -203,6 +235,11 @@ function harness(): {
       kind: "normal" | "warning" | "error" | undefined;
     }>,
     transcribeOptions: null as Record<string, unknown> | null,
+    preparations: [] as Array<{
+      text: string;
+      aiCleanup: boolean;
+      context: "insertion" | "isolated";
+    }>,
   };
   return {
     state,
@@ -213,8 +250,12 @@ function harness(): {
           return "hello world.";
         },
       },
-      async prepareText() {
-        return "Hello world.";
+      async prepareText(text, config, context) {
+        state.preparations.push({ text, aiCleanup: config.ai_cleanup, context });
+        const prepared = text.length > 0
+          ? `${text[0]!.toUpperCase()}${text.slice(1)}`
+          : text;
+        return prepared;
       },
       async restoreTarget() {
         state.restoreCalls += 1;
@@ -233,7 +274,7 @@ function harness(): {
       },
       history: new SessionHistory(),
       insertionMemory: new InsertionMemory(() => 100),
-      turnBuffer: new TurnBuffer(() => 60_000, () => 100),
+      turnBuffer: new TurnBuffer(),
       feedback: {
         message(text, kind) {
           state.messages.push({ text, kind });

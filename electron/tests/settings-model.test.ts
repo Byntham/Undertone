@@ -19,7 +19,7 @@ describe("settings model", () => {
       scratchHotkey: "ctrl+alt+backspace",
       discardHotkey: "ctrl+alt+shift+backspace",
       dictationMode: "stack",
-      turnIdleMinutes: 15,
+      stackCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
       appVersion: "1.3.0",
@@ -128,6 +128,7 @@ describe("settings model", () => {
       cleanupTimeout: 4.5,
       cleanupPrompt: " custom prompt ",
       cleanupPrompts: { Fast: "multi\nline prompt" },
+      stackCleanupStrategy: "commit-full",
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -144,6 +145,7 @@ describe("settings model", () => {
     expect(next.cleanup_timeout).toBe(4.5);
     expect(next.cleanup_prompt).toBe("custom prompt");
     expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });
+    expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(config.language).toBe("en");
   });
 
@@ -152,11 +154,13 @@ describe("settings model", () => {
     const next = applySettingsPatch(config, {
       hotkey: " Control + Shift + A ",
       repasteHotkey: "Alt+V",
+      commitHotkey: "ctrl+alt",
     });
     expect(next.hotkey).toBe("ctrl+shift+a");
     expect(next.repaste_hotkey).toBe("alt+v");
+    expect(next.commit_hotkey).toBe("ctrl+alt");
     expect(() => applySettingsPatch(config, {
-      repasteHotkey: "right ctrl",
+      repasteHotkey: "ctrl+alt+enter",
     })).toThrow(/already assigned/u);
   });
 
@@ -174,6 +178,14 @@ describe("settings model", () => {
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { cleanupTimeout: 31 }))
       .toThrow(/between/u);
+    expect(() => applySettingsPatch(config, { scratchHotkey: "ctrl+alt" }))
+      .toThrow(/one non-modifier/u);
+    expect(() => applySettingsPatch(config, { discardHotkey: "ctrl+k+s" }))
+      .toThrow(/one non-modifier/u);
+    expect(() => applySettingsPatch(config, { commitHotkey: "ctrl+k+s" }))
+      .toThrow(/at most one/u);
+    expect(() => applySettingsPatch(config, { stackCleanupStrategy: "sometimes" }))
+      .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { corrections: { heard: "" } }))

@@ -9,6 +9,9 @@ export type ShortcutSetting =
   | "scratchHotkey"
   | "discardHotkey";
 export type DictationModeSetting = "stack" | "instant";
+export type StackCleanupStrategySetting =
+  | "live-full"
+  | "commit-full";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
@@ -54,7 +57,7 @@ export interface SettingsSnapshot {
   scratchHotkey: string;
   discardHotkey: string;
   dictationMode: DictationModeSetting;
-  turnIdleMinutes: number;
+  stackCleanupStrategy: StackCleanupStrategySetting;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
@@ -98,7 +101,7 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   dictationMode?: DictationModeSetting;
-  turnIdleMinutes?: number;
+  stackCleanupStrategy?: StackCleanupStrategySetting;
   inputDevice?: string;
   provider?: SettingsProviderId;
   cleanupProvider?: SettingsProviderId;
