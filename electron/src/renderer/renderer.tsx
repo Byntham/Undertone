@@ -1070,7 +1070,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     repasteHotkey: "ctrl+alt+v",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
-    appVersion: "1.7.0",
+    appVersion: "1.8.0",
     preview: true,
     provider: "openai",
     cleanupProvider: "openai",
@@ -1111,7 +1111,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
   const previewUpdate: AppUpdateSnapshot = {
     supported: false,
     phase: "unavailable",
-    currentVersion: "1.7.0",
+    currentVersion: "1.8.0",
     availableVersion: null,
     progress: null,
     message: "Update checks are available in the installed app.",
