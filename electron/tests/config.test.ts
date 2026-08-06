@@ -38,6 +38,11 @@ describe("configuration", () => {
     expect(second.provider).toBe("local");
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
+    expect(second.hotkey).toBe("left ctrl+left windows");
+    expect(second.repaste_hotkey).toBe("left alt+v");
+    expect(second.commit_hotkey).toBe("left ctrl+left alt");
+    expect(second.scratch_hotkey).toBe("left ctrl+left alt+backspace");
+    expect(second.discard_hotkey).toBe("ctrl+alt+shift+backspace");
     first.vocabulary.push("Undertone");
     first.corrections.test = "value";
     expect(second.vocabulary).toEqual([]);

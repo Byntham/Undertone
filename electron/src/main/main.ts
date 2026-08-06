@@ -21,6 +21,7 @@ import { CleanupClient } from "../core/cleanup";
 import { encodePcm16Wav } from "../core/audio";
 import { ClipboardPaster } from "../core/clipboardPaster";
 import {
+  DEFAULT_CONFIG,
   modelOverride,
   normalizeConfig,
   providerKey,
@@ -344,8 +345,11 @@ if (!gotLock || devQuitRequest) {
     try {
       pttShortcut.set(config.hotkey);
     } catch {
-      pttShortcut.set("right ctrl");
-      showFeedback("The saved push-to-talk shortcut is unsupported; using Right Ctrl", "warning");
+      pttShortcut.set(DEFAULT_CONFIG.hotkey);
+      showFeedback(
+        `The saved push-to-talk shortcut is unsupported; using ${DEFAULT_CONFIG.hotkey}`,
+        "warning",
+      );
     }
     try {
       repasteShortcut.set(config.repaste_hotkey, true);

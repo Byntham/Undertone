@@ -177,10 +177,10 @@ Instant mode preserves current muscle memory for search boxes and one-liners.
 
 | Action | Proposed default | Notes |
 |--------|------------------|-------|
-| Dictate fragment | existing `hotkey` (PTT) | Unchanged |
-| Commit turn | new `commit_hotkey`, default `left ctrl+left alt+enter` | Must not contain the PTT chord |
-| Discard turn | new `discard_hotkey` or tray-only in v1 | Tray-only is OK for v1 to reduce binding sprawl |
-| Repaste last **committed** | existing `repaste_hotkey` | Unchanged; does not commit open turn |
+| Dictate fragment | `left ctrl+left windows` | Hold while speaking |
+| Commit turn | `left ctrl+left alt` | Must not contain the PTT chord |
+| Discard turn | `ctrl+alt+shift+backspace` | Clears the open turn without pasting |
+| Repaste last **committed** | `left alt+v` | Does not commit an open turn |
 | Scratch last fragment | `left ctrl+left alt+backspace` | Hold modifiers and tap the trigger repeatedly |
 
 Commit must work when the agent field is focused; it must **not** require focusing Undertone.

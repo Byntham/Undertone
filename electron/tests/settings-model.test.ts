@@ -13,11 +13,11 @@ describe("settings model", () => {
       restoreClipboard: true,
       soundCues: true,
       startWithWindows: false,
-      hotkey: "right ctrl",
-      repasteHotkey: "left ctrl+left alt+v",
-      commitHotkey: "left ctrl+left alt+enter",
+      hotkey: "left ctrl+left windows",
+      repasteHotkey: "left alt+v",
+      commitHotkey: "left ctrl+left alt",
       scratchHotkey: "left ctrl+left alt+backspace",
-      discardHotkey: "left ctrl+left alt+left shift+backspace",
+      discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
       dictationMode: "stack",
       stackCleanupStrategy: "live-full",
@@ -164,7 +164,7 @@ describe("settings model", () => {
     expect(next.repaste_hotkey).toBe("alt+v");
     expect(next.commit_hotkey).toBe("ctrl+alt");
     expect(() => applySettingsPatch(config, {
-      repasteHotkey: "left ctrl+left alt+enter",
+      repasteHotkey: "left ctrl+left alt",
     })).toThrow(/already assigned/u);
   });
 
@@ -174,7 +174,7 @@ describe("settings model", () => {
       hotkey: "left ctrl",
     })).toThrow(/Push-to-talk overlaps/u);
     expect(() => applySettingsPatch(config, {
-      commitHotkey: "ctrl+alt+enter",
+      commitHotkey: "left ctrl+left windows+enter",
     })).toThrow(/Push-to-talk overlaps/u);
     expect(() => applySettingsPatch(config, {
       scratchHotkey: "left ctrl+left alt+backspace",
@@ -184,6 +184,7 @@ describe("settings model", () => {
 
   it("warns about legacy PTT conflicts and permits repairing them one at a time", () => {
     const legacy = normalizeConfig({
+      hotkey: "right ctrl",
       repaste_hotkey: "ctrl+alt+v",
       commit_hotkey: "ctrl+alt+enter",
       scratch_hotkey: "ctrl+alt+backspace",
