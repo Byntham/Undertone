@@ -242,10 +242,14 @@ function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: 
 function modelUpdate(
   value: unknown,
   name: string,
-): { provider: ProviderId; value: string } {
+): { provider: CloudProviderId; value: string } {
   exactObject(value, ["provider", "value"], name);
+  if (typeof value.provider !== "string"
+    || !CLOUD_PROVIDERS.has(value.provider as CloudProviderId)) {
+    throw new Error(`${name}.provider must be a cloud provider`);
+  }
   return {
-    provider: providerField(value.provider, `${name}.provider`),
+    provider: value.provider as CloudProviderId,
     value: boundedSingleLine(value.value, `${name}.value`, 512),
   };
 }
@@ -274,7 +278,7 @@ function exactObject(
 
 function setModelOverride(
   models: Record<string, string>,
-  provider: ProviderId,
+  provider: CloudProviderId,
   value: string,
 ): void {
   if (value.length === 0) delete models[provider];

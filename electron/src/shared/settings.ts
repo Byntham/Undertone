@@ -6,6 +6,7 @@ export type ShortcutSetting = "hotkey" | "repasteHotkey";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
+export type ProviderModelKind = ProviderTestKind;
 export type AppUpdatePhase =
   | "unavailable"
   | "idle"
@@ -33,6 +34,19 @@ export interface LocalEngineSnapshot {
   installPhase: string;
   installFraction: number;
   installBytes: number;
+}
+
+export interface ProviderModelOption {
+  id: string;
+  name: string;
+}
+
+export interface ProviderModelCatalogSnapshot {
+  provider: CloudProviderId;
+  kind: ProviderModelKind;
+  selectable: boolean;
+  defaultModel: string | null;
+  models: ProviderModelOption[];
 }
 
 export interface SettingsSnapshot {
@@ -87,8 +101,8 @@ export interface SettingsPatch {
   provider?: SettingsProviderId;
   cleanupProvider?: SettingsProviderId;
   providerKey?: { provider: CloudProviderId; value: string };
-  sttModel?: { provider: SettingsProviderId; value: string };
-  cleanupModel?: { provider: SettingsProviderId; value: string };
+  sttModel?: { provider: CloudProviderId; value: string };
+  cleanupModel?: { provider: CloudProviderId; value: string };
   localLoaded?: boolean;
   localIdleMinutes?: number;
   sttVocabHints?: boolean;
@@ -108,6 +122,11 @@ export interface SettingsApi {
   historyAction(id: number, action: HistoryAction): Promise<void>;
   systemAction(action: SystemAction): Promise<void>;
   providerTest(kind: ProviderTestKind): Promise<string>;
+  providerModels(
+    provider: CloudProviderId,
+    kind: ProviderModelKind,
+    refresh?: boolean,
+  ): Promise<ProviderModelCatalogSnapshot>;
   microphoneTest(): Promise<number>;
   updateStatus(): Promise<AppUpdateSnapshot>;
   checkForUpdates(): Promise<AppUpdateSnapshot>;

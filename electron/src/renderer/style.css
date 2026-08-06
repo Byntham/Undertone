@@ -100,7 +100,7 @@ textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid #
 .keyHead span { color: #7d8693; font-size: 11px; }
 .keyHead span[data-configured="true"] { color: #98c379; }
 .keyEntry, .modelEntry { display: flex; gap: 8px; }
-.keyEntry input, .modelEntry input { flex: 1 1 auto; }
+.keyEntry input, .modelEntry select { flex: 1 1 auto; min-width: 0; }
 .smallButton { flex: 0 0 auto; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 11px; color: #cbd1da; background: #252a31; cursor: pointer; }
 .smallButton:hover { border-color: #626b78; background: #303640; }
 .smallButton.accent { border-color: #4b8dbc; color: white; background: #3f7faf; }
@@ -120,6 +120,9 @@ textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid #
 .advancedGroup > h3 { margin: 0 0 9px; color: #aeb5c0; font-size: 12px; font-weight: 600; }
 .modelControl label { display: block; margin-bottom: 7px; color: #d7dce4; font-size: 13px; font-weight: 600; }
 .modelControl small { display: block; margin-top: 6px; color: #7d8693; }
+.modelControl .fieldError { color: #e5a0a6; }
+.modelCustomInput { width: 100%; margin-top: 8px; }
+.modelManaged strong { display: block; color: #d7dce4; font-size: 13px; }
 .modelControl textarea { margin-top: 3px; }
 .promptActions { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 8px; }
 .promptHead { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 7px; }

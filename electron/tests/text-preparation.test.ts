@@ -14,7 +14,7 @@ describe("text preparation pipeline", () => {
     const dependencies = makeDependencies();
     dependencies.acquireContext = async () => ({ before: "I like ", after: "apples." });
     expect(await prepareText("red.", normalizeConfig({ ai_cleanup: false }), dependencies))
-      .toBe("red ");
+      .toEqual({ text: "red ", cleanupFailed: false });
   });
 
   it("sends only left context to cleanup and keeps the right seam local", async () => {
@@ -33,7 +33,7 @@ describe("text preparation pipeline", () => {
       return "hello.";
     };
     expect(await prepareText("hello", normalizeConfig({ ai_cleanup: true }), dependencies))
-      .toBe("hello ");
+      .toEqual({ text: "hello ", cleanupFailed: false });
     expect(captured).toMatchObject({
       transcript: "hello",
       context: "I already said ",
@@ -51,7 +51,7 @@ describe("text preparation pipeline", () => {
       "  hello world.  ",
       normalizeConfig({ ai_cleanup: true }),
       dependencies,
-    )).toBe("Hello world.");
+    )).toEqual({ text: "Hello world.", cleanupFailed: true });
   });
 
   it("does not query caret context when smart formatting is disabled", async () => {
@@ -67,7 +67,7 @@ describe("text preparation pipeline", () => {
         corrections: { "under tone": "Undertone" },
       }),
       dependencies,
-    )).toBe("Undertone works.");
+    )).toEqual({ text: "Undertone works.", cleanupFailed: false });
   });
 });
 
