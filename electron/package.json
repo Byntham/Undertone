@@ -1,18 +1,19 @@
 {
   "name": "undertone-electron",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
   "description": "Push-to-talk dictation for Windows",
+  "undertoneDevProtocol": 1,
   "main": "dist/main/main/main.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
+    "postinstall": "node scripts/stamp-dependencies.mjs",
     "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",
     "test": "vitest run --config vitest.config.mts",
     "start": "npm run build && node scripts/run-electron.mjs .",
     "package:dir": "npm run build && electron-builder --win --x64 --dir",
-    "package:portable": "npm run build && electron-builder --win portable --x64",
     "package:nsis": "npm run build && electron-builder --win nsis --x64",
     "package": "npm run build && electron-builder --win --x64",
     "release": "npm run build && electron-builder --win --x64 --publish always",
@@ -76,8 +77,7 @@
         "releaseType": "release"
       },
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ]
     },
     "nsis": {
@@ -86,9 +86,6 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always"
-    },
-    "portable": {
-      "artifactName": "Undertone-${version}-${arch}-portable.${ext}"
     }
   },
   "dependencies": {

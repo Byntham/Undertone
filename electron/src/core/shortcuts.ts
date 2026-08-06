@@ -17,6 +17,12 @@ interface ShortcutPart {
   modifier: boolean;
 }
 
+export interface PttGestureSink {
+  press(): void;
+  release(): void;
+  cancel(): unknown;
+}
+
 const NAMED_KEYS: Readonly<Record<string, readonly number[]>> = {
   ctrl: [0x11, 0xa2, 0xa3],
   "left ctrl": [0xa2],
@@ -267,6 +273,52 @@ export function normalizeReleaseShortcut(shortcut: string, allowEmpty = false): 
   return parseReleaseShortcut(shortcut, allowEmpty).map((part) => part.name).join("+");
 }
 
+/** True when completing the action can also activate the PTT binding. */
+export function pttActionShortcutsOverlap(ptt: string, action: string): boolean {
+  const pttVariants = physicalVariants(parseShortcut(ptt, false));
+  const actionVariants = physicalVariants(parseShortcut(action, true));
+  return actionVariants.some((actionVariant) => pttVariants.some((pttVariant) => (
+    isSubset(pttVariant, actionVariant) || isSubset(actionVariant, pttVariant)
+  )));
+}
+
+/** True when two exact-modifier action bindings can fire from the same chord. */
+export function actionShortcutsOverlap(left: string, right: string): boolean {
+  const leftVariants = physicalVariants(parseShortcut(left, true));
+  const rightSignatures = new Set(
+    physicalVariants(parseShortcut(right, true)).map(variantSignature),
+  );
+  return leftVariants.some((variant) => rightSignatures.has(variantSignature(variant)));
+}
+
+/** Actions take precedence over PTT until the physical keyboard is released. */
+export class PttActionRouter {
+  private readonly down = new Set<number>();
+  private suppressPtt = false;
+
+  update(
+    event: ShortcutKeyEvent,
+    ptt: ShortcutTransition,
+    actions: readonly ShortcutTransition[],
+    gestures: PttGestureSink,
+  ): void {
+    if (event.eventType === "down") this.down.add(event.virtualKey);
+    else this.down.delete(event.virtualKey);
+    if (actions.some((action) => action.pressed)) {
+      this.suppressPtt = true;
+      gestures.cancel();
+    }
+    if (ptt.pressed && !this.suppressPtt) gestures.press();
+    if (ptt.released && !this.suppressPtt) gestures.release();
+    if (this.down.size === 0) this.suppressPtt = false;
+  }
+
+  reset(): void {
+    this.down.clear();
+    this.suppressPtt = false;
+  }
+}
+
 function keyName(virtualKey: number): string | null {
   if (virtualKey >= 0x41 && virtualKey <= 0x5a) {
     return String.fromCharCode(virtualKey).toLowerCase();
@@ -328,6 +380,26 @@ function virtualKeysForName(name: string): readonly number[] | null {
 function intersects(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
   for (const value of left) if (right.has(value)) return true;
   return false;
+}
+
+function physicalVariants(parts: readonly ShortcutPart[]): ReadonlySet<number>[] {
+  if (parts.length === 0) return [];
+  let variants: number[][] = [[]];
+  for (const part of parts) {
+    variants = variants.flatMap((variant) => (
+      [...part.virtualKeys].map((virtualKey) => [...variant, virtualKey])
+    ));
+  }
+  return variants.map((variant) => new Set(variant));
+}
+
+function isSubset(subset: ReadonlySet<number>, superset: ReadonlySet<number>): boolean {
+  for (const value of subset) if (!superset.has(value)) return false;
+  return true;
+}
+
+function variantSignature(variant: ReadonlySet<number>): string {
+  return [...variant].sort((left, right) => left - right).join("+");
 }
 
 function isModifierName(name: string): boolean {

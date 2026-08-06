@@ -13,9 +13,11 @@ import type {
   SettingsSnapshot,
 } from "../shared/settings";
 import {
+  actionShortcutsOverlap,
   normalizeReleaseShortcut,
   normalizeShortcut,
   normalizeTriggerShortcut,
+  pttActionShortcutsOverlap,
 } from "./shortcuts";
 
 const PATCH_FIELDS = new Set([
@@ -76,6 +78,7 @@ export function settingsSnapshot(
     commitHotkey: config.commit_hotkey,
     scratchHotkey: config.scratch_hotkey,
     discardHotkey: config.discard_hotkey,
+    shortcutWarning: shortcutWarning(config),
     dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
     stackCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
@@ -145,41 +148,41 @@ export function applySettingsPatch(
   if (value.startWithWindows !== undefined) {
     booleanField(value.startWithWindows, "startWithWindows");
   }
-  let shortcutChanged = false;
+  const changedShortcuts = new Set<ShortcutConfigKey>();
   if (value.hotkey !== undefined) {
     if (typeof value.hotkey !== "string") throw new Error("hotkey must be a string");
     next.hotkey = normalizeShortcut(value.hotkey);
-    shortcutChanged = true;
+    changedShortcuts.add("hotkey");
   }
   if (value.repasteHotkey !== undefined) {
     if (typeof value.repasteHotkey !== "string") {
       throw new Error("repasteHotkey must be a string");
     }
     next.repaste_hotkey = normalizeReleaseShortcut(value.repasteHotkey, true);
-    shortcutChanged = true;
+    changedShortcuts.add("repaste_hotkey");
   }
   if (value.commitHotkey !== undefined) {
     if (typeof value.commitHotkey !== "string") {
       throw new Error("commitHotkey must be a string");
     }
     next.commit_hotkey = normalizeReleaseShortcut(value.commitHotkey, true);
-    shortcutChanged = true;
+    changedShortcuts.add("commit_hotkey");
   }
   if (value.scratchHotkey !== undefined) {
     if (typeof value.scratchHotkey !== "string") {
       throw new Error("scratchHotkey must be a string");
     }
     next.scratch_hotkey = normalizeTriggerShortcut(value.scratchHotkey, true);
-    shortcutChanged = true;
+    changedShortcuts.add("scratch_hotkey");
   }
   if (value.discardHotkey !== undefined) {
     if (typeof value.discardHotkey !== "string") {
       throw new Error("discardHotkey must be a string");
     }
     next.discard_hotkey = normalizeTriggerShortcut(value.discardHotkey, true);
-    shortcutChanged = true;
+    changedShortcuts.add("discard_hotkey");
   }
-  if (shortcutChanged) validateDistinctShortcuts(next);
+  if (changedShortcuts.size > 0) validateShortcutChanges(next, changedShortcuts);
   if (value.dictationMode !== undefined) {
     if (value.dictationMode !== "stack" && value.dictationMode !== "instant") {
       throw new Error("dictationMode must be stack or instant");
@@ -290,10 +293,14 @@ function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: 
 function modelUpdate(
   value: unknown,
   name: string,
-): { provider: ProviderId; value: string } {
+): { provider: CloudProviderId; value: string } {
   exactObject(value, ["provider", "value"], name);
+  if (typeof value.provider !== "string"
+    || !CLOUD_PROVIDERS.has(value.provider as CloudProviderId)) {
+    throw new Error(`${name}.provider must be a cloud provider`);
+  }
   return {
-    provider: providerField(value.provider, `${name}.provider`),
+    provider: value.provider as CloudProviderId,
     value: boundedSingleLine(value.value, `${name}.value`, 512),
   };
 }
@@ -322,7 +329,7 @@ function exactObject(
 
 function setModelOverride(
   models: Record<string, string>,
-  provider: ProviderId,
+  provider: CloudProviderId,
   value: string,
 ): void {
   if (value.length === 0) delete models[provider];
@@ -393,19 +400,76 @@ function textMap(
   return result;
 }
 
-function validateDistinctShortcuts(config: UndertoneConfig): void {
-  const bindings = [
-    config.hotkey,
-    config.repaste_hotkey,
-    config.commit_hotkey,
-    config.scratch_hotkey,
-    config.discard_hotkey,
-  ]
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-  if (new Set(bindings).size !== bindings.length) {
-    throw new Error("That shortcut is already assigned to another action");
+type ShortcutConfigKey = "hotkey" | ActionShortcutConfigKey;
+type ActionShortcutConfigKey =
+  | "repaste_hotkey"
+  | "commit_hotkey"
+  | "scratch_hotkey"
+  | "discard_hotkey";
+
+const ACTION_SHORTCUTS: readonly {
+  key: ActionShortcutConfigKey;
+  label: string;
+}[] = [
+  { key: "repaste_hotkey", label: "Re-paste" },
+  { key: "commit_hotkey", label: "Commit" },
+  { key: "scratch_hotkey", label: "Scratch" },
+  { key: "discard_hotkey", label: "Discard" },
+];
+
+function validateShortcutChanges(
+  config: UndertoneConfig,
+  changed: ReadonlySet<ShortcutConfigKey>,
+): void {
+  for (const action of ACTION_SHORTCUTS) {
+    if ((changed.has("hotkey") || changed.has(action.key))
+      && pttActionShortcutsOverlap(config.hotkey, config[action.key])) {
+      throw new Error(`Push-to-talk overlaps the ${action.label} shortcut`);
+    }
   }
+  for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
+    for (let right = left + 1; right < ACTION_SHORTCUTS.length; right += 1) {
+      const leftAction = ACTION_SHORTCUTS[left]!;
+      const rightAction = ACTION_SHORTCUTS[right]!;
+      if (!changed.has(leftAction.key) && !changed.has(rightAction.key)) continue;
+      if (actionShortcutsOverlap(config[leftAction.key], config[rightAction.key])) {
+        throw new Error("That shortcut is already assigned to another action");
+      }
+    }
+  }
+}
+
+function shortcutWarning(config: UndertoneConfig): string | null {
+  const pttConflicts = ACTION_SHORTCUTS.filter((action) => {
+    try {
+      return pttActionShortcutsOverlap(config.hotkey, config[action.key]);
+    } catch {
+      return false;
+    }
+  }).map((action) => action.label);
+  if (pttConflicts.length > 0) {
+    return `Push-to-talk overlaps ${joinLabels(pttConflicts)}. Change one of these shortcuts.`;
+  }
+  for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
+    for (let right = left + 1; right < ACTION_SHORTCUTS.length; right += 1) {
+      const leftAction = ACTION_SHORTCUTS[left]!;
+      const rightAction = ACTION_SHORTCUTS[right]!;
+      try {
+        if (actionShortcutsOverlap(config[leftAction.key], config[rightAction.key])) {
+          return `${leftAction.label} and ${rightAction.label} use the same shortcut.`;
+        }
+      } catch {
+        // Unsupported saved shortcuts are reported by the shortcut loader.
+      }
+    }
+  }
+  return null;
+}
+
+function joinLabels(labels: readonly string[]): string {
+  if (labels.length < 2) return labels[0] ?? "an action";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

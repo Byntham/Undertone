@@ -72,6 +72,17 @@ describe("configuration", () => {
     expect(modelOverride(config, "stt", "openai")).toBe("");
   });
 
+  it("removes obsolete local model overrides", () => {
+    const config = normalizeConfig({
+      stt_models: { local: "other.bin", openai: "whisper-1" },
+      cleanup_models: { local: "other.gguf", xai: "grok-latest" },
+    });
+    expect(config.stt_models).toEqual({ openai: "whisper-1" });
+    expect(config.cleanup_models).toEqual({ xai: "grok-latest" });
+    expect(modelOverride(config, "stt", "local")).toBe("");
+    expect(modelOverride(config, "cleanup", "local")).toBe("");
+  });
+
   it("maps provider keys without an implicit xAI fallback", () => {
     const config = {
       api_key: "X",

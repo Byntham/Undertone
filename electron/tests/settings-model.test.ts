@@ -14,10 +14,11 @@ describe("settings model", () => {
       soundCues: true,
       startWithWindows: false,
       hotkey: "right ctrl",
-      repasteHotkey: "ctrl+alt+v",
-      commitHotkey: "ctrl+alt+enter",
-      scratchHotkey: "ctrl+alt+backspace",
-      discardHotkey: "ctrl+alt+shift+backspace",
+      repasteHotkey: "left ctrl+left alt+v",
+      commitHotkey: "left ctrl+left alt+enter",
+      scratchHotkey: "left ctrl+left alt+backspace",
+      discardHotkey: "left ctrl+left alt+left shift+backspace",
+      shortcutWarning: null,
       dictationMode: "stack",
       stackCleanupStrategy: "live-full",
       inputDevice: "",
@@ -101,6 +102,9 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, {
       cleanupModel: { provider: "xai", value: "bad\nmodel" },
     })).toThrow(/invalid/u);
+    expect(() => applySettingsPatch(config, {
+      sttModel: { provider: "local", value: "other.bin" },
+    })).toThrow(/cloud provider/u);
   });
 
   it("falls back to local when a corrupt config contains unknown providers", () => {
@@ -160,8 +164,39 @@ describe("settings model", () => {
     expect(next.repaste_hotkey).toBe("alt+v");
     expect(next.commit_hotkey).toBe("ctrl+alt");
     expect(() => applySettingsPatch(config, {
-      repasteHotkey: "ctrl+alt+enter",
+      repasteHotkey: "left ctrl+left alt+enter",
     })).toThrow(/already assigned/u);
+  });
+
+  it("rejects physical PTT overlap while allowing intentional action subsets", () => {
+    const config = normalizeConfig(undefined);
+    expect(() => applySettingsPatch(config, {
+      hotkey: "left ctrl",
+    })).toThrow(/Push-to-talk overlaps/u);
+    expect(() => applySettingsPatch(config, {
+      commitHotkey: "ctrl+alt+enter",
+    })).toThrow(/Push-to-talk overlaps/u);
+    expect(() => applySettingsPatch(config, {
+      scratchHotkey: "left ctrl+left alt+backspace",
+      discardHotkey: "left ctrl+left alt+left shift+backspace",
+    })).not.toThrow();
+  });
+
+  it("warns about legacy PTT conflicts and permits repairing them one at a time", () => {
+    const legacy = normalizeConfig({
+      repaste_hotkey: "ctrl+alt+v",
+      commit_hotkey: "ctrl+alt+enter",
+      scratch_hotkey: "ctrl+alt+backspace",
+      discard_hotkey: "ctrl+alt+shift+backspace",
+    });
+    expect(settingsSnapshot(legacy, "1.8.0", true).shortcutWarning)
+      .toMatch(/Re-paste, Commit, Scratch, and Discard/u);
+    const repaired = applySettingsPatch(legacy, {
+      commitHotkey: "left ctrl+left alt+enter",
+    });
+    expect(repaired.commit_hotkey).toBe("left ctrl+left alt+enter");
+    expect(settingsSnapshot(repaired, "1.8.0", true).shortcutWarning)
+      .toMatch(/Re-paste, Scratch, and Discard/u);
   });
 
   it("rejects unknown, mistyped, or malformed patches", () => {

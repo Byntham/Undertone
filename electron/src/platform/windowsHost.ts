@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const HOST_NAME = "Undertone.WinHost.exe";
 
 interface HostReady {
@@ -40,6 +40,11 @@ interface ForegroundInfo {
   window: string;
   executable: string | null;
   title: string | null;
+}
+
+export interface SupervisedProcessStatus {
+  running: boolean;
+  exitCode: number | null;
 }
 
 export interface CaretContext {
@@ -204,12 +209,14 @@ export class WindowsHost {
     argumentsValue = "",
     workingDirectory = "",
     logFile = "",
+    environment: Readonly<Record<string, string | null>> = {},
   ): Promise<number> {
     const response = await this.request("spawnSupervised", "processStarted", {
       file,
       arguments: argumentsValue,
       workingDirectory,
       logFile,
+      environment,
     });
     if (typeof response.processId !== "number") {
       throw new Error("Windows host returned an invalid process ID");
@@ -218,13 +225,21 @@ export class WindowsHost {
   }
 
   async isSupervisedRunning(processId: number): Promise<boolean> {
+    return (await this.supervisedProcessStatus(processId)).running;
+  }
+
+  async supervisedProcessStatus(processId: number): Promise<SupervisedProcessStatus> {
     const response = await this.request("isSupervisedRunning", "processStatus", {
       processId,
     });
-    if (typeof response.running !== "boolean") {
+    if (typeof response.running !== "boolean"
+      || (response.exitCode !== null && typeof response.exitCode !== "number")) {
       throw new Error("Windows host returned an invalid process status");
     }
-    return response.running;
+    return {
+      running: response.running,
+      exitCode: response.exitCode,
+    };
   }
 
   async extractSubset(

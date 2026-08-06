@@ -42,11 +42,16 @@ export interface TextPreparationDependencies {
   cleanup(request: CleanupRequest): Promise<string | null>;
 }
 
+export interface TextPreparationResult {
+  text: string;
+  cleanupFailed: boolean;
+}
+
 export async function prepareText(
   text: string,
   config: UndertoneConfig,
   dependencies: TextPreparationDependencies,
-): Promise<string> {
+): Promise<TextPreparationResult> {
   const smart = Boolean(config.smart_formatting);
   const corrections = stringMap(config.corrections);
   const context = smart
@@ -56,6 +61,7 @@ export async function prepareText(
   const executable = identity.executable ?? "";
 
   let final: string | null = null;
+  let cleanupFailed = false;
   if (Boolean(config.ai_cleanup)) {
     const app = identity.title === null || identity.title.length === 0
       ? executable
@@ -78,13 +84,16 @@ export async function prepareText(
         modelCased: true,
         afterContext: context.after,
       });
-    }
+    } else cleanupFailed = true;
   }
   final ??= finalize(text, context.before, corrections, {
     smart,
     afterContext: context.after,
   });
-  return smart && CHAT_APPS.has(executable) ? stripChatPeriod(final) : final;
+  return {
+    text: smart && CHAT_APPS.has(executable) ? stripChatPeriod(final) : final,
+    cleanupFailed,
+  };
 }
 
 export interface ContextSource {

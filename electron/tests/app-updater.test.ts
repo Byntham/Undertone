@@ -27,7 +27,7 @@ class FakeUpdater extends EventEmitter {
 }
 
 describe("AppUpdateService", () => {
-  it("explains why preview and portable builds cannot self-update", async () => {
+  it("explains why an unavailable build cannot self-update", async () => {
     const service = new AppUpdateService({
       updater: null,
       currentVersion: "1.6.0",

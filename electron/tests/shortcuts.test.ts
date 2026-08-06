@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  actionShortcutsOverlap,
   ActionShortcutBinding,
   normalizeReleaseShortcut,
   normalizeShortcut,
   normalizeTriggerShortcut,
+  pttActionShortcutsOverlap,
+  PttActionRouter,
   ShortcutBinding,
   ShortcutCapture,
 } from "../src/core/shortcuts";
+import { TapStateMachine } from "../src/core/gestures";
 
 const down = (virtualKey: number) => ({ eventType: "down" as const, virtualKey });
 const up = (virtualKey: number) => ({ eventType: "up" as const, virtualKey });
@@ -132,6 +136,110 @@ describe("trigger shortcut binding", () => {
     expect(normalizeReleaseShortcut("right alt")).toBe("right alt");
     expect(normalizeReleaseShortcut("ctrl+alt")).toBe("ctrl+alt");
     expect(() => normalizeReleaseShortcut("ctrl+k+s")).toThrow(/at most one/u);
+  });
+});
+
+describe("shortcut collision handling", () => {
+  it("detects generic, sided, and subset PTT conflicts", () => {
+    expect(pttActionShortcutsOverlap("right ctrl", "ctrl+alt+enter")).toBe(true);
+    expect(pttActionShortcutsOverlap("ctrl", "left ctrl+left alt+enter")).toBe(true);
+    expect(pttActionShortcutsOverlap(
+      "right ctrl+space",
+      "ctrl+space+alt+enter",
+    )).toBe(true);
+    expect(pttActionShortcutsOverlap(
+      "ctrl+alt+shift+backspace",
+      "ctrl+alt+backspace",
+    )).toBe(true);
+    expect(pttActionShortcutsOverlap("right ctrl", "left ctrl+left alt+enter"))
+      .toBe(false);
+  });
+
+  it("rejects equivalent action chords but allows exact-modifier subsets", () => {
+    expect(actionShortcutsOverlap(
+      "ctrl+alt+enter",
+      "left ctrl+left alt+enter",
+    )).toBe(true);
+    expect(actionShortcutsOverlap(
+      "ctrl+alt+backspace",
+      "ctrl+alt+shift+backspace",
+    )).toBe(false);
+  });
+
+  it.each([
+    ["re-paste", "ctrl+alt+v", "release", 0x56, []],
+    ["commit", "ctrl+alt+enter", "release", 0x0d, []],
+    ["scratch", "ctrl+alt+backspace", "trigger", 0x08, []],
+    ["discard", "ctrl+alt+shift+backspace", "trigger", 0x08, [0xa0]],
+  ] as const)(
+    "lets legacy %s win without finalizing PTT audio",
+    (_name, shortcut, completeOn, trigger, extraModifiers) => {
+      const ptt = new ShortcutBinding("right ctrl");
+      const action = new ActionShortcutBinding(shortcut, completeOn);
+      const router = new PttActionRouter();
+      let audioStarts = 0;
+      let audioFinalizations = 0;
+      let audioCancellations = 0;
+      let actionCompletions = 0;
+      const gestures = new TapStateMachine({
+        onStart() { audioStarts += 1; return true; },
+        onFinish() { audioFinalizations += 1; },
+        onDiscard() { audioCancellations += 1; },
+      }, { shortTapMs: 0 });
+      const send = (event: ReturnType<typeof down> | ReturnType<typeof up>): void => {
+        const pttTransition = ptt.update(event);
+        const actionTransition = action.update(event);
+        router.update(event, pttTransition, [actionTransition], gestures);
+        if (actionTransition.completed) actionCompletions += 1;
+      };
+
+      send(down(0xa3));
+      send(down(0xa4));
+      for (const modifier of extraModifiers) send(down(modifier));
+      send(down(trigger));
+      send(up(trigger));
+      for (const modifier of [...extraModifiers].reverse()) send(up(modifier));
+      send(up(0xa4));
+      send(up(0xa3));
+
+      expect(audioStarts).toBe(1);
+      expect(audioCancellations).toBe(1);
+      expect(audioFinalizations).toBe(0);
+      expect(actionCompletions).toBe(1);
+    },
+  );
+
+  it("suppresses a legacy PTT chord that contains an action chord", () => {
+    const ptt = new ShortcutBinding("right ctrl+left alt+left shift+backspace");
+    const action = new ActionShortcutBinding("ctrl+alt+backspace", "trigger");
+    const router = new PttActionRouter();
+    let audioStarts = 0;
+    let audioFinalizations = 0;
+    let actionCompletions = 0;
+    const gestures = new TapStateMachine({
+      onStart() { audioStarts += 1; return true; },
+      onFinish() { audioFinalizations += 1; },
+      onDiscard() {},
+    }, { shortTapMs: 0 });
+    const send = (event: ReturnType<typeof down> | ReturnType<typeof up>): void => {
+      const pttTransition = ptt.update(event);
+      const actionTransition = action.update(event);
+      router.update(event, pttTransition, [actionTransition], gestures);
+      if (actionTransition.completed) actionCompletions += 1;
+    };
+
+    send(down(0xa3));
+    send(down(0xa4));
+    send(down(0x08));
+    send(down(0xa0));
+    send(up(0xa0));
+    send(up(0x08));
+    send(up(0xa4));
+    send(up(0xa3));
+
+    expect(actionCompletions).toBe(1);
+    expect(audioStarts).toBe(0);
+    expect(audioFinalizations).toBe(0);
   });
 });
 

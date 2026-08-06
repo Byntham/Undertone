@@ -52,10 +52,10 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   vocabulary: [],
   corrections: {},
   stt_vocab_hints: true,
-  repaste_hotkey: "ctrl+alt+v",
-  commit_hotkey: "ctrl+alt+enter",
-  scratch_hotkey: "ctrl+alt+backspace",
-  discard_hotkey: "ctrl+alt+shift+backspace",
+  repaste_hotkey: "left ctrl+left alt+v",
+  commit_hotkey: "left ctrl+left alt+enter",
+  scratch_hotkey: "left ctrl+left alt+backspace",
+  discard_hotkey: "left ctrl+left alt+left shift+backspace",
   dictation_mode: "stack",
   stack_cleanup_strategy: "live-full",
   local_loaded: false,
@@ -79,8 +79,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     }
   }
   cloneContainers(config);
-  ensureStringMap(config, "stt_models");
-  ensureStringMap(config, "cleanup_models");
+  const sttModels = ensureStringMap(config, "stt_models");
+  const cleanupModels = ensureStringMap(config, "cleanup_models");
+  delete sttModels.local;
+  delete cleanupModels.local;
   if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
     config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
   }

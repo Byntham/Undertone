@@ -13,13 +13,14 @@ import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http
 
 class FakeHttp implements HttpClient {
   readonly calls: Array<{ url: string; request: HttpRequest }> = [];
+  readonly responses: HttpResponse[] = [];
   response: HttpResponse = cleanupResponse("ok");
   error: Error | undefined;
 
   async post(url: string, request: HttpRequest): Promise<HttpResponse> {
     this.calls.push({ url, request });
     if (this.error !== undefined) throw this.error;
-    return this.response;
+    return this.responses.shift() ?? this.response;
   }
 }
 
@@ -53,7 +54,7 @@ describe("cleanup providers", () => {
       expect(call.url).toBe(url);
       const body = jsonBody(call.request);
       expect(body.model).toBe(DEFAULT_CLEANUP_MODELS[provider]);
-      expect(body.temperature).toBe(0);
+      expect(body).not.toHaveProperty("temperature");
       expect((body.response_format as Record<string, unknown>).type).toBe("json_schema");
       const messages = body.messages as Array<Record<string, unknown>>;
       expect(messages[0]!.content).toBe(SYSTEM_PROMPT);
@@ -111,6 +112,81 @@ describe("cleanup providers", () => {
     expect(await client.cleanup({ ...baseOptions, provider: "xai" })).toBeNull();
   });
 
+  it("reports sanitized provider failures when requested", async () => {
+    const http = new FakeHttp();
+    const client = new CleanupClient(http, new FakeLocal());
+    http.response = {
+      status: 400,
+      body: JSON.stringify({ error: { message: "Unsupported parameter: temperature" } }),
+    };
+    await expect(client.cleanup({
+      ...baseOptions,
+      provider: "openai",
+      throwOnError: true,
+    })).rejects.toThrow("Cleanup request rejected (400): Unsupported parameter: temperature");
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it("falls back to JSON mode and remembers it for that provider model", async () => {
+    const http = new FakeHttp();
+    const client = new CleanupClient(http, new FakeLocal());
+    http.responses.push(
+      responseFormatFailure("The response_format type json_schema is not supported."),
+      cleanupResponse("first result"),
+      cleanupResponse("second result"),
+    );
+
+    expect(await client.cleanup({
+      ...baseOptions,
+      provider: "openai",
+      model: "compatibility-model",
+    })).toBe("first result");
+    expect(http.calls).toHaveLength(2);
+    expect(responseFormat(http.calls[0]!.request)).toBe("json_schema");
+    expect(responseFormat(http.calls[1]!.request)).toBe("json_object");
+
+    expect(await client.cleanup({
+      ...baseOptions,
+      provider: "openai",
+      model: "compatibility-model",
+    })).toBe("second result");
+    expect(responseFormat(http.calls[2]!.request)).toBe("json_object");
+
+    expect(await client.cleanup({
+      ...baseOptions,
+      provider: "openai",
+      model: "different-model",
+    })).toBe("ok");
+    expect(responseFormat(http.calls[3]!.request)).toBe("json_schema");
+  });
+
+  it("reports the fallback rejection and only remembers successful fallbacks", async () => {
+    const http = new FakeHttp();
+    const client = new CleanupClient(http, new FakeLocal());
+    http.responses.push(
+      responseFormatFailure("The response format json_schema is unsupported."),
+      responseFormatFailure("JSON object output is not supported for this model."),
+    );
+
+    await expect(client.cleanup({
+      ...baseOptions,
+      provider: "openrouter",
+      model: "incompatible-model",
+      throwOnError: true,
+    })).rejects.toThrow(
+      "Cleanup request rejected (400): JSON object output is not supported for this model.",
+    );
+    expect(http.calls.map(({ request }) => responseFormat(request)))
+      .toEqual(["json_schema", "json_object"]);
+
+    expect(await client.cleanup({
+      ...baseOptions,
+      provider: "openrouter",
+      model: "incompatible-model",
+    })).toBe("ok");
+    expect(responseFormat(http.calls[2]!.request)).toBe("json_schema");
+  });
+
   it("sends context as quoted data and rejects echoes or implausible expansion", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
@@ -149,6 +225,18 @@ function cleanupResponse(text: string): HttpResponse {
       choices: [{ message: { content: JSON.stringify({ text }) } }],
     }),
   };
+}
+
+function responseFormatFailure(message: string): HttpResponse {
+  return {
+    status: 400,
+    body: JSON.stringify({ error: { message } }),
+  };
+}
+
+function responseFormat(request: HttpRequest): unknown {
+  const format = jsonBody(request).response_format as Record<string, unknown>;
+  return format.type;
 }
 
 function jsonBody(request: HttpRequest): Record<string, unknown> {
