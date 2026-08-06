@@ -68,8 +68,8 @@ single-writer design.
 
 Stack dictation mode owns an in-memory open turn: PTT releases append fragments;
 formatting uses the buffer tail; paste happens only on explicit commit. Instant
-mode keeps paste-per-release. See `docs/handoff/session-turn-buffer.md` for
-intent, architecture, and handoff context (major product direction).
+mode keeps paste-per-release. See `docs/design/session-turn-buffer.md` for the
+feature intent and architecture.
 
 All native-host messages are versioned JSON over local pipes. Keep Windows API
 work in the host rather than expanding renderer or main-process privileges.
