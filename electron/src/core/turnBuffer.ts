@@ -28,7 +28,6 @@ export interface TurnScratchResult {
 }
 
 export interface TurnDraftSnapshot {
-  fragments: string[];
   text: string;
   fragmentCount: number;
   charCount: number;
@@ -77,7 +76,6 @@ export class TurnBuffer {
     this.expireIfIdle();
     if (this.open === null || this.open.fragments.length === 0) return null;
     return {
-      fragments: this.open.fragments.map((fragment) => fragment.text),
       text: this.open.text,
       fragmentCount: this.open.fragments.length,
       charCount: this.open.text.length,

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <title>Undertone open turn</title>
+  </head>
+  <body>
+    <section id="draft" class="draft" aria-label="Open turn">
+      <header class="draftHeader">
+        <span id="draftMeta" class="draftMeta"></span>
+        <span class="windowActions">
+          <button id="snap" class="windowAction snap" type="button" aria-label="Move to default position" title="Move to default position">◎</button>
+          <button id="discard" class="windowAction discard" type="button" aria-label="Discard open turn" title="Discard open turn">×</button>
+        </span>
+      </header>
+      <div id="draftViewport" class="draftViewport">
+        <div id="draftText" class="draftText"></div>
+      </div>
+    </section>
+    <script type="module" src="/turn-draft/turnDraft.ts"></script>
+  </body>
+</html>

@@ -29,8 +29,10 @@ Opt-in tests:
 - `UNDERTONE_HOST_DESKTOP_E2E=1` enables the focus/caret/password/paste drive.
 - `UNDERTONE_LOCAL_RUNTIME_E2E=1` exercises installed local engines.
 - `UNDERTONE_LOCAL_INSTALLER_E2E=1` downloads and verifies pinned artifacts.
+- `npm run test:turn-draft-native` drives the real open-turn window through
+  drag, snap, discard, hide/show, and edge-resize cycles.
 
-The desktop test steals focus and is valid only while the desktop is idle.
+The desktop tests steal focus or the mouse and are valid only while the desktop is idle.
 
 ## Release rules
 
@@ -89,8 +91,10 @@ work in the host rather than expanding renderer or main-process privileges.
   using `%LOCALAPPDATA%\Undertone` so installed models are reused.
 - Configuration remains `%APPDATA%\Undertone\config.json`, saves atomically,
   and encrypts provider keys with user-bound DPAPI.
-- The overlay never accepts focus or pointer input. Text is pre-rendered to an
-  alpha image to avoid ClearType fringes on transparency.
+- The status overlay never accepts focus or pointer input. The open-turn draft
+  accepts pointer input for drag, resize, snap-to-default, and discard but never
+  accepts focus. Status text is pre-rendered to an alpha image to avoid ClearType
+  fringes on transparency.
 - Every outcome reaches the overlay: recording, locked, transcribing, slow,
   success, warning, cancellation, or error.
 - Local child processes must die on normal shutdown and forced parent exit.

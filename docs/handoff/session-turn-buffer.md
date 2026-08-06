@@ -61,7 +61,23 @@ Tray deliberately does **not** host these actions (wrong interaction mode for a 
 
 ### Draft panel
 
-Non-focusable, click-through panel above the status pill while a turn is open. Shows numbered fragments and a simple header (`Open turn · N fragments`). No char counts (noise). Still no full editor—glanceable truth, not a second chat app.
+A separate, non-focusable panel above the status pill while a turn is open. It
+shows the joined turn as continuous text with a simple header (`Open turn · N fragments`). The
+header uses Electron's native drag region, with the controls explicitly excluded.
+The window is edge-resizable, and the snap control restores its default
+bottom-center location. The upper-right X
+discards the turn through the ordered pipeline queue. Position and size remain
+stable across turns for the current app session. The scrollable text preview
+follows the newest text.
+It accepts only these pointer interactions and never takes keyboard focus. No
+char counts (noise). Still no full editor—glanceable truth, not a second chat app.
+
+The window starts at its 96 px minimum height and only changes size through a
+user edge-resize. New fragments scroll within that size. Do not auto-resize the
+native window from renderer content. When the initial empty draft is published,
+do not call `hide()` unless the window is visible. A redundant hide after the
+renderer loads can leave Electron's native hit-test map non-interactive on
+Windows until a later window transition.
 
 ---
 
@@ -101,7 +117,8 @@ main.ts hotkeys + overlay draft publish
 | `electron/src/core/pipelineQueue.ts` | FIFO jobs including turn ops |
 | `electron/src/core/textPreparation.ts` | Prepare pipeline (context injected by main) |
 | `electron/src/main/main.ts` | Mode wiring, hotkeys, draft IPC |
-| `electron/src/renderer/overlay/*` | Pill + draft panel UI |
+| `electron/src/renderer/overlay/*` | Click-through status pill UI |
+| `electron/src/renderer/turn-draft/*` | Movable open-turn draft + discard UI |
 | `electron/src/core/config.ts` | `dictation_mode`, turn hotkeys, idle timeout |
 | `electron/src/shared/settings.ts` | Settings surface for mode/hotkeys |
 | `docs/design/session-turn-buffer.md` | Longer design + open questions |
@@ -118,7 +135,7 @@ main.ts hotkeys + overlay draft publish
 6. **External typing does not invalidate** the open turn (unlike insertion memory).  
 7. **In-memory only** — quit loses an unfinished turn.  
 8. **Hotkeys > tray** for turn actions.  
-9. **Draft is glance-only** — not a focusable editor (yet).
+9. **Draft is glance-only** — movable, resizable, and discardable, but not a focusable editor.
 
 ---
 
@@ -143,15 +160,23 @@ From `electron/` on this branch:
 ```bat
 npm ci
 npm run verify
+npm run test:turn-draft-native
 ```
+
+The native draft test moves the mouse and is valid only while the desktop is idle.
 
 Manual dogfood:
 
 1. Settings → Dictation mode = **Stack fragments**.  
-2. Speak several fragments without focusing anything special → draft panel grows.  
+2. Speak several fragments without focusing anything special → the continuous draft follows the newest text.
 3. Focus an agent/chat field → commit hotkey → one paste of the full turn.  
-4. Scratch last / discard via hotkeys; confirm draft updates.  
-5. Instant mode still pastes each release.
+4. Drag and resize the draft; confirm its geometry survives a commit/new turn and
+   the target retains keyboard focus.
+5. Click the snap control; confirm the draft returns above the bottom-center pill.
+6. Stack more fragments than fit; confirm the text preview scrolls to the newest text.
+7. Click the draft X; confirm the full turn is discarded and the panel hides.
+8. Scratch last / discard via hotkeys; confirm draft updates.
+9. Instant mode still pastes each release.
 
 If `Undertone.WinHost.exe` is running, full `verify` clean may EPERM; quit the app or build without clean (`tsc -p tsconfig.build.json` + `vite build`).
 

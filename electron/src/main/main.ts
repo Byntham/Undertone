@@ -60,6 +60,7 @@ import type { OverlayState, OverlayTone, TurnDraftView } from "../shared/overlay
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
+const turnDraftNativeE2e = process.env.UNDERTONE_TURN_DRAFT_NATIVE_E2E === "1";
 const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIEW === "1";
 const isolatedProfile = electronPreview || packagedSmoke;
 if (packagedSmoke) {
@@ -68,6 +69,9 @@ if (packagedSmoke) {
     throw new Error("Packaged smoke profile path is invalid");
   }
   app.setPath("userData", profilePath);
+} else if (turnDraftNativeE2e) {
+  const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
+  app.setPath("userData", path.join(previewRoot, "Undertone", "TurnDraftNativeE2E"));
 } else if (electronPreview) {
   const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
   app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
@@ -80,6 +84,7 @@ if (!gotLock) {
 } else {
   let settingsWindow: BrowserWindow | null = null;
   let overlayWindow: BrowserWindow | null = null;
+  let turnDraftWindow: BrowserWindow | null = null;
   let audioWindow: BrowserWindow | null = null;
   let tray: Tray | null = null;
   let quitting = false;
@@ -125,6 +130,7 @@ if (!gotLock) {
   const scratchShortcut = new ShortcutBinding(config.scratch_hotkey, true);
   const discardShortcut = new ShortcutBinding(config.discard_hotkey, true);
   let overlayDisplayId: number | undefined;
+  let turnDraftUserPositioned = false;
   let pendingOverlayRevision: number | undefined;
   let normalTrayImage: Electron.NativeImage | null = null;
   let recordingTrayImage: Electron.NativeImage | null = null;
@@ -160,6 +166,47 @@ if (!gotLock) {
     overlay.moveTop();
   };
 
+  const defaultTurnDraftPosition = (width: number, height: number): Electron.Point => {
+    const display = overlayDisplayId === undefined
+      ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+      : screen.getAllDisplays().find(({ id }) => id === overlayDisplayId)
+        ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const bounds = display.workArea;
+    return {
+      x: bounds.x + Math.round((bounds.width - width) / 2),
+      y: bounds.y + bounds.height - height - 84,
+    };
+  };
+
+  const positionTurnDraft = (draftWindow: BrowserWindow): void => {
+    const current = draftWindow.getBounds();
+    const { x, y } = defaultTurnDraftPosition(current.width, current.height);
+    if (current.x === x && current.y === y) return;
+    draftWindow.setPosition(x, y, false);
+  };
+
+  const keepTurnDraftOnScreen = (draftWindow: BrowserWindow): void => {
+    const current = draftWindow.getBounds();
+    const workArea = screen.getDisplayMatching(current).workArea;
+    const x = Math.max(workArea.x, Math.min(
+      current.x,
+      workArea.x + workArea.width - current.width,
+    ));
+    const y = Math.max(workArea.y, Math.min(
+      current.y,
+      workArea.y + workArea.height - current.height,
+    ));
+    if (x === current.x && y === current.y) return;
+    draftWindow.setPosition(x, y, false);
+  };
+
+  const presentTurnDraftWindow = (): void => {
+    const draftWindow = turnDraftWindow;
+    if (draftWindow === null || draftWindow.isDestroyed()) return;
+    if (!turnDraftUserPositioned) positionTurnDraft(draftWindow);
+    if (!draftWindow.isVisible()) draftWindow.showInactive();
+  };
+
   const renderOverlay = (state: OverlayState): void => {
     const overlay = overlayWindow;
     if (overlay === null || overlay.isDestroyed()) return;
@@ -174,16 +221,20 @@ if (!gotLock) {
   };
 
   const publishTurnDraft = (): void => {
-    const overlay = overlayWindow;
-    if (overlay === null || overlay.isDestroyed()) return;
+    const draftWindow = turnDraftWindow;
+    if (draftWindow === null || draftWindow.isDestroyed()) return;
     const snapshot = turnBuffer.snapshot();
     const draft: TurnDraftView | null = snapshot === null ? null : {
-      fragments: snapshot.fragments,
+      text: snapshot.text,
       fragmentCount: snapshot.fragmentCount,
       charCount: snapshot.charCount,
     };
-    if (draft !== null) presentOverlayWindow();
-    overlay.webContents.send("overlay:turnDraft", draft);
+    if (draft === null) {
+      if (draftWindow.isVisible()) draftWindow.hide();
+      return;
+    }
+    draftWindow.webContents.send("turnDraft:view", draft);
+    presentTurnDraftWindow();
   };
 
   const overlayController = new OverlayController(renderOverlay);
@@ -357,8 +408,8 @@ if (!gotLock) {
 
   const createOverlay = async (): Promise<void> => {
     const overlay = new BrowserWindow({
-      width: 540,
-      height: 280,
+      width: 420,
+      height: 52,
       show: false,
       frame: false,
       transparent: true,
@@ -399,9 +450,50 @@ if (!gotLock) {
       } else {
         renderOverlay(overlayController.current());
       }
+      if (turnDraftWindow !== null && !turnDraftWindow.isDestroyed()) {
+        keepTurnDraftOnScreen(turnDraftWindow);
+      }
     };
     screen.on("display-metrics-changed", repositionOverlay);
     screen.on("display-removed", repositionOverlay);
+  };
+
+  const createTurnDraft = async (): Promise<void> => {
+    const draftWindow = new BrowserWindow({
+      width: 540,
+      height: 96,
+      show: false,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      focusable: false,
+      movable: true,
+      resizable: true,
+      minWidth: 320,
+      minHeight: 96,
+      skipTaskbar: true,
+      hasShadow: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        preload: path.join(__dirname, "../preload/turnDraftPreload.js"),
+      },
+    });
+    turnDraftWindow = draftWindow;
+    draftWindow.setAlwaysOnTop(true, "screen-saver");
+    draftWindow.on("will-move", () => {
+      turnDraftUserPositioned = true;
+    });
+    draftWindow.webContents.on("did-finish-load", publishTurnDraft);
+    draftWindow.webContents.on("render-process-gone", (_event, details) => {
+      console.error("Open-turn draft renderer exited", details);
+      if (!quitting && !draftWindow.isDestroyed()) draftWindow.reload();
+    });
+    await draftWindow.loadFile(
+      path.join(__dirname, "../../renderer/turn-draft/index.html"),
+    );
+    positionTurnDraft(draftWindow);
   };
 
   const createAudio = async (): Promise<void> => {
@@ -1013,6 +1105,16 @@ if (!gotLock) {
     if (appUpdateService === null) throw new Error("Update service is not ready");
     await appUpdateService.install();
   });
+  ipcMain.on("turnDraft:discard", (event) => {
+    if (event.sender !== turnDraftWindow?.webContents) return;
+    discardOpenTurn();
+  });
+  ipcMain.on("turnDraft:snap", (event) => {
+    const draftWindow = turnDraftWindow;
+    if (event.sender !== draftWindow?.webContents) return;
+    turnDraftUserPositioned = false;
+    positionTurnDraft(draftWindow);
+  });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;
     if (payload.type === "ready") {
@@ -1097,6 +1199,7 @@ if (!gotLock) {
       },
     });
     await createOverlay();
+    await createTurnDraft();
     await createAudio();
     windowsHost.onKeyboard((event) => {
       if (event.injected) return;
@@ -1140,11 +1243,23 @@ if (!gotLock) {
     windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
     await initializePipeline();
+    if (turnDraftNativeE2e) {
+      turnDraftWindow?.setTitle("Undertone open turn native test");
+      const updateDraft = (): void => {
+        const snapshot = turnBuffer.snapshot();
+        if (snapshot !== null) return;
+        const text = "Full-app native test fragment. ";
+        turnBuffer.append(text, text);
+        publishTurnDraft();
+      };
+      updateDraft();
+      setInterval(updateDraft, 250);
+    }
     createTray();
     updateTrayTooltip();
     const sttConfigured = config.provider === "local"
       || providerKey(config, config.provider).trim().length > 0;
-    if (packagedSmoke || !sttConfigured) openSettings();
+    if (!turnDraftNativeE2e && (packagedSmoke || !sttConfigured)) openSettings();
     await windowsHost.startInput();
     if (updaterSupported) {
       setTimeout(() => {

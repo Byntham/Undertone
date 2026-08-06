@@ -1,7 +1,7 @@
 # Session turn buffer
 
 **Branch / worktree:** `feat/session-turn-buffer`  
-**Status:** hotkeys + open-turn draft panel; dogfood continues  
+**Status:** hotkeys + movable open-turn draft with discard control; dogfood continues
 **Decision:** utterance = **fragment of a turn** — release stacks; commit sends.
 
 ## Problem
@@ -178,7 +178,9 @@ Commit must work when the agent field is focused; it must **not** require focusi
 
 ## UI / overlay
 
-Overlay remains non-focusable (invariant).
+The status overlay remains non-focusable and click-through. The open-turn draft
+is a separate non-focusable window: its header accepts dragging and its close
+control discards through the ordered pipeline queue.
 
 | State | Overlay idea |
 |-------|----------------|
@@ -188,6 +190,21 @@ Overlay remains non-focusable (invariant).
 | Commit success | brief success, then hide |
 | Commit fail | warning + clipboard message |
 | Discard | brief “Turn discarded” |
+
+The draft header uses Electron's native drag region to reposition the window,
+with the adjacent controls explicitly excluded. The window can be resized from
+its edges. A snap control returns it to the default bottom-center
+position; an X discards the full open turn. The chosen position and size remain
+for later turns during the app session. The joined turn is shown as continuous
+text and scrolls to keep the newest text visible. None of these interactions activates or focuses the window,
+so the user's target keeps keyboard focus.
+
+The draft starts at its 96 px minimum height and changes size only when the user
+resizes it. New fragments scroll inside the current bounds. Do not resize the
+native window in response to renderer content changes. The initial empty publish
+must also avoid calling `hide()` when the window is already hidden: on Windows,
+that redundant native transition leaves Electron's otherwise-correct hit-test
+map intermittently non-interactive.
 
 Optional later: hotkey opens a **read-only or light-edit** turn panel (focus only when user asks). Not required for v1 dogfood if overlay + commit are solid.
 

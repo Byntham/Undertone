@@ -51,7 +51,6 @@ describe("turn buffer", () => {
     buffer.append("one", "One");
     buffer.append(" two", " two");
     expect(buffer.snapshot()).toEqual({
-      fragments: ["One", " two"],
       text: "One two",
       fragmentCount: 2,
       charCount: 7,

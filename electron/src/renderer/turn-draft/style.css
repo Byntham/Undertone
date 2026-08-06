@@ -1,0 +1,127 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", sans-serif;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.draft {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 8px 11px 12px;
+  border-radius: 14px;
+  background: rgb(18 20 24 / 0.9);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  color: rgb(226 229 233 / 1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.draftHeader {
+  app-region: drag;
+  -webkit-app-region: drag;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: move;
+  user-select: none;
+}
+
+.draftMeta {
+  padding-left: 1px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(170 178 190 / 0.95);
+  user-select: none;
+}
+
+.windowActions {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.windowAction {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgb(170 178 190 / 0.95);
+  font: 400 18px/20px "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.snap {
+  font-size: 16px;
+}
+
+.windowAction:hover {
+  color: rgb(225 230 237 / 1);
+  background: rgb(255 255 255 / 0.08);
+}
+
+.discard:hover {
+  color: rgb(248 201 206 / 1);
+  background: rgb(240 111 124 / 0.16);
+}
+
+.discard:active {
+  background: rgb(240 111 124 / 0.25);
+}
+
+.draftViewport {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.draftText {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0 4px 0 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 18px;
+  color: rgb(238 241 245 / 0.98);
+}
+
+.draftText::-webkit-scrollbar { width: 6px; }
+.draftText::-webkit-scrollbar-track { background: transparent; }
+.draftText::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgb(170 178 190 / 0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .windowAction { transition: none; }
+}

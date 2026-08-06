@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { OverlayState, TurnDraftView } from "../shared/overlay";
+import type { OverlayState } from "../shared/overlay";
 
-export type { OverlayState, TurnDraftView } from "../shared/overlay";
+export type { OverlayState } from "../shared/overlay";
 
 contextBridge.exposeInMainWorld("undertoneOverlay", {
   onState: (listener: (state: OverlayState) => void): (() => void) => {
@@ -17,15 +17,5 @@ contextBridge.exposeInMainWorld("undertoneOverlay", {
     };
     ipcRenderer.on("overlay:level", handler);
     return () => ipcRenderer.removeListener("overlay:level", handler);
-  },
-  onTurnDraft: (listener: (draft: TurnDraftView | null) => void): (() => void) => {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      draft: TurnDraftView | null,
-    ): void => {
-      listener(draft);
-    };
-    ipcRenderer.on("overlay:turnDraft", handler);
-    return () => ipcRenderer.removeListener("overlay:turnDraft", handler);
   },
 });

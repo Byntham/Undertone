@@ -17,7 +17,7 @@ export interface OverlayState {
 
 /** Live open-turn draft shown while stack mode has fragments. */
 export interface TurnDraftView {
-  fragments: string[];
+  text: string;
   fragmentCount: number;
   charCount: number;
 }

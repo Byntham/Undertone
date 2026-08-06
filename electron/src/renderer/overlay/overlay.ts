@@ -1,4 +1,4 @@
-import type { OverlayState, TurnDraftView } from "../../shared/overlay";
+import type { OverlayState } from "../../shared/overlay";
 import "./style.css";
 
 declare global {
@@ -6,7 +6,6 @@ declare global {
     undertoneOverlay?: {
       onState: (listener: (state: OverlayState) => void) => () => void;
       onLevel: (listener: (level: number) => void) => () => void;
-      onTurnDraft: (listener: (draft: TurnDraftView | null) => void) => () => void;
     };
   }
 }
@@ -14,18 +13,12 @@ declare global {
 const pill = document.querySelector<HTMLDivElement>("#pill");
 const label = document.querySelector<HTMLSpanElement>("#label");
 const check = document.querySelector<HTMLSpanElement>("#check");
-const draft = document.querySelector<HTMLDivElement>("#draft");
-const draftMeta = document.querySelector<HTMLSpanElement>("#draftMeta");
-const draftList = document.querySelector<HTMLOListElement>("#draftList");
 const bars = [...document.querySelectorAll<HTMLElement>("#bars i")];
 
 if (
   pill === null
   || label === null
   || check === null
-  || draft === null
-  || draftMeta === null
-  || draftList === null
   || bars.length === 0
 ) {
   throw new Error("Overlay markup is incomplete");
@@ -77,49 +70,6 @@ window.undertoneOverlay?.onLevel((rms) => {
   levelHistory.pop();
   levelHistory.unshift(envelope);
   renderWave();
-});
-
-window.undertoneOverlay?.onTurnDraft((view) => {
-  if (view === null || view.fragments.length === 0) {
-    draft.classList.add("hidden");
-    draft.setAttribute("aria-hidden", "true");
-    draftList.replaceChildren();
-    draftMeta.textContent = "";
-    return;
-  }
-  draft.classList.remove("hidden");
-  draft.removeAttribute("aria-hidden");
-  draftMeta.textContent = view.fragmentCount === 1
-    ? "Open turn · 1 fragment"
-    : `Open turn · ${view.fragmentCount} fragments`;
-  const maxVisible = 8;
-  const fragments = view.fragments;
-  const start = Math.max(0, fragments.length - maxVisible);
-  const visible = fragments.slice(start);
-  draftList.replaceChildren(...visible.map((fragment, offset) => {
-    const index = start + offset + 1;
-    const item = document.createElement("li");
-    if (index === fragments.length) item.classList.add("latest");
-    const marker = document.createElement("span");
-    marker.className = "index";
-    marker.textContent = String(index);
-    const text = document.createElement("span");
-    text.className = "text";
-    text.textContent = fragment.trim().length > 0 ? fragment : "·";
-    item.append(marker, text);
-    return item;
-  }));
-  if (start > 0) {
-    const more = document.createElement("li");
-    const marker = document.createElement("span");
-    marker.className = "index";
-    marker.textContent = "…";
-    const text = document.createElement("span");
-    text.className = "text";
-    text.textContent = `${start} earlier fragment${start === 1 ? "" : "s"}`;
-    more.append(marker, text);
-    draftList.prepend(more);
-  }
 });
 
 function renderWave(): void {
