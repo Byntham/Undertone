@@ -5,6 +5,12 @@ export interface DictationTarget {
   executable: string | null;
 }
 
+export interface PendingDictation {
+  wav: Uint8Array;
+  target: DictationTarget;
+  overlayRevision: number | undefined;
+}
+
 export interface PipelineHandlers {
   dictate(
     wav: Uint8Array,
@@ -13,17 +19,22 @@ export interface PipelineHandlers {
     overlayRevision: number | undefined,
   ): Promise<void>;
   repaste(text: string, config: UndertoneConfig): Promise<void>;
+  commit(config: UndertoneConfig): Promise<void>;
+  discard(): Promise<void>;
+  scratch(): Promise<void>;
 }
 
 type PipelineJob =
   | {
     type: "dictate";
-    wav: Uint8Array;
-    target: DictationTarget | null;
-    overlayRevision: number | undefined;
+    pending: Promise<PendingDictation | null>;
   }
   | { type: "retry"; wav: Uint8Array }
-  | { type: "repaste"; text: string };
+  | { type: "repaste"; text: string }
+  | { type: "commit" }
+  | { type: "discard" }
+  | { type: "scratch" }
+  | { type: "transition"; apply: () => void };
 
 interface QueuedJob {
   job: PipelineJob;
@@ -45,12 +56,16 @@ export class DictationPipelineQueue {
     target: DictationTarget,
     overlayRevision?: number,
   ): Promise<void> {
-    return this.enqueue({
-      type: "dictate",
+    return this.enqueuePendingDictation(Promise.resolve({
       wav: wav.slice(),
       target: { ...target },
       overlayRevision,
-    });
+    }));
+  }
+
+  /** Reserve queue order while the audio renderer finishes the recording. */
+  enqueuePendingDictation(pending: Promise<PendingDictation | null>): Promise<void> {
+    return this.enqueue({ type: "dictate", pending });
   }
 
   enqueueRetry(wav: Uint8Array): Promise<void> {
@@ -59,6 +74,23 @@ export class DictationPipelineQueue {
 
   enqueueRepaste(text: string): Promise<void> {
     return this.enqueue({ type: "repaste", text });
+  }
+
+  enqueueCommit(): Promise<void> {
+    return this.enqueue({ type: "commit" });
+  }
+
+  enqueueDiscard(): Promise<void> {
+    return this.enqueue({ type: "discard" });
+  }
+
+  enqueueScratch(): Promise<void> {
+    return this.enqueue({ type: "scratch" });
+  }
+
+  /** Apply a synchronous state transition after all earlier jobs finish. */
+  enqueueTransition(apply: () => void): Promise<void> {
+    return this.enqueue({ type: "transition", apply });
   }
 
   private async enqueue(job: PipelineJob): Promise<void> {
@@ -74,19 +106,32 @@ export class DictationPipelineQueue {
     try {
       while (this.queue.length > 0) {
         const queued = this.queue.shift()!;
-        const config = normalizeConfig(this.configSource());
         try {
-          if (queued.job.type === "dictate") {
-            await this.handlers.dictate(
-              queued.job.wav,
-              queued.job.target,
-              config,
-              queued.job.overlayRevision,
-            );
-          } else if (queued.job.type === "retry") {
-            await this.handlers.dictate(queued.job.wav, null, config, undefined);
+          if (queued.job.type === "transition") {
+            queued.job.apply();
           } else {
-            await this.handlers.repaste(queued.job.text, config);
+            const config = normalizeConfig(this.configSource());
+            if (queued.job.type === "dictate") {
+              const pending = await queued.job.pending;
+              if (pending !== null) {
+                await this.handlers.dictate(
+                  pending.wav.slice(),
+                  { ...pending.target },
+                  config,
+                  pending.overlayRevision,
+                );
+              }
+            } else if (queued.job.type === "retry") {
+              await this.handlers.dictate(queued.job.wav, null, config, undefined);
+            } else if (queued.job.type === "repaste") {
+              await this.handlers.repaste(queued.job.text, config);
+            } else if (queued.job.type === "commit") {
+              await this.handlers.commit(config);
+            } else if (queued.job.type === "discard") {
+              await this.handlers.discard();
+            } else {
+              await this.handlers.scratch();
+            }
           }
           queued.resolve();
         } catch (error) {

@@ -37,11 +37,24 @@ describe("configuration", () => {
     expect(second.language).toBe("en");
     expect(second.provider).toBe("local");
     expect(second.cleanup_provider).toBe("local");
+    expect(second.stack_cleanup_strategy).toBe("live-full");
+    expect(second.hotkey).toBe("left ctrl+left windows");
+    expect(second.repaste_hotkey).toBe("left alt+v");
+    expect(second.commit_hotkey).toBe("left ctrl+left alt");
+    expect(second.scratch_hotkey).toBe("left ctrl+left alt+backspace");
+    expect(second.discard_hotkey).toBe("ctrl+alt+shift+backspace");
     first.vocabulary.push("Undertone");
     first.corrections.test = "value";
     expect(second.vocabulary).toEqual([]);
     expect(second.corrections).toEqual({});
     expect(DEFAULT_CONFIG.vocabulary).toEqual([]);
+  });
+
+  it("migrates the removed hybrid stack cleanup strategy to the default", () => {
+    expect(normalizeConfig({
+      stack_cleanup_strategy: "live-delta-commit-full",
+    }).stack_cleanup_strategy)
+      .toBe("live-full");
   });
 
   it("keeps only current fields and repairs model override containers", () => {

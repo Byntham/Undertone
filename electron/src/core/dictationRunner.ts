@@ -8,6 +8,7 @@ import { InsertionMemory } from "./textPreparation";
 import type { TextPreparationResult } from "./textPreparation";
 import { applyCorrections } from "./textproc";
 import { SessionHistory, type DictationTarget } from "./pipelineQueue";
+import { isStackDictationMode, type TurnBuffer } from "./turnBuffer";
 
 export interface TranscriberPort {
   transcribe(options: {
@@ -32,12 +33,17 @@ export interface DictationFeedback {
 
 export interface DictationRunnerDependencies {
   transcriber: TranscriberPort;
-  prepareText(text: string, config: UndertoneConfig): Promise<TextPreparationResult>;
+  prepareText(
+    text: string,
+    config: UndertoneConfig,
+    context: "insertion" | "isolated",
+  ): Promise<TextPreparationResult>;
   restoreTarget(target: DictationTarget | null): Promise<boolean>;
   getForegroundWindow(): Promise<string>;
   paster: PasterPort;
   history: SessionHistory;
   insertionMemory: InsertionMemory;
+  turnBuffer: TurnBuffer;
   feedback: DictationFeedback;
 }
 
@@ -73,10 +79,23 @@ export class DictationJobRunner {
       return;
     }
 
-    let refocused = await this.dependencies.restoreTarget(target);
     const corrections = isStringMap(config.corrections) ? config.corrections : {};
     const raw = applyCorrections(transcript, corrections);
-    const prepared = await this.dependencies.prepareText(transcript, config);
+    if (isStackDictationMode(config.dictation_mode)) {
+      const stacked = await this.appendToTurn(transcript, config);
+      if (stacked.cleanupFailed) {
+        feedback.message("AI cleanup failed — used basic formatting", "warning");
+      } else {
+        feedback.message(
+          turnStatusFeedback(stacked.fragmentCount, transcript),
+          "normal",
+        );
+      }
+      return;
+    }
+
+    let refocused = await this.dependencies.restoreTarget(target);
+    const prepared = await this.dependencies.prepareText(transcript, config, "insertion");
     const final = prepared.text;
     if (refocused) refocused = await this.dependencies.restoreTarget(target);
     const historyRaw = raw === final ? null : raw;
@@ -102,6 +121,98 @@ export class DictationJobRunner {
     }
   }
 
+  async commit(
+    config: UndertoneConfig,
+    feedback: DictationFeedback = this.dependencies.feedback,
+  ): Promise<void> {
+    let text = this.dependencies.turnBuffer.peekText();
+    let cleanupFailed = false;
+    if (text === null) {
+      feedback.message("Nothing to commit", "warning");
+      return;
+    }
+    if (this.dependencies.turnBuffer.activeCleanupStrategy() !== "live-full") {
+      const rawTurn = this.dependencies.turnBuffer.rawText();
+      if (rawTurn === null) {
+        feedback.message("Nothing to commit", "warning");
+        return;
+      }
+      const prepared = await this.dependencies.prepareText(rawTurn, config, "isolated");
+      text = prepared.text;
+      cleanupFailed = prepared.cleanupFailed;
+      this.dependencies.turnBuffer.replaceText(text);
+    }
+
+    const inputGeneration = this.dependencies.insertionMemory.captureGeneration();
+    try {
+      await this.dependencies.paster.paste(text, Boolean(config.restore_clipboard));
+    } catch {
+      // Keep the open turn so the user can retry commit; only stage clipboard.
+      this.dependencies.paster.copyFallback(text);
+      const shortcut = stringValue(config.commit_hotkey, "")
+        || stringValue(config.repaste_hotkey, "");
+      const message = shortcut.length > 0
+        ? `Couldn't paste — focus the target and press ${shortcut}`
+        : "Couldn't paste — the turn is on your clipboard and still open";
+      feedback.message(message, "warning");
+      return;
+    }
+    this.dependencies.turnBuffer.clear();
+    this.dependencies.history.registerSuccess(text, null);
+    const foreground = await this.dependencies.getForegroundWindow();
+    this.dependencies.insertionMemory.registerPaste(foreground, text, inputGeneration);
+    if (cleanupFailed) {
+      feedback.message("AI cleanup failed — used basic formatting", "warning");
+    } else {
+      feedback.dismiss();
+    }
+  }
+
+  private async appendToTurn(
+    transcript: string,
+    config: UndertoneConfig,
+  ): Promise<ReturnType<TurnBuffer["append"]> & { cleanupFailed: boolean }> {
+    const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
+      ?? config.stack_cleanup_strategy;
+    const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
+    const preparationConfig = cleanupStrategy === "commit-full"
+      ? { ...config, ai_cleanup: false }
+      : config;
+    const prepared = await this.dependencies.prepareText(
+      rawTurn,
+      preparationConfig,
+      "isolated",
+    );
+    return {
+      ...this.dependencies.turnBuffer.append(transcript, prepared.text, cleanupStrategy),
+      cleanupFailed: prepared.cleanupFailed,
+    };
+  }
+
+  discard(feedback: DictationFeedback = this.dependencies.feedback): void {
+    if (!this.dependencies.turnBuffer.clear()) {
+      feedback.message("No open turn", "warning");
+      return;
+    }
+    feedback.message("Turn discarded", "normal");
+  }
+
+  scratchLast(feedback: DictationFeedback = this.dependencies.feedback): void {
+    const scratched = this.dependencies.turnBuffer.scratchLast();
+    if (scratched === null) {
+      feedback.message("Nothing to scratch", "warning");
+      return;
+    }
+    if (scratched.fragmentCount === 0) {
+      feedback.message("Last fragment scratched · turn empty", "normal");
+      return;
+    }
+    feedback.message(
+      turnStatusFeedback(scratched.fragmentCount, scratched.text, "Scratched"),
+      "normal",
+    );
+  }
+
   private clipboardFallback(
     final: string,
     raw: string | null,
@@ -116,6 +227,18 @@ export class DictationJobRunner {
       : "Couldn't paste — the text is on your clipboard";
     feedback.message(message, "warning");
   }
+}
+
+function turnStatusFeedback(
+  fragmentCount: number,
+  previewSource: string,
+  prefix = "Turn",
+): string {
+  const preview = previewSource.trim().replace(/\s+/gu, " ");
+  const clipped = preview.length > 40 ? `${preview.slice(0, 37)}…` : preview;
+  return clipped.length > 0
+    ? `${prefix} · ${fragmentCount} · ${clipped}`
+    : `${prefix} · ${fragmentCount}`;
 }
 
 function vocabularyFor(config: UndertoneConfig): unknown[] {

@@ -2,7 +2,16 @@ export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
 export type CloudProviderId = Exclude<SettingsProviderId, "local">;
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
-export type ShortcutSetting = "hotkey" | "repasteHotkey";
+export type ShortcutSetting =
+  | "hotkey"
+  | "repasteHotkey"
+  | "commitHotkey"
+  | "scratchHotkey"
+  | "discardHotkey";
+export type DictationModeSetting = "stack" | "instant";
+export type StackCleanupStrategySetting =
+  | "live-full"
+  | "commit-full";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
@@ -58,6 +67,12 @@ export interface SettingsSnapshot {
   startWithWindows: boolean;
   hotkey: string;
   repasteHotkey: string;
+  commitHotkey: string;
+  scratchHotkey: string;
+  discardHotkey: string;
+  shortcutWarning: string | null;
+  dictationMode: DictationModeSetting;
+  stackCleanupStrategy: StackCleanupStrategySetting;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
@@ -97,6 +112,11 @@ export interface SettingsPatch {
   startWithWindows?: boolean;
   hotkey?: string;
   repasteHotkey?: string;
+  commitHotkey?: string;
+  scratchHotkey?: string;
+  discardHotkey?: string;
+  dictationMode?: DictationModeSetting;
+  stackCleanupStrategy?: StackCleanupStrategySetting;
   inputDevice?: string;
   provider?: SettingsProviderId;
   cleanupProvider?: SettingsProviderId;

@@ -1,4 +1,6 @@
 export type ProviderId = "xai" | "openai" | "openrouter" | "local";
+export type DictationMode = "stack" | "instant";
+export type StackCleanupStrategy = "live-full" | "commit-full";
 export type ConfigRecord = Record<string, unknown>;
 
 export interface UndertoneConfig extends ConfigRecord {
@@ -20,6 +22,11 @@ export interface UndertoneConfig extends ConfigRecord {
   corrections: Record<string, string>;
   stt_vocab_hints: boolean;
   repaste_hotkey: string;
+  commit_hotkey: string;
+  scratch_hotkey: string;
+  discard_hotkey: string;
+  dictation_mode: DictationMode;
+  stack_cleanup_strategy: StackCleanupStrategy;
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
@@ -31,7 +38,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   api_key: "",
   openai_api_key: "",
   openrouter_api_key: "",
-  hotkey: "right ctrl",
+  hotkey: "left ctrl+left windows",
   language: "en",
   restore_clipboard: true,
   input_device: "",
@@ -45,7 +52,12 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   vocabulary: [],
   corrections: {},
   stt_vocab_hints: true,
-  repaste_hotkey: "ctrl+alt+v",
+  repaste_hotkey: "left alt+v",
+  commit_hotkey: "left ctrl+left alt",
+  scratch_hotkey: "left ctrl+left alt+backspace",
+  discard_hotkey: "ctrl+alt+shift+backspace",
+  dictation_mode: "stack",
+  stack_cleanup_strategy: "live-full",
   local_loaded: false,
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
@@ -71,6 +83,22 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   const cleanupModels = ensureStringMap(config, "cleanup_models");
   delete sttModels.local;
   delete cleanupModels.local;
+  if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
+    config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
+  }
+  if (config.stack_cleanup_strategy !== "live-full"
+    && config.stack_cleanup_strategy !== "commit-full") {
+    config.stack_cleanup_strategy = DEFAULT_CONFIG.stack_cleanup_strategy;
+  }
+  if (typeof config.commit_hotkey !== "string") {
+    config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;
+  }
+  if (typeof config.scratch_hotkey !== "string") {
+    config.scratch_hotkey = DEFAULT_CONFIG.scratch_hotkey;
+  }
+  if (typeof config.discard_hotkey !== "string") {
+    config.discard_hotkey = DEFAULT_CONFIG.discard_hotkey;
+  }
   return config as UndertoneConfig;
 }
 

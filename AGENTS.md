@@ -29,8 +29,10 @@ Opt-in tests:
 - `UNDERTONE_HOST_DESKTOP_E2E=1` enables the focus/caret/password/paste drive.
 - `UNDERTONE_LOCAL_RUNTIME_E2E=1` exercises installed local engines.
 - `UNDERTONE_LOCAL_INSTALLER_E2E=1` downloads and verifies pinned artifacts.
+- `npm run test:turn-draft-native` drives the real open-turn window through
+  drag, snap, discard, hide/show, and edge-resize cycles.
 
-The desktop test steals focus and is valid only while the desktop is idle.
+The desktop tests steal focus or the mouse and are valid only while the desktop is idle.
 
 ## Release rules
 
@@ -61,17 +63,26 @@ native handles stay in the main process.
 
 The main process owns one ordered dictation queue. Each job snapshots config at
 dequeue. Clipboard restoration, insertion memory, history, target restoration,
-and paste sequencing assume this single-writer design.
+turn-buffer commit/scratch/discard, and paste sequencing assume this
+single-writer design. Dictation-mode transitions also run through this queue.
+
+Stack dictation mode owns an in-memory open turn: PTT releases append fragments;
+formatting regenerates the accumulated raw turn; paste happens only on explicit commit. Instant
+mode keeps paste-per-release. See `docs/design/session-turn-buffer.md` for the
+feature intent and architecture.
 
 All native-host messages are versioned JSON over local pipes. Keep Windows API
 work in the host rather than expanding renderer or main-process privileges.
 
 ## Product invariants
 
-- Password fields are never read. Context order is UI Automation, Win32 edit,
-  then insertion memory.
-- Only left-side caret context may reach AI cleanup. Right-side context remains
-  local and is used only for deterministic formatting seams.
+- Password fields are never read. Instant-mode context order is UI Automation,
+  Win32 edit, then insertion memory. Stack mode formats against the open turn
+  buffer and does not require caret reads.
+- Only left-side context may reach AI cleanup. Instant mode may send caret-before
+  context; stack mode sends the accumulated raw turn with no OS context.
+  Right-side context remains local and is used only for
+  deterministic formatting seams.
 - Vocabulary hints are xAI-only. Do not send prompt-style vocabulary to other
   speech providers.
 - Local cleanup never blocks the current dictation while a cold model loads;
@@ -81,8 +92,10 @@ work in the host rather than expanding renderer or main-process privileges.
   using `%LOCALAPPDATA%\Undertone` so installed models are reused.
 - Configuration remains `%APPDATA%\Undertone\config.json`, saves atomically,
   and encrypts provider keys with user-bound DPAPI.
-- The overlay never accepts focus or pointer input. Text is pre-rendered to an
-  alpha image to avoid ClearType fringes on transparency.
+- The status overlay never accepts focus or pointer input. The open-turn draft
+  accepts pointer input for drag, resize, snap-to-default, and discard but never
+  accepts focus. Status text is pre-rendered to an alpha image to avoid ClearType
+  fringes on transparency.
 - Every outcome reaches the overlay: recording, locked, transcribing, slow,
   success, warning, cancellation, or error.
 - Local child processes must die on normal shutdown and forced parent exit.

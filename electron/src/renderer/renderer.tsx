@@ -185,6 +185,8 @@ function General({
       <p>Recording, output, and application behavior.</p>
     </header>
     <div className="card">
+      {settings.shortcutWarning !== null
+        && <p className="shortcutWarning" role="status">{settings.shortcutWarning}</p>}
       <SettingRow title="Push-to-talk shortcut" description="Hold this shortcut while you speak.">
         <ShortcutControl
           field="hotkey"
@@ -200,6 +202,76 @@ function General({
           capturing={capturing}
           capture={captureShortcut}
         />
+      </SettingRow>
+      <SettingRow
+        title="Commit open turn"
+        description="In stack mode, paste the full turn into the focused app."
+      >
+        <ShortcutControl
+          field="commitHotkey"
+          value={settings.commitHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Scratch last fragment"
+        description="Drop only the newest fragment from the open turn."
+      >
+        <ShortcutControl
+          field="scratchHotkey"
+          value={settings.scratchHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Discard open turn"
+        description="Clear the whole unfinished turn without pasting."
+      >
+        <ShortcutControl
+          field="discardHotkey"
+          value={settings.discardHotkey}
+          capturing={capturing}
+          capture={captureShortcut}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Dictation mode"
+        description="Stack builds a turn from fragments. Instant pastes each utterance."
+      >
+        <select
+          aria-label="Dictation mode"
+          value={settings.dictationMode}
+          onChange={(event) => {
+            void update({
+              dictationMode: event.target.value === "instant" ? "instant" : "stack",
+            });
+          }}
+        >
+          <option value="stack">Stack fragments (commit to send)</option>
+          <option value="instant">Instant paste</option>
+        </select>
+      </SettingRow>
+      <SettingRow
+        title="Stack cleanup timing"
+        description="Choose when AI cleanup rewrites an open turn. Instant mode is unaffected."
+      >
+        <select
+          aria-label="Stack cleanup timing"
+          value={settings.stackCleanupStrategy}
+          disabled={settings.dictationMode !== "stack"}
+          onChange={(event) => {
+            void update({
+              stackCleanupStrategy: event.target.value === "commit-full"
+                ? "commit-full"
+                : "live-full",
+            });
+          }}
+        >
+          <option value="live-full">Whole turn after every fragment</option>
+          <option value="commit-full">Whole turn only when committing</option>
+        </select>
       </SettingRow>
       <SettingRow title="Microphone" description="Select the input device by its Windows name.">
         <div className="microphoneControl">
@@ -246,7 +318,10 @@ function General({
     </div>
     <h2>Output</h2>
     <div className="card">
-      <SettingRow title="Smart formatting" description="Use caret context for spacing and capitalization.">
+      <SettingRow
+        title="Smart formatting"
+        description="Use surrounding context for spacing and capitalization (turn buffer in stack mode)."
+      >
         <Toggle
           label="Smart formatting"
           checked={settings.smartFormatting}
@@ -1066,8 +1141,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     restoreClipboard: true,
     soundCues: true,
     startWithWindows: false,
-    hotkey: "right ctrl",
-    repasteHotkey: "ctrl+alt+v",
+    hotkey: "left ctrl+left windows",
+    repasteHotkey: "left alt+v",
+    commitHotkey: "left ctrl+left alt",
+    scratchHotkey: "left ctrl+left alt+backspace",
+    discardHotkey: "ctrl+alt+shift+backspace",
+    shortcutWarning: null,
+    dictationMode: "stack",
+    stackCleanupStrategy: "live-full",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.8.0",
@@ -1150,7 +1231,15 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       preview = {
         ...preview,
-        [field]: field === "hotkey" ? "f13" : "ctrl+shift+v",
+        [field]: field === "hotkey"
+          ? "f13"
+          : field === "commitHotkey"
+            ? "left ctrl+left alt+enter"
+            : field === "scratchHotkey"
+              ? "left ctrl+left alt+backspace"
+              : field === "discardHotkey"
+                ? "left ctrl+left alt+left shift+backspace"
+                : "left ctrl+left shift+v",
       };
       return preview;
     },

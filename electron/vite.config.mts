@@ -14,6 +14,7 @@ export default defineConfig({
       input: {
         settings: path.join(rendererRoot, "index.html"),
         overlay: path.join(rendererRoot, "overlay/index.html"),
+        turnDraft: path.join(rendererRoot, "turn-draft/index.html"),
         audio: path.join(rendererRoot, "audio/index.html"),
       },
     },

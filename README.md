@@ -24,11 +24,11 @@ write-only across the settings boundary and are DPAPI-encrypted on disk.
 
 ## Use
 
-- Hold the push-to-talk shortcut (default **Right Ctrl**) and speak, then
+- Hold the push-to-talk shortcut (default **Left Ctrl+Left Windows**) and speak, then
   release to transcribe and paste.
 - Double-tap the shortcut to lock hands-free recording; tap once more to stop.
 - Press **Esc** to cancel a recording.
-- Press **Ctrl+Alt+V** to re-paste the latest successful dictation.
+- Press **Left Alt+V** to re-paste the latest successful dictation.
 - Use the tray menu to open Settings, pause dictation, or quit.
 
 Smart formatting uses bounded caret context where Windows exposes it, then

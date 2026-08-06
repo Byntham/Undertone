@@ -1,4 +1,4 @@
-import type { OverlayState } from "../../preload/overlayPreload";
+import type { OverlayState } from "../../shared/overlay";
 import "./style.css";
 
 declare global {
@@ -15,7 +15,12 @@ const label = document.querySelector<HTMLSpanElement>("#label");
 const check = document.querySelector<HTMLSpanElement>("#check");
 const bars = [...document.querySelectorAll<HTMLElement>("#bars i")];
 
-if (pill === null || label === null || check === null || bars.length === 0) {
+if (
+  pill === null
+  || label === null
+  || check === null
+  || bars.length === 0
+) {
   throw new Error("Overlay markup is incomplete");
 }
 

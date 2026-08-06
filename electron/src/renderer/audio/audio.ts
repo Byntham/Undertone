@@ -40,12 +40,13 @@ window.undertoneAudio.onCommand((command) => {
         });
       }
     }
-    else if (command.type === "stop") await stopCapture(false);
+    else if (command.type === "stop") await stopCapture(false, command.requestId);
     else if (command.type === "cancel") await stopCapture(true);
     else if (command.type === "cue") await playCue(command.name).catch(() => undefined);
   }).catch((error: unknown) => {
     window.undertoneAudio.emit({
       type: "error",
+      ...(command.type === "stop" ? { requestId: command.requestId } : {}),
       message: error instanceof Error ? error.message : String(error),
     });
   });
@@ -162,7 +163,7 @@ async function reportDevices(type: "ready" | "devices"): Promise<void> {
   window.undertoneAudio.emit({ type, devices: names });
 }
 
-async function stopCapture(discard: boolean): Promise<void> {
+async function stopCapture(discard: boolean, requestId?: number): Promise<void> {
   const active = session;
   if (active === null) return;
   session = null;
@@ -177,5 +178,6 @@ async function stopCapture(discard: boolean): Promise<void> {
   const sourceSamples = joinFloat32(active.chunks);
   const samples = resampleLinear(sourceSamples, active.context.sampleRate, 16_000);
   const wav = encodePcm16Wav(samples, 16_000);
-  window.undertoneAudio.emit({ type: "stopped", wav, durationMs });
+  if (requestId === undefined) return;
+  window.undertoneAudio.emit({ type: "stopped", requestId, wav, durationMs });
 }
