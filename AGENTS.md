@@ -38,8 +38,6 @@ The desktop tests steal focus or the mouse and are valid only while the desktop 
 
 - `electron/package.json`, its lockfile, and the renderer preview version must
   stay in sync.
-- Use a minor version for a feature batch and a patch version for a fix-only
-  release.
 - `npm run package` builds the x64 NSIS installer. It is unsigned
   unless a release certificate is supplied externally.
 - Never commit `electron/node_modules`, `electron/dist`, `electron/release`,

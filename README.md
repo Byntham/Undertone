@@ -21,6 +21,8 @@ Windows SmartScreen may warn about an unsigned build. Settings are stored in
 On first launch, open **Settings -> Speech & AI**, choose a cloud or local
 transcription provider, and save or install what it needs. Provider keys stay
 write-only across the settings boundary and are DPAPI-encrypted on disk.
+OpenAI Subscription can be connected in the browser for AI cleanup; OpenAI
+transcription remains API-key based.
 
 ## Use
 
@@ -41,9 +43,10 @@ is used only for deterministic insertion seams.
 - **General** - shortcuts, microphone test, language, formatting, sound cues,
   clipboard restoration, Start with Windows, automatic updates, version, and
   diagnostic paths.
-- **Speech & AI** - independent STT/cleanup providers, write-only cloud keys,
-  local model install/load/eject controls, provider tests, model overrides, and
-  advanced local residency and cleanup controls.
+- **Speech & AI** - independent STT/cleanup providers, OpenAI Subscription
+  sign-in for cleanup, write-only cloud keys, local model install/load/eject
+  controls, provider tests, model overrides, and advanced local residency and
+  cleanup controls.
 - **Dictionary** - vocabulary, exact corrections, and contextual xAI-only
   recognition hints.
 - **History** - session-only copy, re-paste, and retry actions.

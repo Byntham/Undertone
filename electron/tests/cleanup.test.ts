@@ -8,6 +8,7 @@ import {
   dropEchoedContext,
   plausibleLength,
   type LocalCleanupRuntime,
+  type SubscriptionCleanupRuntime,
 } from "../src/core/cleanup";
 import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http";
 
@@ -40,6 +41,30 @@ const baseOptions = {
 };
 
 describe("cleanup providers", () => {
+  it("uses the dedicated subscription runtime and keeps its token out of cleanup options", async () => {
+    const calls: Parameters<SubscriptionCleanupRuntime["complete"]>[0][] = [];
+    const subscription: SubscriptionCleanupRuntime = {
+      async complete(options) {
+        calls.push(options);
+        return JSON.stringify({ text: "subscription result" });
+      },
+    };
+    const http = new FakeHttp();
+    const client = new CleanupClient(http, new FakeLocal(), subscription);
+    expect(await client.cleanup({
+      ...baseOptions,
+      apiKey: "",
+      provider: "openai-subscription",
+      model: "gpt-5.6-luna",
+      systemPrompt: "Clean this.",
+    })).toBe("subscription result");
+    expect(http.calls).toHaveLength(0);
+    expect(calls[0]).toMatchObject({
+      model: "gpt-5.6-luna",
+      systemPrompt: "Clean this.",
+    });
+  });
+
   it("uses the production prompt and structured response schema", async () => {
     expect(SYSTEM_PROMPT.startsWith("COPYEDIT ONLY.")).toBe(true);
     expect(SYSTEM_PROMPT).toContain("text_before_cursor");

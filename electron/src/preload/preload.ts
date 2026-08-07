@@ -6,6 +6,8 @@ import type {
   LocalEngineKind,
   HistoryAction,
   CloudProviderId,
+  ModelProviderId,
+  OpenAiSubscriptionAction,
   ProviderModelKind,
   ProviderTestKind,
   SettingsApi,
@@ -41,8 +43,13 @@ const api: SettingsApi = {
   providerTest: async (kind: ProviderTestKind) => (
     await ipcRenderer.invoke("provider:test", { kind }) as string
   ),
+  openAiSubscriptionAction: async (action: OpenAiSubscriptionAction) => (
+    await ipcRenderer.invoke("openai-subscription:action", { action }) as Awaited<
+      ReturnType<SettingsApi["openAiSubscriptionAction"]>
+    >
+  ),
   providerModels: async (
-    provider: CloudProviderId,
+    provider: ModelProviderId,
     kind: ProviderModelKind,
     refresh = false,
   ) => await ipcRenderer.invoke("provider:models", { provider, kind, refresh }) as Awaited<

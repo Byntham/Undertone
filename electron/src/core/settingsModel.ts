@@ -9,8 +9,11 @@ import {
 } from "./config";
 import type {
   CloudProviderId,
+  CleanupProviderId,
+  ModelProviderId,
   LocalEngineSnapshot,
   SettingsSnapshot,
+  TranscriptionProviderId,
 } from "../shared/settings";
 import {
   actionShortcutsOverlap,
@@ -50,8 +53,21 @@ const PATCH_FIELDS = new Set([
   "cleanupPrompts",
 ]);
 
-const PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
+const TRANSCRIPTION_PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
+const CLEANUP_PROVIDERS = new Set<ProviderId>([
+  "xai",
+  "openai",
+  "openai-subscription",
+  "openrouter",
+  "local",
+]);
 const CLOUD_PROVIDERS = new Set<CloudProviderId>(["xai", "openai", "openrouter"]);
+const MODEL_PROVIDERS = new Set<ModelProviderId>([
+  "xai",
+  "openai",
+  "openai-subscription",
+  "openrouter",
+]);
 
 export function settingsSnapshot(
   config: UndertoneConfig,
@@ -64,8 +80,14 @@ export function settingsSnapshot(
   microphones: readonly string[] = [],
   startWithWindows = false,
 ): SettingsSnapshot {
-  const provider = snapshotProvider(config.provider);
-  const cleanupProvider = snapshotProvider(config.cleanup_provider);
+  const provider = snapshotProvider(
+    config.provider,
+    TRANSCRIPTION_PROVIDERS,
+  ) as TranscriptionProviderId;
+  const cleanupProvider = snapshotProvider(
+    config.cleanup_provider,
+    CLEANUP_PROVIDERS,
+  ) as CleanupProviderId;
   return {
     language: config.language,
     smartFormatting: config.smart_formatting,
@@ -92,6 +114,9 @@ export function settingsSnapshot(
       openai: providerKey(config, "openai").trim().length > 0,
       openrouter: providerKey(config, "openrouter").trim().length > 0,
     },
+    openAiSubscriptionConnected: config.openai_oauth_access_token.trim().length > 0
+      && config.openai_oauth_refresh_token.trim().length > 0
+      && config.openai_oauth_account_id.trim().length > 0,
     sttModel: modelOverride(config, "stt", provider),
     cleanupModel: modelOverride(config, "cleanup", cleanupProvider),
     localLoaded: config.local_loaded,
@@ -109,8 +134,8 @@ export function settingsSnapshot(
   };
 }
 
-function snapshotProvider(value: unknown): ProviderId {
-  return typeof value === "string" && PROVIDERS.has(value as ProviderId)
+function snapshotProvider(value: unknown, supported: ReadonlySet<ProviderId>): ProviderId {
+  return typeof value === "string" && supported.has(value as ProviderId)
     ? value as ProviderId
     : DEFAULT_CONFIG.provider;
 }
@@ -200,10 +225,10 @@ export function applySettingsPatch(
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);
   }
   if (value.provider !== undefined) {
-    next.provider = providerField(value.provider, "provider");
+    next.provider = providerField(value.provider, "provider", TRANSCRIPTION_PROVIDERS);
   }
   if (value.cleanupProvider !== undefined) {
-    next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider");
+    next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider", CLEANUP_PROVIDERS);
   }
   if (value.providerKey !== undefined) {
     const update = providerKeyUpdate(value.providerKey);
@@ -273,8 +298,12 @@ const EMPTY_LOCAL_ENGINES = {
   cleanup: EMPTY_LOCAL_ENGINE,
 };
 
-function providerField(value: unknown, name: string): ProviderId {
-  if (typeof value !== "string" || !PROVIDERS.has(value as ProviderId)) {
+function providerField(
+  value: unknown,
+  name: string,
+  supported: ReadonlySet<ProviderId>,
+): ProviderId {
+  if (typeof value !== "string" || !supported.has(value as ProviderId)) {
     throw new Error(`${name} is not a supported provider`);
   }
   return value as ProviderId;
@@ -293,14 +322,15 @@ function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: 
 function modelUpdate(
   value: unknown,
   name: string,
-): { provider: CloudProviderId; value: string } {
+): { provider: ModelProviderId; value: string } {
   exactObject(value, ["provider", "value"], name);
+  const supported: ReadonlySet<string> = name === "sttModel" ? CLOUD_PROVIDERS : MODEL_PROVIDERS;
   if (typeof value.provider !== "string"
-    || !CLOUD_PROVIDERS.has(value.provider as CloudProviderId)) {
+    || !supported.has(value.provider)) {
     throw new Error(`${name}.provider must be a cloud provider`);
   }
   return {
-    provider: value.provider as CloudProviderId,
+    provider: value.provider as ModelProviderId,
     value: boundedSingleLine(value.value, `${name}.value`, 512),
   };
 }
@@ -329,7 +359,7 @@ function exactObject(
 
 function setModelOverride(
   models: Record<string, string>,
-  provider: CloudProviderId,
+  provider: ModelProviderId,
   value: string,
 ): void {
   if (value.length === 0) delete models[provider];

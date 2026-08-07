@@ -97,9 +97,12 @@ textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid #
 .keyCard { border: 1px solid #3a3f49; border-radius: 10px; padding: 15px 17px; background: #2c313a; }
 .keyHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
 .keyHead strong { color: #e3e6eb; font-size: 14px; }
+.keyHead small { display: block; max-width: 520px; margin-top: 5px; color: #7d8693; font-size: 11px; font-weight: 400; line-height: 1.4; }
 .keyHead span { color: #7d8693; font-size: 11px; }
 .keyHead span[data-configured="true"] { color: #98c379; }
 .keyEntry, .modelEntry { display: flex; gap: 8px; }
+.subscriptionCard { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.subscriptionCard .keyHead { flex: 1 1 auto; margin-bottom: 0; gap: 18px; }
 .keyEntry input, .modelEntry select { flex: 1 1 auto; min-width: 0; }
 .smallButton { flex: 0 0 auto; border: 1px solid #4a515e; border-radius: 7px; padding: 7px 11px; color: #cbd1da; background: #252a31; cursor: pointer; }
 .smallButton:hover { border-color: #626b78; background: #303640; }
