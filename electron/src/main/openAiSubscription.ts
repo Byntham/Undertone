@@ -1,7 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
-import { isRecord } from "../core/config";
+import {
+  isRecord,
+  type CleanupReasoningEffort,
+  type CleanupServiceTier,
+} from "../core/config";
 import type { SubscriptionCleanupRuntime } from "../core/cleanup";
 import type { HttpClient, HttpGetClient, HttpResponse } from "../platform/http";
 import type { ProviderModelOption } from "../shared/settings";
@@ -97,6 +101,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
 
   async complete(options: {
     model: string;
+    reasoningEffort: CleanupReasoningEffort;
+    serviceTier: CleanupServiceTier;
     systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
@@ -106,6 +112,9 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       ? options.model.trim()
       : (await this.listModels()).defaultModel;
     if (model === null) throw new Error("Your OpenAI subscription returned no cleanup models.");
+    const lunaOptions = model === "gpt-5.6-luna"
+      ? { service_tier: options.serviceTier === "fast" ? "priority" : "default" }
+      : {};
     const requestBody = JSON.stringify({
       model,
       instructions: options.systemPrompt,
@@ -126,7 +135,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
           },
         },
       },
-      reasoning: { effort: "low" },
+      reasoning: { effort: model === "gpt-5.6-luna" ? options.reasoningEffort : "low" },
+      ...lunaOptions,
       tools: [],
       parallel_tool_calls: false,
       store: false,

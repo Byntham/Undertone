@@ -700,6 +700,45 @@ function SpeechAi({
             update={update}
           />}
         </div>
+        {((settings.cleanupProvider === "openai" && settings.cleanupModel === "gpt-5.6-luna")
+          || (settings.cleanupProvider === "openai-subscription"
+            && (settings.cleanupModel === "" || settings.cleanupModel === "gpt-5.6-luna")))
+          && <div className="card modelCard lunaRequestCard">
+            <div className="modelControl">
+              <label htmlFor="luna-reasoning-effort">Luna reasoning effort</label>
+              <select
+                id="luna-reasoning-effort"
+                value={settings.cleanupReasoningEffort}
+                onChange={(event) => { void update({
+                  cleanupReasoningEffort: event.target.value as SettingsSnapshot["cleanupReasoningEffort"],
+                }); }}
+              >
+                <option value="none">None</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Extra high</option>
+                <option value="max">Max</option>
+              </select>
+              <small>Applied to gpt-5.6-luna through the selected OpenAI connection.</small>
+            </div>
+            <div className="modelControl">
+              <label htmlFor="luna-service-tier">Luna processing speed</label>
+              <select
+                id="luna-service-tier"
+                value={settings.cleanupServiceTier}
+                onChange={(event) => { void update({
+                  cleanupServiceTier: event.target.value as SettingsSnapshot["cleanupServiceTier"],
+                }); }}
+              >
+                <option value="default">Standard</option>
+                <option value="fast">Fast (premium)</option>
+              </select>
+              <small>{settings.cleanupProvider === "openai-subscription"
+                ? "Fast mode requests priority processing through your connected OpenAI account."
+                : "Fast mode reduces latency and uses premium API pricing."}</small>
+            </div>
+          </div>}
       </div>}
       <div className="advancedGroup">
         <h3>On-device behavior</h3>
@@ -1252,13 +1291,15 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     keyConfigured: { xai: false, openai: true, openrouter: false },
     openAiSubscriptionConnected: true,
     sttModel: "",
-    cleanupModel: "",
+    cleanupModel: "gpt-5.6-luna",
     localLoaded: false,
     localIdleMinutes: 0,
     sttVocabHints: true,
     vocabulary: ["Undertone", "Kubernetes"],
     corrections: { "under tone": "Undertone" },
     cleanupTimeout: 2.5,
+    cleanupReasoningEffort: "none",
+    cleanupServiceTier: "default",
     cleanupPrompt: "",
     cleanupPrompts: {},
     localEngines: {

@@ -1,6 +1,8 @@
 export type ProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
 export type DictationMode = "stack" | "instant";
 export type StackCleanupStrategy = "live-full" | "commit-full";
+export type CleanupReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type CleanupServiceTier = "default" | "fast";
 export type ConfigRecord = Record<string, unknown>;
 
 export interface UndertoneConfig extends ConfigRecord {
@@ -34,6 +36,8 @@ export interface UndertoneConfig extends ConfigRecord {
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
+  cleanup_reasoning_effort: CleanupReasoningEffort;
+  cleanup_service_tier: CleanupServiceTier;
   cleanup_prompt: string;
   cleanup_prompts: Record<string, string>;
 }
@@ -69,6 +73,8 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   local_loaded: false,
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
+  cleanup_reasoning_effort: "none",
+  cleanup_service_tier: "default",
   cleanup_prompt: "",
   cleanup_prompts: {},
 };
@@ -109,6 +115,12 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     && config.stack_cleanup_strategy !== "commit-full") {
     config.stack_cleanup_strategy = DEFAULT_CONFIG.stack_cleanup_strategy;
   }
+  if (!CLEANUP_REASONING_EFFORTS.has(config.cleanup_reasoning_effort)) {
+    config.cleanup_reasoning_effort = DEFAULT_CONFIG.cleanup_reasoning_effort;
+  }
+  if (config.cleanup_service_tier !== "default" && config.cleanup_service_tier !== "fast") {
+    config.cleanup_service_tier = DEFAULT_CONFIG.cleanup_service_tier;
+  }
   if (typeof config.commit_hotkey !== "string") {
     config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;
   }
@@ -128,6 +140,10 @@ function isTranscriptionProvider(value: unknown): value is Exclude<ProviderId, "
 function isCleanupProvider(value: unknown): value is ProviderId {
   return isTranscriptionProvider(value) || value === "openai-subscription";
 }
+
+export const CLEANUP_REASONING_EFFORTS = new Set<unknown>([
+  "none", "low", "medium", "high", "xhigh", "max",
+]);
 
 export function providerKey(config: ConfigRecord, provider: string): string {
   const field = KEY_FIELDS[provider as keyof typeof KEY_FIELDS];

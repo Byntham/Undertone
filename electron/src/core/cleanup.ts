@@ -1,6 +1,7 @@
 import { isRecord } from "./config";
 import { SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
+import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
 
 export { SYSTEM_PROMPT } from "./cleanupPrompt";
 
@@ -44,6 +45,8 @@ export interface LocalCleanupRuntime {
 export interface SubscriptionCleanupRuntime {
   complete(options: {
     model: string;
+    reasoningEffort: CleanupReasoningEffort;
+    serviceTier: CleanupServiceTier;
     systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
@@ -59,6 +62,8 @@ export interface CleanupOptions {
   model?: string;
   provider?: string;
   timeoutSeconds?: number;
+  reasoningEffort?: CleanupReasoningEffort;
+  serviceTier?: CleanupServiceTier;
   systemPrompt?: string;
   throwOnError?: boolean;
 }
@@ -89,6 +94,8 @@ export class CleanupClient {
       try {
         const content = await this.subscription.complete({
           model,
+          reasoningEffort: options.reasoningEffort ?? "none",
+          serviceTier: options.serviceTier ?? "default",
           systemPrompt: options.systemPrompt || SYSTEM_PROMPT,
           userPrompt: user,
           timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
@@ -126,6 +133,12 @@ export class CleanupClient {
 
     const formatKey = `${provider}:${effectiveModel}`;
     let responseFormat = this.responseFormats.get(formatKey) ?? "json_schema";
+    const lunaOptions = provider === "openai" && effectiveModel === "gpt-5.6-luna"
+      ? {
+          reasoning_effort: options.reasoningEffort,
+          service_tier: options.serviceTier,
+        }
+      : {};
     const request = (format: ResponseFormat) => this.http.post(url, {
       headers,
       body: JSON.stringify({
@@ -137,6 +150,7 @@ export class CleanupClient {
         response_format: format === "json_schema"
           ? JSON_SCHEMA_RESPONSE_FORMAT
           : JSON_OBJECT_RESPONSE_FORMAT,
+        ...lunaOptions,
       }),
       timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
     });

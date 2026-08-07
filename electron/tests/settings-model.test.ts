@@ -37,6 +37,8 @@ describe("settings model", () => {
       vocabulary: [],
       corrections: {},
       cleanupTimeout: 2.5,
+      cleanupReasoningEffort: "none",
+      cleanupServiceTier: "default",
       cleanupPrompt: "",
       cleanupPrompts: {},
       localEngines: {
@@ -152,6 +154,8 @@ describe("settings model", () => {
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
       cleanupTimeout: 4.5,
+      cleanupReasoningEffort: "low",
+      cleanupServiceTier: "fast",
       cleanupPrompt: " custom prompt ",
       cleanupPrompts: { Fast: "multi\nline prompt" },
       stackCleanupStrategy: "commit-full",
@@ -169,6 +173,8 @@ describe("settings model", () => {
     expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
     expect(next.cleanup_timeout).toBe(4.5);
+    expect(next.cleanup_reasoning_effort).toBe("low");
+    expect(next.cleanup_service_tier).toBe("fast");
     expect(next.cleanup_prompt).toBe("custom prompt");
     expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });
     expect(next.stack_cleanup_strategy).toBe("commit-full");
@@ -236,6 +242,10 @@ describe("settings model", () => {
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { cleanupTimeout: 31 }))
       .toThrow(/between/u);
+    expect(() => applySettingsPatch(config, { cleanupReasoningEffort: "minimal" }))
+      .toThrow(/cleanupReasoningEffort/u);
+    expect(() => applySettingsPatch(config, { cleanupServiceTier: "priority" }))
+      .toThrow(/cleanupServiceTier/u);
     expect(() => applySettingsPatch(config, { scratchHotkey: "ctrl+alt" }))
       .toThrow(/one non-modifier/u);
     expect(() => applySettingsPatch(config, { discardHotkey: "ctrl+k+s" }))

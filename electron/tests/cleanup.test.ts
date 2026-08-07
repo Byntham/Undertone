@@ -56,11 +56,15 @@ describe("cleanup providers", () => {
       apiKey: "",
       provider: "openai-subscription",
       model: "gpt-5.6-luna",
+      reasoningEffort: "high",
+      serviceTier: "fast",
       systemPrompt: "Clean this.",
     })).toBe("subscription result");
     expect(http.calls).toHaveLength(0);
     expect(calls[0]).toMatchObject({
       model: "gpt-5.6-luna",
+      reasoningEffort: "high",
+      serviceTier: "fast",
       systemPrompt: "Clean this.",
     });
   });
@@ -101,6 +105,42 @@ describe("cleanup providers", () => {
     const body = jsonBody(request);
     expect(body.model).toBe("my-model");
     expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe("Be terse.");
+  });
+
+  it("applies Chat Completions tuning only to direct OpenAI Luna cleanup", async () => {
+    const http = new FakeHttp();
+    const client = new CleanupClient(http, new FakeLocal());
+    const tuned = {
+      ...baseOptions,
+      reasoningEffort: "low" as const,
+      serviceTier: "fast" as const,
+    };
+
+    await client.cleanup({
+      ...tuned,
+      provider: "openai",
+      model: "gpt-5.6-luna",
+    });
+    expect(jsonBody(http.calls[0]!.request)).toMatchObject({
+      reasoning_effort: "low",
+      service_tier: "fast",
+    });
+
+    await client.cleanup({
+      ...tuned,
+      provider: "openai",
+      model: "gpt-5.6-terra",
+    });
+    await client.cleanup({
+      ...tuned,
+      provider: "openrouter",
+      model: "openai/gpt-5.6-luna",
+    });
+    for (const call of http.calls.slice(1)) {
+      const body = jsonBody(call.request);
+      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body).not.toHaveProperty("service_tier");
+    }
   });
 
   it("uses keyless local cleanup and never blocks on a cold model", async () => {

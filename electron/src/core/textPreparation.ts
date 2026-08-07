@@ -3,6 +3,8 @@ import {
   isRecord,
   modelOverride,
   providerKey,
+  type CleanupReasoningEffort,
+  type CleanupServiceTier,
   type UndertoneConfig,
 } from "./config";
 import {
@@ -33,6 +35,8 @@ export interface CleanupRequest {
   model: string;
   provider: string;
   timeoutSeconds: number;
+  reasoningEffort: CleanupReasoningEffort;
+  serviceTier: CleanupServiceTier;
   systemPrompt: string;
 }
 
@@ -76,6 +80,8 @@ export async function prepareText(
       model: modelOverride(config, "cleanup", provider),
       provider,
       timeoutSeconds: nonzeroNumber(config.cleanup_timeout, DEFAULT_CONFIG.cleanup_timeout),
+      reasoningEffort: config.cleanup_reasoning_effort,
+      serviceTier: config.cleanup_service_tier,
       systemPrompt: stringValue(config.cleanup_prompt, ""),
     });
     if (cleaned !== null) {

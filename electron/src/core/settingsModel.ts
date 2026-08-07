@@ -1,5 +1,6 @@
 import {
   DEFAULT_CONFIG,
+  CLEANUP_REASONING_EFFORTS,
   KEY_FIELDS,
   modelOverride,
   normalizeConfig,
@@ -49,6 +50,8 @@ const PATCH_FIELDS = new Set([
   "vocabulary",
   "corrections",
   "cleanupTimeout",
+  "cleanupReasoningEffort",
+  "cleanupServiceTier",
   "cleanupPrompt",
   "cleanupPrompts",
 ]);
@@ -125,6 +128,8 @@ export function settingsSnapshot(
     vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
     cleanupTimeout: config.cleanup_timeout,
+    cleanupReasoningEffort: config.cleanup_reasoning_effort,
+    cleanupServiceTier: config.cleanup_service_tier,
     cleanupPrompt: config.cleanup_prompt,
     cleanupPrompts: { ...config.cleanup_prompts },
     localEngines: {
@@ -269,6 +274,20 @@ export function applySettingsPatch(
       throw new Error("cleanupTimeout must be between 0.5 and 30 seconds");
     }
     next.cleanup_timeout = value.cleanupTimeout;
+  }
+  if (value.cleanupReasoningEffort !== undefined) {
+    if (typeof value.cleanupReasoningEffort !== "string"
+      || !CLEANUP_REASONING_EFFORTS.has(value.cleanupReasoningEffort)) {
+      throw new Error("cleanupReasoningEffort is invalid");
+    }
+    next.cleanup_reasoning_effort = value.cleanupReasoningEffort as
+      UndertoneConfig["cleanup_reasoning_effort"];
+  }
+  if (value.cleanupServiceTier !== undefined) {
+    if (value.cleanupServiceTier !== "default" && value.cleanupServiceTier !== "fast") {
+      throw new Error("cleanupServiceTier is invalid");
+    }
+    next.cleanup_service_tier = value.cleanupServiceTier;
   }
   if (value.cleanupPrompt !== undefined) {
     if (typeof value.cleanupPrompt !== "string" || value.cleanupPrompt.length > 40_000) {

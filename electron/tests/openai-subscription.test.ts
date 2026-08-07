@@ -85,6 +85,8 @@ describe("OpenAI Subscription", () => {
     const subscription = createSubscription(http, validCredentials(), persisted);
     expect(await subscription.complete({
       model: "gpt-5.6-luna",
+      reasoningEffort: "high",
+      serviceTier: "fast",
       systemPrompt: "Copyedit only.",
       userPrompt: "raw",
       timeoutMs: 2_500,
@@ -97,12 +99,38 @@ describe("OpenAI Subscription", () => {
       originator: "undertone",
     });
     const body = JSON.parse(call.request.body as string) as Record<string, unknown>;
-    expect(body).toMatchObject({ model: "gpt-5.6-luna", store: false, stream: true });
+    expect(body).toMatchObject({
+      model: "gpt-5.6-luna",
+      reasoning: { effort: "high" },
+      service_tier: "priority",
+      store: false,
+      stream: true,
+    });
     expect(body).not.toHaveProperty("metadata");
 
     await subscription.disconnect();
     expect(subscription.connected()).toBe(false);
     expect(persisted.at(-1)).toBeNull();
+  });
+
+  it("does not apply Luna request tuning to another subscription model", async () => {
+    const http = new FakeHttp();
+    http.postResponses.push({
+      status: 200,
+      body: `data: ${JSON.stringify({ type: "response.output_text.done", text: '{"text":"clean"}' })}`,
+    });
+    const subscription = createSubscription(http, validCredentials(), []);
+    await subscription.complete({
+      model: "gpt-5.6-terra",
+      reasoningEffort: "max",
+      serviceTier: "fast",
+      systemPrompt: "Copyedit only.",
+      userPrompt: "raw",
+      timeoutMs: 2_500,
+    });
+    const body = JSON.parse(http.posts[0]!.request.body as string) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body).not.toHaveProperty("service_tier");
   });
 });
 

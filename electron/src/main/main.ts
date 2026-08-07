@@ -1447,6 +1447,8 @@ if (!gotLock || devQuitRequest) {
       provider,
       model,
       timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
+      reasoningEffort: config.cleanup_reasoning_effort,
+      serviceTier: config.cleanup_service_tier,
       systemPrompt: config.cleanup_prompt,
       throwOnError: true,
     });

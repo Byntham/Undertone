@@ -115,6 +115,7 @@ textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid #
 .otherCredentials summary { color: #9da6b3; font-size: 12px; cursor: pointer; }
 .otherCredentials[open] summary { margin-bottom: 10px; }
 .modelCard { padding: 17px 19px; }
+.lunaRequestCard { margin-top: 10px; }
 .modelControl + .modelControl { margin-top: 18px; padding-top: 18px; border-top: 1px solid #3a3f49; }
 .advancedSection { margin-top: 27px; }
 .advancedSection summary { color: #cfd4dc; font-size: 14px; font-weight: 600; cursor: pointer; }

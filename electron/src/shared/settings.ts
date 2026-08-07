@@ -16,6 +16,14 @@ export type DictationModeSetting = "stack" | "instant";
 export type StackCleanupStrategySetting =
   | "live-full"
   | "commit-full";
+export type CleanupReasoningEffortSetting =
+  | "none"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+export type CleanupServiceTierSetting = "default" | "fast";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
@@ -93,6 +101,8 @@ export interface SettingsSnapshot {
   vocabulary: string[];
   corrections: Record<string, string>;
   cleanupTimeout: number;
+  cleanupReasoningEffort: CleanupReasoningEffortSetting;
+  cleanupServiceTier: CleanupServiceTierSetting;
   cleanupPrompt: string;
   cleanupPrompts: Record<string, string>;
   localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
@@ -134,6 +144,8 @@ export interface SettingsPatch {
   vocabulary?: string[];
   corrections?: Record<string, string>;
   cleanupTimeout?: number;
+  cleanupReasoningEffort?: CleanupReasoningEffortSetting;
+  cleanupServiceTier?: CleanupServiceTierSetting;
   cleanupPrompt?: string;
   cleanupPrompts?: Record<string, string>;
 }
