@@ -13,6 +13,7 @@ export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
 export const DEFAULT_CLEANUP_MODELS: Readonly<Record<string, string>> = {
   xai: "grok-4.20-0309-non-reasoning",
   openai: "gpt-4o-mini",
+  "openai-subscription": "gpt-5.6-luna",
   openrouter: "openai/gpt-4o-mini",
   local: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
 };
@@ -40,6 +41,15 @@ export interface LocalCleanupRuntime {
   loadAsync(model: string): void;
 }
 
+export interface SubscriptionCleanupRuntime {
+  complete(options: {
+    model: string;
+    systemPrompt: string;
+    userPrompt: string;
+    timeoutMs: number;
+  }): Promise<string>;
+}
+
 export interface CleanupOptions {
   transcript: string;
   context: string | null;
@@ -59,12 +69,39 @@ export class CleanupClient {
   constructor(
     private readonly http: HttpClient,
     private readonly local: LocalCleanupRuntime,
+    private readonly subscription: SubscriptionCleanupRuntime | null = null,
   ) {}
 
   async cleanup(options: CleanupOptions): Promise<string | null> {
     const provider = options.provider ?? "xai";
     const model = options.model ?? "";
     const effectiveModel = model || DEFAULT_CLEANUP_MODELS[provider] || "";
+    const user = JSON.stringify({
+      text_before_cursor: options.context,
+      app: options.app,
+      dictionary: options.corrections ?? {},
+      transcript: options.transcript,
+    });
+    if (provider === "openai-subscription") {
+      if (this.subscription === null) {
+        return failure(options, "OpenAI Subscription cleanup is not available.");
+      }
+      try {
+        const content = await this.subscription.complete({
+          model,
+          systemPrompt: options.systemPrompt || SYSTEM_PROMPT,
+          userPrompt: user,
+          timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
+        });
+        return validateCleanupContent(content, options);
+      } catch (error) {
+        if (options.throwOnError) {
+          if (error instanceof CleanupFailure) throw error;
+          throw new CleanupFailure(error instanceof Error ? error.message : "Cleanup request failed.");
+        }
+        return null;
+      }
+    }
     let url: string;
     let headers: Readonly<Record<string, string>>;
     if (provider === "local") {
@@ -87,12 +124,6 @@ export class CleanupClient {
       };
     }
 
-    const user = JSON.stringify({
-      text_before_cursor: options.context,
-      app: options.app,
-      dictionary: options.corrections ?? {},
-      transcript: options.transcript,
-    });
     const formatKey = `${provider}:${effectiveModel}`;
     let responseFormat = this.responseFormats.get(formatKey) ?? "json_schema";
     const request = (format: ResponseFormat) => this.http.post(url, {
@@ -129,20 +160,8 @@ export class CleanupClient {
       if (content === null) {
         return failure(options, "Cleanup provider returned no text.");
       }
-      const structured = JSON.parse(content) as unknown;
-      if (!isRecord(structured) || typeof structured.text !== "string") {
-        return failure(options, "Cleanup provider returned an invalid structured response.");
-      }
-      const rawText = structured.text.trim();
-      if (rawText.length === 0) {
-        return failure(options, "Cleanup provider returned empty text.");
-      }
-      const withoutEcho = dropEchoedContext(rawText, options.context);
-      if (withoutEcho === null || !plausibleLength(withoutEcho, options.transcript)) {
-        return failure(options, "Cleanup response failed the safety checks.");
-      }
       if (usedFallback) this.responseFormats.set(formatKey, "json_object");
-      return withoutEcho;
+      return validateCleanupContent(content, options);
     } catch (error) {
       if (provider === "local") this.local.loadAsync(model);
       if (options.throwOnError) {
@@ -161,6 +180,22 @@ export class CleanupClient {
 }
 
 class CleanupFailure extends Error {}
+
+function validateCleanupContent(content: string, options: CleanupOptions): string | null {
+  const structured = JSON.parse(content) as unknown;
+  if (!isRecord(structured) || typeof structured.text !== "string") {
+    return failure(options, "Cleanup provider returned an invalid structured response.");
+  }
+  const rawText = structured.text.trim();
+  if (rawText.length === 0) {
+    return failure(options, "Cleanup provider returned empty text.");
+  }
+  const withoutEcho = dropEchoedContext(rawText, options.context);
+  if (withoutEcho === null || !plausibleLength(withoutEcho, options.transcript)) {
+    return failure(options, "Cleanup response failed the safety checks.");
+  }
+  return withoutEcho;
+}
 
 function failure(options: CleanupOptions, message: string): null {
   if (options.throwOnError) throw new CleanupFailure(message);

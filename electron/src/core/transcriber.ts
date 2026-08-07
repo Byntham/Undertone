@@ -1,7 +1,9 @@
 import { isRecord, type ProviderId } from "./config";
 import type { HttpClient, HttpRequest, HttpResponse } from "../platform/http";
 
-export const DEFAULT_STT_MODELS: Readonly<Record<ProviderId, string>> = {
+type TranscriptionProviderId = Exclude<ProviderId, "openai-subscription">;
+
+export const DEFAULT_STT_MODELS: Readonly<Record<TranscriptionProviderId, string>> = {
   xai: "",
   openai: "gpt-4o-mini-transcribe",
   openrouter: "openai/gpt-4o-mini-transcribe",
@@ -230,7 +232,7 @@ function textFromPayload(payload: unknown): string {
     : "";
 }
 
-function isProvider(provider: string): provider is ProviderId {
+function isProvider(provider: string): provider is TranscriptionProviderId {
   return provider === "xai" || provider === "openai"
     || provider === "openrouter" || provider === "local";
 }

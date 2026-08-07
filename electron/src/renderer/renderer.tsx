@@ -4,11 +4,14 @@ import { createRoot } from "react-dom/client";
 import type {
   AppUpdateSnapshot,
   CloudProviderId,
+  CleanupProviderId,
   LocalEngineAction,
   LocalEngineKind,
   LocalEngineSnapshot,
   HistoryAction,
   HistorySnapshotEntry,
+  ModelProviderId,
+  OpenAiSubscriptionAction,
   ProviderModelCatalogSnapshot,
   ProviderTestKind,
   SettingsPatch,
@@ -16,6 +19,7 @@ import type {
   SettingsSnapshot,
   ShortcutSetting,
   SystemAction,
+  TranscriptionProviderId,
 } from "../shared/settings";
 import desktopIconUrl from "../../../assets/icon.png";
 import "./style.css";
@@ -97,6 +101,19 @@ function SettingsApp(): React.JSX.Element {
     }
   };
 
+  const openAiSubscriptionAction = async (
+    action: OpenAiSubscriptionAction,
+  ): Promise<boolean> => {
+    setError(null);
+    try {
+      setSettings(await settingsApi.openAiSubscriptionAction(action));
+      return true;
+    } catch (reason) {
+      setError(errorMessage(reason));
+      return false;
+    }
+  };
+
   const captureShortcut = async (field: ShortcutSetting): Promise<void> => {
     setError(null);
     setCapturing(field);
@@ -141,7 +158,12 @@ function SettingsApp(): React.JSX.Element {
               systemAction={systemAction}
             />
           : section === "speechAi"
-            ? <SpeechAi settings={settings} update={update} localAction={localAction} />
+            ? <SpeechAi
+                settings={settings}
+                update={update}
+                localAction={localAction}
+                openAiSubscriptionAction={openAiSubscriptionAction}
+              />
             : section === "dictionary"
               ? <Dictionary settings={settings} update={update} />
               : <History entries={history} action={historyAction} />}
@@ -518,8 +540,15 @@ const CLOUD_PROVIDERS: readonly { id: CloudProviderId; label: string }[] = [
   { id: "openai", label: "OpenAI" },
   { id: "openrouter", label: "OpenRouter" },
 ];
-const PROVIDERS: readonly { id: SettingsProviderId; label: string }[] = [
+const TRANSCRIPTION_PROVIDERS: readonly { id: TranscriptionProviderId; label: string }[] = [
   ...CLOUD_PROVIDERS,
+  { id: "local", label: "Local" },
+];
+const CLEANUP_PROVIDERS: readonly { id: CleanupProviderId; label: string }[] = [
+  { id: "xai", label: "xAI" },
+  { id: "openai", label: "OpenAI API" },
+  { id: "openai-subscription", label: "OpenAI Subscription" },
+  { id: "openrouter", label: "OpenRouter" },
   { id: "local", label: "Local" },
 ];
 
@@ -527,10 +556,12 @@ function SpeechAi({
   settings,
   update,
   localAction,
+  openAiSubscriptionAction,
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
   localAction: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+  openAiSubscriptionAction: (action: OpenAiSubscriptionAction) => Promise<boolean>;
 }): React.JSX.Element {
   const [testing, setTesting] = useState<ProviderTestKind | null>(null);
   const [testResults, setTestResults] = useState<Partial<Record<ProviderTestKind, string>>>({});
@@ -566,6 +597,7 @@ function SpeechAi({
             label="Transcription provider"
             value={settings.provider}
             localAvailable={settings.localEngines.stt.installed}
+            providers={TRANSCRIPTION_PROVIDERS}
             onChange={(provider) => { void update({ provider }); }}
           />
           <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
@@ -580,6 +612,7 @@ function SpeechAi({
             label="Cleanup provider"
             value={settings.cleanupProvider}
             localAvailable={settings.localEngines.cleanup.installed}
+            providers={CLEANUP_PROVIDERS}
             onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
           />
           <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("cleanup"); }}>
@@ -591,9 +624,13 @@ function SpeechAi({
     </div>
 
     <h2>Credentials</h2>
-    {activeCredentialProviders.length === 0
+    {activeCredentialProviders.length === 0 && settings.cleanupProvider !== "openai-subscription"
       ? <div className="card emptyList">No cloud credentials are needed for the selected services.</div>
       : <div className="providerGrid">
+          {settings.cleanupProvider === "openai-subscription" && <SubscriptionCard
+            connected={settings.openAiSubscriptionConnected}
+            action={openAiSubscriptionAction}
+          />}
           {activeCredentialProviders.map(({ id, label }) => <KeyCard
             key={id}
             provider={id}
@@ -612,10 +649,14 @@ function SpeechAi({
           configured={settings.keyConfigured[id]}
           update={update}
         />)}
+        {settings.cleanupProvider !== "openai-subscription" && <SubscriptionCard
+          connected={settings.openAiSubscriptionConnected}
+          action={openAiSubscriptionAction}
+        />}
       </div>
     </details>}
     <p className="privacyNote">
-      Saved keys are DPAPI-encrypted by the main process and are never returned to this page.
+      Saved keys and OpenAI sign-in tokens are DPAPI-encrypted and never returned to this page.
     </p>
 
     <h2>On-device</h2>
@@ -653,7 +694,9 @@ function SpeechAi({
             kind="cleanup"
             provider={settings.cleanupProvider}
             current={settings.cleanupModel}
-            configured={settings.keyConfigured[settings.cleanupProvider]}
+            configured={settings.cleanupProvider === "openai-subscription"
+              ? settings.openAiSubscriptionConnected
+              : settings.keyConfigured[settings.cleanupProvider]}
             update={update}
           />}
         </div>
@@ -768,28 +811,65 @@ function PromptControl({
   </form>;
 }
 
-function ProviderSelect({
+function ProviderSelect<T extends SettingsProviderId>({
   label,
   value,
   localAvailable,
+  providers,
   onChange,
 }: {
   label: string;
-  value: SettingsProviderId;
+  value: T;
   localAvailable: boolean;
-  onChange: (value: SettingsProviderId) => void;
+  providers: readonly { id: T; label: string }[];
+  onChange: (value: T) => void;
 }): React.JSX.Element {
   return <select
     aria-label={label}
     value={value}
-    onChange={(event) => onChange(event.target.value as SettingsProviderId)}
+    onChange={(event) => onChange(event.target.value as T)}
   >
-    {PROVIDERS.map((provider) => <option
+    {providers.map((provider) => <option
       key={provider.id}
       value={provider.id}
       disabled={provider.id === "local" && !localAvailable}
     >{provider.label}</option>)}
   </select>;
+}
+
+function SubscriptionCard({
+  connected,
+  action,
+}: {
+  connected: boolean;
+  action: (action: OpenAiSubscriptionAction) => Promise<boolean>;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const invoke = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await action(connected ? "disconnect" : "connect");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="keyCard subscriptionCard">
+    <div className="keyHead">
+      <div>
+        <strong>OpenAI Subscription</strong>
+        <small>Cleanup only. Transcription still uses an API key or a local model.</small>
+      </div>
+      <span data-configured={connected}>{connected ? "Connected" : "Not connected"}</span>
+    </div>
+    <button
+      type="button"
+      className={`smallButton${connected ? "" : " accent"}`}
+      disabled={busy}
+      onClick={() => { void invoke(); }}
+    >
+      {busy ? "Working…" : connected ? "Disconnect" : "Connect OpenAI"}
+    </button>
+  </div>;
 }
 
 function LocalEngineCard({
@@ -909,12 +989,13 @@ function ModelControl({
 }: {
   label: string;
   kind: "stt" | "cleanup";
-  provider: CloudProviderId;
+  provider: ModelProviderId;
   current: string;
   configured: boolean;
   update: (patch: SettingsPatch) => Promise<boolean>;
 }): React.JSX.Element {
   const customOption = "__undertone_custom_model__";
+  const allowCustom = provider !== "openai-subscription";
   const [selection, setSelection] = useState(current);
   const [customValue, setCustomValue] = useState(current);
   const [catalog, setCatalog] = useState<ProviderModelCatalogSnapshot | null>(null);
@@ -946,8 +1027,13 @@ function ModelControl({
     ? "Provider default"
     : `Provider default (${catalog.defaultModel})`;
   const save = (): void => {
-    const model = { provider, value };
-    void update(kind === "stt" ? { sttModel: model } : { cleanupModel: model });
+    if (kind === "stt") {
+      if (provider !== "openai-subscription") {
+        void update({ sttModel: { provider, value } });
+      }
+    } else {
+      void update({ cleanupModel: { provider, value } });
+    }
   };
   return <form className="modelControl" onSubmit={(event) => { event.preventDefault(); save(); }}>
     <label htmlFor={`${kind}-model`}>{label}</label>
@@ -963,11 +1049,13 @@ function ModelControl({
       >
         <option value="">{defaultLabel}</option>
         {current.length > 0 && !currentIsDiscovered
-          && <option value={current}>Current: {current}</option>}
+          && <option value={current} disabled={!allowCustom}>
+            {allowCustom ? `Current: ${current}` : `Unavailable: ${current}`}
+          </option>}
         {discovered.map((model) => <option key={model.id} value={model.id}>
           {model.name === model.id ? model.id : `${model.name} — ${model.id}`}
         </option>)}
-        <option value={customOption}>Custom model…</option>
+        {allowCustom && <option value={customOption}>Custom model…</option>}
       </select>
       <button
         type="button"
@@ -985,7 +1073,7 @@ function ModelControl({
         Save
       </button>
     </div>
-    {selection === customOption && <input
+    {allowCustom && selection === customOption && <input
       className="modelCustomInput"
       aria-label={`Custom ${label.toLowerCase()}`}
       value={customValue}
@@ -994,7 +1082,9 @@ function ModelControl({
       onChange={(event) => setCustomValue(event.target.value)}
     />}
     {!configured
-      ? <small>Save the {providerLabel(provider)} API key to load available models.</small>
+      ? <small>{provider === "openai-subscription"
+          ? "Connect your OpenAI account to load available models."
+          : `Save the ${providerLabel(provider)} API key to load available models.`}</small>
       : catalogError !== null
         ? <small className="fieldError" role="status">{catalogError} The saved selection is unchanged.</small>
         : <small>{loading ? "Loading available models…" : "Model selections are saved until you change them."}</small>}
@@ -1002,7 +1092,11 @@ function ModelControl({
 }
 
 function providerLabel(provider: SettingsProviderId): string {
-  return PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? provider;
+  if (provider === "openai-subscription") return "OpenAI Subscription";
+  if (provider === "openai") return "OpenAI";
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "xai") return "xAI";
+  return "Local";
 }
 
 function AppUpdates(): React.JSX.Element {
@@ -1154,8 +1248,9 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     appVersion: "1.8.0",
     preview: true,
     provider: "openai",
-    cleanupProvider: "openai",
+    cleanupProvider: "openai-subscription",
     keyConfigured: { xai: false, openai: true, openrouter: false },
+    openAiSubscriptionConnected: true,
     sttModel: "",
     cleanupModel: "",
     localLoaded: false,
@@ -1287,8 +1382,18 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     async historyAction() {},
     async systemAction() {},
     async providerTest(kind) { return `${kind} works`; },
+    async openAiSubscriptionAction(action) {
+      preview = { ...preview, openAiSubscriptionConnected: action === "connect" };
+      return preview;
+    },
     async providerModels(provider, kind) {
-      const models = kind === "stt"
+      const models = provider === "openai-subscription"
+        ? [
+            { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+            { id: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
+            { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+          ]
+        : kind === "stt"
         ? [
             { id: "gpt-4o-mini-transcribe", name: "GPT-4o mini Transcribe" },
             { id: "gpt-4o-transcribe", name: "GPT-4o Transcribe" },
@@ -1301,7 +1406,9 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
         provider,
         kind,
         selectable: !(provider === "xai" && kind === "stt"),
-        defaultModel: kind === "stt" ? "gpt-4o-mini-transcribe" : "gpt-4o-mini",
+        defaultModel: provider === "openai-subscription"
+          ? "gpt-5.6-luna"
+          : kind === "stt" ? "gpt-4o-mini-transcribe" : "gpt-4o-mini",
         models,
       };
     },

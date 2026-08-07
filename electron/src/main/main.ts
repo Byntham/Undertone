@@ -60,6 +60,10 @@ import {
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
+  OpenAiSubscription,
+  type OpenAiSubscriptionCredentials,
+} from "./openAiSubscription";
+import {
   createLocalCleanupRuntime,
   createLocalSttRuntime,
   type LocalServerRuntime,
@@ -71,6 +75,7 @@ import type {
   LocalEngineSnapshot,
   HistoryAction,
   CloudProviderId,
+  ModelProviderId,
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
@@ -141,6 +146,7 @@ if (!gotLock || devQuitRequest) {
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   let providerModelCatalog: ProviderModelCatalog | null = null;
+  let openAiSubscription: OpenAiSubscription | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
     stt: { installing: false, phase: "", fraction: 0 },
     cleanup: { installing: false, phase: "", fraction: 0 },
@@ -920,8 +926,17 @@ if (!gotLock || devQuitRequest) {
     configureLocalResidency();
 
     const http = new FetchHttpClient();
+    openAiSubscription = new OpenAiSubscription({
+      http,
+      credentials: openAiCredentials(config),
+      persist: persistOpenAiCredentials,
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      },
+      appVersion: app.getVersion(),
+    });
     transcriberClient = new Transcriber(http, localStt);
-    cleanupClient = new CleanupClient(http, localCleanup);
+    cleanupClient = new CleanupClient(http, localCleanup, openAiSubscription);
     providerModelCatalog = new ProviderModelCatalog(http);
     const paster = new ClipboardPaster(
       {
@@ -1031,6 +1046,7 @@ if (!gotLock || devQuitRequest) {
 
   async function shutdownServices(): Promise<void> {
     overlayController.dispose();
+    openAiSubscription?.dispose();
     for (const pending of pendingAudioFinalizations.values()) {
       clearTimeout(pending.timer);
       pending.resolve(null);
@@ -1165,6 +1181,24 @@ if (!gotLock || devQuitRequest) {
     settingsUpdateChain = operation.catch(() => undefined);
     await operation;
     return result;
+  }
+
+  async function persistOpenAiCredentials(
+    credentials: OpenAiSubscriptionCredentials | null,
+  ): Promise<void> {
+    const operation = settingsUpdateChain.then(async () => {
+      const store = configStore;
+      if (store === null) throw new Error("Settings store is not ready");
+      const next = normalizeConfig(config);
+      next.openai_oauth_access_token = credentials?.accessToken ?? "";
+      next.openai_oauth_refresh_token = credentials?.refreshToken ?? "";
+      next.openai_oauth_expires_at = credentials?.expiresAt ?? 0;
+      next.openai_oauth_account_id = credentials?.accountId ?? "";
+      await store.save(next);
+      config = next;
+    });
+    settingsUpdateChain = operation.catch(() => undefined);
+    await operation;
   }
 
   async function captureShortcut(field: ShortcutSetting): Promise<ReturnType<typeof settingsSnapshot>> {
@@ -1419,13 +1453,37 @@ if (!gotLock || devQuitRequest) {
     if (cleaned === null) throw new Error("Cleanup test failed");
     return `Cleanup works (${providerName(provider)}).`;
   });
+  ipcMain.handle("openai-subscription:action", async (event, value: unknown) => {
+    authorizeSettingsSender(event.sender, settingsWindow);
+    if (!isRecord(value) || (value.action !== "connect" && value.action !== "disconnect")) {
+      throw new Error("Invalid OpenAI Subscription action");
+    }
+    const subscription = openAiSubscription;
+    if (subscription === null) throw new Error("OpenAI Subscription is not ready");
+    if (value.action === "connect") await subscription.connect();
+    else await subscription.disconnect();
+    return currentSettingsSnapshot();
+  });
   ipcMain.handle("provider:models", async (event, value: unknown) => {
     authorizeSettingsSender(event.sender, settingsWindow);
     if (!isRecord(value)
-      || !isCloudProvider(value.provider)
+      || !isModelProvider(value.provider)
       || (value.kind !== "stt" && value.kind !== "cleanup")
+      || (value.provider === "openai-subscription" && value.kind !== "cleanup")
       || typeof value.refresh !== "boolean") {
       throw new Error("Invalid provider model request");
+    }
+    if (value.provider === "openai-subscription") {
+      const subscription = openAiSubscription;
+      if (subscription === null) throw new Error("OpenAI Subscription is not ready");
+      const result = await subscription.listModels(value.refresh);
+      return {
+        provider: value.provider,
+        kind: value.kind,
+        selectable: true,
+        defaultModel: result.defaultModel,
+        models: result.models,
+      };
     }
     const catalog = providerModelCatalog;
     if (catalog === null) throw new Error("Provider model discovery is not ready");
@@ -1687,6 +1745,7 @@ function isSystemAction(value: unknown): value is SystemAction {
 function providerName(provider: string): string {
   return provider === "xai" ? "xAI"
     : provider === "openai" ? "OpenAI"
+      : provider === "openai-subscription" ? "OpenAI Subscription"
       : provider === "openrouter" ? "OpenRouter"
         : "Local";
 }
@@ -1702,6 +1761,25 @@ function authorizeSettingsSender(
 
 function isCloudProvider(value: unknown): value is CloudProviderId {
   return value === "xai" || value === "openai" || value === "openrouter";
+}
+
+function isModelProvider(value: unknown): value is ModelProviderId {
+  return isCloudProvider(value) || value === "openai-subscription";
+}
+
+function openAiCredentials(config: UndertoneConfig): OpenAiSubscriptionCredentials | null {
+  return config.openai_oauth_access_token.length > 0
+    && config.openai_oauth_refresh_token.length > 0
+    && config.openai_oauth_account_id.length > 0
+    && Number.isFinite(config.openai_oauth_expires_at)
+    && config.openai_oauth_expires_at > 0
+    ? {
+        accessToken: config.openai_oauth_access_token,
+        refreshToken: config.openai_oauth_refresh_token,
+        expiresAt: config.openai_oauth_expires_at,
+        accountId: config.openai_oauth_account_id,
+      }
+    : null;
 }
 
 async function delay(milliseconds: number): Promise<void> {

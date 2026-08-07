@@ -1,5 +1,9 @@
-export type SettingsProviderId = "xai" | "openai" | "openrouter" | "local";
-export type CloudProviderId = Exclude<SettingsProviderId, "local">;
+export type SettingsProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
+export type CloudProviderId = "xai" | "openai" | "openrouter";
+export type ModelProviderId = CloudProviderId | "openai-subscription";
+export type TranscriptionProviderId = CloudProviderId | "local";
+export type CleanupProviderId = ModelProviderId | "local";
+export type OpenAiSubscriptionAction = "connect" | "disconnect";
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
 export type ShortcutSetting =
@@ -51,7 +55,7 @@ export interface ProviderModelOption {
 }
 
 export interface ProviderModelCatalogSnapshot {
-  provider: CloudProviderId;
+  provider: ModelProviderId;
   kind: ProviderModelKind;
   selectable: boolean;
   defaultModel: string | null;
@@ -77,9 +81,10 @@ export interface SettingsSnapshot {
   microphones: string[];
   appVersion: string;
   preview: boolean;
-  provider: SettingsProviderId;
-  cleanupProvider: SettingsProviderId;
+  provider: TranscriptionProviderId;
+  cleanupProvider: CleanupProviderId;
   keyConfigured: Record<CloudProviderId, boolean>;
+  openAiSubscriptionConnected: boolean;
   sttModel: string;
   cleanupModel: string;
   localLoaded: boolean;
@@ -118,11 +123,11 @@ export interface SettingsPatch {
   dictationMode?: DictationModeSetting;
   stackCleanupStrategy?: StackCleanupStrategySetting;
   inputDevice?: string;
-  provider?: SettingsProviderId;
-  cleanupProvider?: SettingsProviderId;
+  provider?: TranscriptionProviderId;
+  cleanupProvider?: CleanupProviderId;
   providerKey?: { provider: CloudProviderId; value: string };
   sttModel?: { provider: CloudProviderId; value: string };
-  cleanupModel?: { provider: CloudProviderId; value: string };
+  cleanupModel?: { provider: ModelProviderId; value: string };
   localLoaded?: boolean;
   localIdleMinutes?: number;
   sttVocabHints?: boolean;
@@ -142,8 +147,9 @@ export interface SettingsApi {
   historyAction(id: number, action: HistoryAction): Promise<void>;
   systemAction(action: SystemAction): Promise<void>;
   providerTest(kind: ProviderTestKind): Promise<string>;
+  openAiSubscriptionAction(action: OpenAiSubscriptionAction): Promise<SettingsSnapshot>;
   providerModels(
-    provider: CloudProviderId,
+    provider: ModelProviderId,
     kind: ProviderModelKind,
     refresh?: boolean,
   ): Promise<ProviderModelCatalogSnapshot>;

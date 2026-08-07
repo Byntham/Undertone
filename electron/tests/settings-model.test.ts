@@ -28,6 +28,7 @@ describe("settings model", () => {
       provider: "local",
       cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
+      openAiSubscriptionConnected: false,
       sttModel: "",
       cleanupModel: "",
       localLoaded: false,
@@ -84,6 +85,27 @@ describe("settings model", () => {
     expect(JSON.stringify(snapshot)).not.toContain("secret");
     expect(snapshot.sttModel).toBe("custom-stt");
     expect(snapshot.cleanupModel).toBe("custom-cleanup");
+  });
+
+  it("allows subscription cleanup without exposing it as transcription", () => {
+    const config = applySettingsPatch(normalizeConfig({
+      openai_oauth_access_token: "access",
+      openai_oauth_refresh_token: "refresh",
+      openai_oauth_account_id: "account",
+    }), {
+      cleanupProvider: "openai-subscription",
+      cleanupModel: { provider: "openai-subscription", value: "gpt-5.6-luna" },
+    });
+    const snapshot = settingsSnapshot(config, "1.8.0", true);
+    expect(snapshot.cleanupProvider).toBe("openai-subscription");
+    expect(snapshot.cleanupModel).toBe("gpt-5.6-luna");
+    expect(snapshot.openAiSubscriptionConnected).toBe(true);
+    expect(JSON.stringify(snapshot)).not.toContain("access");
+    expect(() => applySettingsPatch(config, { provider: "openai-subscription" }))
+      .toThrow(/supported provider/u);
+    expect(() => applySettingsPatch(config, {
+      sttModel: { provider: "openai-subscription", value: "gpt-5.6-luna" },
+    })).toThrow(/cloud provider/u);
   });
 
   it("clears model overrides and rejects malformed provider updates", () => {

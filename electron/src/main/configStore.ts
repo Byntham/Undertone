@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
-  KEY_FIELDS,
+  SECRET_FIELDS,
   cloneConfig,
   isRecord,
   normalizeConfig,
@@ -38,7 +38,7 @@ export class ConfigStore {
       parsed = undefined;
     }
     const config = normalizeConfig(parsed);
-    for (const field of Object.values(KEY_FIELDS)) {
+    for (const field of SECRET_FIELDS) {
       const value = config[field];
       if (typeof value === "string") config[field] = await this.cipher.unprotectSecret(value);
     }
@@ -48,7 +48,7 @@ export class ConfigStore {
   async save(config: UndertoneConfig): Promise<void> {
     await mkdir(path.dirname(this.configPath), { recursive: true });
     const onDisk = cloneConfig(config);
-    for (const field of Object.values(KEY_FIELDS)) {
+    for (const field of SECRET_FIELDS) {
       const value = onDisk[field];
       if (typeof value === "string" && value.length > 0) {
         onDisk[field] = await this.cipher.protectSecret(value);

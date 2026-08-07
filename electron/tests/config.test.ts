@@ -110,17 +110,31 @@ describe("configuration", () => {
     expect((await store.load()).language).toBe("en");
   });
 
-  it("encrypts keys, preserves the in-memory config, and replaces atomically", async () => {
+  it("encrypts keys and OAuth tokens, preserves memory, and replaces atomically", async () => {
     const directory = await makeTemporaryDirectory();
     const configPath = path.join(directory, "Undertone", "config.json");
     const store = new ConfigStore({ configPath, cipher });
-    const config = normalizeConfig({ api_key: "sk-super-secret-123" });
+    const config = normalizeConfig({
+      api_key: "sk-super-secret-123",
+      openai_oauth_access_token: "oauth-access",
+      openai_oauth_refresh_token: "oauth-refresh",
+      openai_oauth_account_id: "oauth-account",
+      openai_oauth_expires_at: 123456,
+    });
     await store.save(config);
     const firstDiskValue = await readFile(configPath, "utf8");
     expect(firstDiskValue).not.toContain("sk-super-secret-123");
+    expect(firstDiskValue).not.toContain("oauth-access");
+    expect(firstDiskValue).not.toContain("oauth-refresh");
+    expect(firstDiskValue).not.toContain("oauth-account");
     expect(firstDiskValue).toContain("dpapi:test:");
     expect(config.api_key).toBe("sk-super-secret-123");
     expect((await store.load()).api_key).toBe("sk-super-secret-123");
+    const loaded = await store.load();
+    expect(loaded.openai_oauth_access_token).toBe("oauth-access");
+    expect(loaded.openai_oauth_refresh_token).toBe("oauth-refresh");
+    expect(loaded.openai_oauth_account_id).toBe("oauth-account");
+    expect(loaded.openai_oauth_expires_at).toBe(123456);
 
     config.language = "es";
     await store.save(config);

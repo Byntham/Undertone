@@ -1,4 +1,4 @@
-export type ProviderId = "xai" | "openai" | "openrouter" | "local";
+export type ProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
 export type DictationMode = "stack" | "instant";
 export type StackCleanupStrategy = "live-full" | "commit-full";
 export type ConfigRecord = Record<string, unknown>;
@@ -6,6 +6,10 @@ export type ConfigRecord = Record<string, unknown>;
 export interface UndertoneConfig extends ConfigRecord {
   api_key: string;
   openai_api_key: string;
+  openai_oauth_access_token: string;
+  openai_oauth_refresh_token: string;
+  openai_oauth_expires_at: number;
+  openai_oauth_account_id: string;
   openrouter_api_key: string;
   hotkey: string;
   language: string;
@@ -37,6 +41,10 @@ export interface UndertoneConfig extends ConfigRecord {
 export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   api_key: "",
   openai_api_key: "",
+  openai_oauth_access_token: "",
+  openai_oauth_refresh_token: "",
+  openai_oauth_expires_at: 0,
+  openai_oauth_account_id: "",
   openrouter_api_key: "",
   hotkey: "left ctrl+left windows",
   language: "en",
@@ -71,6 +79,13 @@ export const KEY_FIELDS = {
   openrouter: "openrouter_api_key",
 } as const;
 
+export const SECRET_FIELDS = [
+  ...Object.values(KEY_FIELDS),
+  "openai_oauth_access_token",
+  "openai_oauth_refresh_token",
+  "openai_oauth_account_id",
+] as const;
+
 export function normalizeConfig(value: unknown): UndertoneConfig {
   const config = cloneConfig(DEFAULT_CONFIG);
   if (isRecord(value)) {
@@ -83,6 +98,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   const cleanupModels = ensureStringMap(config, "cleanup_models");
   delete sttModels.local;
   delete cleanupModels.local;
+  if (!isTranscriptionProvider(config.provider)) config.provider = DEFAULT_CONFIG.provider;
+  if (!isCleanupProvider(config.cleanup_provider)) {
+    config.cleanup_provider = DEFAULT_CONFIG.cleanup_provider;
+  }
   if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
     config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
   }
@@ -100,6 +119,14 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     config.discard_hotkey = DEFAULT_CONFIG.discard_hotkey;
   }
   return config as UndertoneConfig;
+}
+
+function isTranscriptionProvider(value: unknown): value is Exclude<ProviderId, "openai-subscription"> {
+  return value === "xai" || value === "openai" || value === "openrouter" || value === "local";
+}
+
+function isCleanupProvider(value: unknown): value is ProviderId {
+  return isTranscriptionProvider(value) || value === "openai-subscription";
 }
 
 export function providerKey(config: ConfigRecord, provider: string): string {
