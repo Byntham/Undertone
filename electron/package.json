@@ -1,6 +1,6 @@
 {
   "name": "undertone-electron",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "description": "Push-to-talk dictation for Windows",
   "undertoneDevProtocol": 1,
