@@ -19,7 +19,6 @@ import type {
   SystemAction,
   TranscriptionProviderId,
 } from "../shared/settings";
-import desktopIconUrl from "../../../assets/icon.png";
 import "./style.css";
 
 type Section = "general" | "speechAi" | "dictionary" | "history";
@@ -126,22 +125,35 @@ function SettingsApp(): React.JSX.Element {
 
   return <div className="shell">
     <aside className="sidebar">
-      <div className="brand">
-        <img className="brandMark" src={desktopIconUrl} alt="" />
-      </div>
       <nav aria-label="Settings sections">
-        <NavItem active={section === "general"} onClick={() => setSection("general")}>
-          General
-        </NavItem>
-        <NavItem active={section === "speechAi"} onClick={() => setSection("speechAi")}>
-          Speech &amp; AI
-        </NavItem>
-        <NavItem active={section === "dictionary"} onClick={() => setSection("dictionary")}>
-          Dictionary
-        </NavItem>
-        <NavItem active={section === "history"} onClick={() => setSection("history")}>
-          History
-        </NavItem>
+        <NavItem
+          active={section === "general"}
+          icon="general"
+          label="General"
+          description="Shortcuts, dictation, input, and app behavior"
+          onClick={() => setSection("general")}
+        />
+        <NavItem
+          active={section === "speechAi"}
+          icon="speechAi"
+          label="Speech & AI"
+          description="Language, providers, cleanup, credentials, and local models"
+          onClick={() => setSection("speechAi")}
+        />
+        <NavItem
+          active={section === "dictionary"}
+          icon="dictionary"
+          label="Dictionary"
+          description="Vocabulary and corrections"
+          onClick={() => setSection("dictionary")}
+        />
+        <NavItem
+          active={section === "history"}
+          icon="history"
+          label="History"
+          description="Recent dictations and retries"
+          onClick={() => setSection("history")}
+        />
       </nav>
     </aside>
     <main ref={contentRef} className="content">
@@ -199,194 +211,190 @@ function General({
     }
   };
   return <section>
-    <header className="pageHeader">
-      <p className="eyebrow">SETTINGS</p>
-      <h1>General</h1>
-      <p>Recording, output, and application behavior.</p>
-    </header>
-    <div className="card">
+    <header className="pageHeader"><h1>General</h1></header>
+
+    <h2>Shortcuts</h2>
+    <div className="card shortcutGrid">
       {settings.shortcutWarning !== null
         && <p className="shortcutWarning" role="status">{settings.shortcutWarning}</p>}
-      <SettingRow title="Push-to-talk shortcut" description="Hold this shortcut while you speak.">
-        <ShortcutControl
-          field="hotkey"
-          value={settings.hotkey}
-          capturing={capturing}
-          capture={captureShortcut}
-        />
-      </SettingRow>
-      <SettingRow title="Re-paste last dictation" description="Paste the newest successful result again.">
-        <ShortcutControl
-          field="repasteHotkey"
-          value={settings.repasteHotkey}
-          capturing={capturing}
-          capture={captureShortcut}
-        />
-      </SettingRow>
-      <SettingRow
+      <ShortcutItem
+        primary
+        title="Push to talk"
+        field="hotkey"
+        value={settings.hotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
+      <ShortcutItem
+        title="Re-paste last dictation"
+        field="repasteHotkey"
+        value={settings.repasteHotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
+      <ShortcutItem
         title="Commit open turn"
-        description="In stack mode, paste the full turn into the focused app."
-      >
-        <ShortcutControl
-          field="commitHotkey"
-          value={settings.commitHotkey}
-          capturing={capturing}
-          capture={captureShortcut}
-        />
-      </SettingRow>
-      <SettingRow
-        title="Scratch last fragment"
-        description="Drop only the newest fragment from the open turn."
-      >
-        <ShortcutControl
-          field="scratchHotkey"
-          value={settings.scratchHotkey}
-          capturing={capturing}
-          capture={captureShortcut}
-        />
-      </SettingRow>
-      <SettingRow
+        description="Paste the full stacked turn"
+        field="commitHotkey"
+        value={settings.commitHotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
+      <ShortcutItem
+        title="Remove last fragment"
+        field="scratchHotkey"
+        value={settings.scratchHotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
+      <ShortcutItem
         title="Discard open turn"
-        description="Clear the whole unfinished turn without pasting."
-      >
-        <ShortcutControl
-          field="discardHotkey"
-          value={settings.discardHotkey}
-          capturing={capturing}
-          capture={captureShortcut}
-        />
-      </SettingRow>
-      <SettingRow
-        title="Dictation mode"
-        description="Stack builds a turn from fragments. Instant pastes each utterance."
-      >
-        <select
-          aria-label="Dictation mode"
-          value={settings.dictationMode}
-          onChange={(event) => {
-            void update({
-              dictationMode: event.target.value === "instant" ? "instant" : "stack",
-            });
-          }}
-        >
-          <option value="stack">Stack fragments (commit to send)</option>
-          <option value="instant">Instant paste</option>
-        </select>
-      </SettingRow>
-      <SettingRow
-        title="Stack cleanup timing"
-        description="Choose when AI cleanup rewrites an open turn. Instant mode is unaffected."
-      >
-        <select
-          aria-label="Stack cleanup timing"
-          value={settings.stackCleanupStrategy}
-          disabled={settings.dictationMode !== "stack"}
-          onChange={(event) => {
-            void update({
-              stackCleanupStrategy: event.target.value === "commit-full"
-                ? "commit-full"
-                : "live-full",
-            });
-          }}
-        >
-          <option value="live-full">Whole turn after every fragment</option>
-          <option value="commit-full">Whole turn only when committing</option>
-        </select>
-      </SettingRow>
-      <SettingRow title="Microphone" description="Select the input device by its Windows name.">
-        <div className="microphoneControl">
-          <select
-            aria-label="Microphone"
-            value={settings.inputDevice}
-            onChange={(event) => { void update({ inputDevice: event.target.value }); }}
-          >
-            <option value="">System default</option>
-            {settings.inputDevice !== "" && !settings.microphones.includes(settings.inputDevice)
-              && <option value={settings.inputDevice}>{settings.inputDevice} (disconnected)</option>}
-            {settings.microphones.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
-          <button
-            type="button"
-            className="smallButton"
-            disabled={testingMicrophone}
-            onClick={() => { void testMicrophone(); }}
-          >{testingMicrophone ? "Testing..." : "Test"}</button>
-          {microphoneStatus !== null && <small role="status">{microphoneStatus}</small>}
-        </div>
-      </SettingRow>
-      <SettingRow title="Transcription language" description="Language hint sent to the selected speech provider.">
-        <select
-          aria-label="Transcription language"
-          value={settings.language}
-          onChange={(event) => { void update({ language: event.target.value }); }}
-        >
-          <option value="en">English</option>
-          <option value="de">German</option>
-          <option value="es">Spanish</option>
-          <option value="fr">French</option>
-          <option value="it">Italian</option>
-          <option value="pt">Portuguese</option>
-        </select>
-      </SettingRow>
-      <SettingRow title="Sound cues" description="Play short tones for start, stop, lock, and cancel.">
-        <Toggle
-          label="Sound cues"
-          checked={settings.soundCues}
-          onChange={(soundCues) => { void update({ soundCues }); }}
-        />
-      </SettingRow>
+        field="discardHotkey"
+        value={settings.discardHotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
     </div>
-    <h2>Output</h2>
-    <div className="card">
-      <SettingRow
-        title="Smart formatting"
-        description="Use surrounding context for spacing and capitalization (turn buffer in stack mode)."
-      >
-        <Toggle
-          label="Smart formatting"
-          checked={settings.smartFormatting}
-          onChange={(checked) => { void update({ smartFormatting: checked }); }}
-        />
-      </SettingRow>
-      <SettingRow title="AI cleanup" description="Polish transcript wording; failures fall back to local rules.">
-        <Toggle
-          label="AI cleanup"
-          checked={settings.aiCleanup}
-          onChange={(checked) => { void update({ aiCleanup: checked }); }}
-        />
-      </SettingRow>
-      <SettingRow title="Restore clipboard" description="Put previous clipboard text back after a successful paste.">
-        <Toggle
-          label="Restore clipboard"
-          checked={settings.restoreClipboard}
-          onChange={(checked) => { void update({ restoreClipboard: checked }); }}
-        />
-      </SettingRow>
-    </div>
-    <h2>Application</h2>
-    <div className="card">
-      <SettingRow title="Start with Windows" description="Launch quietly in the tray when you sign in.">
-        <Toggle
-          label="Start with Windows"
-          checked={settings.startWithWindows}
-          onChange={(startWithWindows) => { void update({ startWithWindows }); }}
-        />
-      </SettingRow>
-    </div>
-    <h2>About</h2>
-    <div className="card aboutCard">
-      <img className="aboutIcon" src={desktopIconUrl} alt="" />
+
+    <div className="settingsColumns">
       <div>
-        <h2>Undertone {settings.appVersion}</h2>
-        <p>{settings.preview ? "Isolated Electron preview" : "Production channel"}</p>
+        <h2>Dictation</h2>
+        <div className="card">
+          <SettingRow title="Dictation mode" description="Stack a turn or paste each utterance instantly.">
+            <select
+              aria-label="Dictation mode"
+              value={settings.dictationMode}
+              onChange={(event) => {
+                void update({ dictationMode: event.target.value === "instant" ? "instant" : "stack" });
+              }}
+            >
+              <option value="stack">Stack</option>
+              <option value="instant">Instant</option>
+            </select>
+          </SettingRow>
+          <SettingRow title="Cleanup timing">
+            <select
+              aria-label="Cleanup timing"
+              value={settings.stackCleanupStrategy}
+              disabled={settings.dictationMode !== "stack"}
+              onChange={(event) => {
+                void update({
+                  stackCleanupStrategy: event.target.value === "commit-full"
+                    ? "commit-full"
+                    : "live-full",
+                });
+              }}
+            >
+              <option value="live-full">After every fragment</option>
+              <option value="commit-full">When committing</option>
+            </select>
+          </SettingRow>
+        </div>
+
+        <h2>Output</h2>
+        <div className="card">
+          <SettingRow title="Fix spacing & capitalization">
+            <Toggle
+              label="Fix spacing and capitalization"
+              checked={settings.smartFormatting}
+              onChange={(smartFormatting) => { void update({ smartFormatting }); }}
+            />
+          </SettingRow>
+          <SettingRow title="Restore clipboard" description="Put previous clipboard text back after pasting.">
+            <Toggle
+              label="Restore clipboard"
+              checked={settings.restoreClipboard}
+              onChange={(restoreClipboard) => { void update({ restoreClipboard }); }}
+            />
+          </SettingRow>
+        </div>
+      </div>
+
+      <div>
+        <h2>Input &amp; feedback</h2>
+        <div className="card">
+          <SettingRow title="Microphone" description={settings.inputDevice || "System default input"}>
+            <div className="microphoneControl">
+              <select
+                aria-label="Microphone"
+                value={settings.inputDevice}
+                onChange={(event) => { void update({ inputDevice: event.target.value }); }}
+              >
+                <option value="">System default</option>
+                {settings.inputDevice !== "" && !settings.microphones.includes(settings.inputDevice)
+                  && <option value={settings.inputDevice}>{settings.inputDevice} (disconnected)</option>}
+                {settings.microphones.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+              <button
+                type="button"
+                className="smallButton"
+                disabled={testingMicrophone}
+                onClick={() => { void testMicrophone(); }}
+              >{testingMicrophone ? "Testing…" : "Test"}</button>
+              {microphoneStatus !== null && <small role="status">{microphoneStatus}</small>}
+            </div>
+          </SettingRow>
+          <SettingRow title="Dictation sound cues">
+            <Toggle
+              label="Dictation sound cues"
+              checked={settings.soundCues}
+              onChange={(soundCues) => { void update({ soundCues }); }}
+            />
+          </SettingRow>
+        </div>
+        <p className="infoNote">The visual status overlay is always on. It appears only while dictating or processing and never takes focus.</p>
+
+        <h2>Application</h2>
+        <div className="card">
+          <SettingRow title="Start with Windows" description="Launch quietly in the tray.">
+            <Toggle
+              label="Start with Windows"
+              checked={settings.startWithWindows}
+              onChange={(startWithWindows) => { void update({ startWithWindows }); }}
+            />
+          </SettingRow>
+          <AppUpdates appVersion={settings.appVersion} />
+          <SettingRow title="Diagnostics" description="Settings folder and application log">
+            <div className="buttonGroup">
+              <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Settings</button>
+              <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>Log</button>
+            </div>
+          </SettingRow>
+        </div>
       </div>
     </div>
-    <AppUpdates />
-    <div className="aboutLinks">
-      <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Open settings folder</button>
-      <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>View log</button>
-    </div>
   </section>;
+}
+
+function ShortcutItem({
+  primary = false,
+  title,
+  description,
+  field,
+  value,
+  capturing,
+  capture,
+}: {
+  primary?: boolean;
+  title: string;
+  description?: string;
+  field: ShortcutSetting;
+  value: string;
+  capturing: ShortcutSetting | null;
+  capture: (field: ShortcutSetting) => Promise<void>;
+}): React.JSX.Element {
+  return <div className="shortcutItem" data-primary={primary}>
+    <div>
+      <h3>{title}</h3>
+      {description !== undefined && <p>{description}</p>}
+    </div>
+    <ShortcutControl
+      field={field}
+      value={value}
+      capturing={capturing}
+      capture={capture}
+    />
+  </div>;
 }
 
 function ShortcutControl({
@@ -401,8 +409,11 @@ function ShortcutControl({
   capture: (field: ShortcutSetting) => Promise<void>;
 }): React.JSX.Element {
   const active = capturing === field;
+  const parts = active ? ["Press shortcut…"] : shortcutParts(value);
   return <div className="shortcutControl">
-    <span className="keycap">{active ? "Press shortcut…" : value || "Disabled"}</span>
+    <span className="keycaps">{parts.map((part, index) => (
+      <span className="keycap" key={`${part}-${index}`}>{part}</span>
+    ))}</span>
     <button
       type="button"
       className="smallButton"
@@ -410,6 +421,30 @@ function ShortcutControl({
       onClick={() => { void capture(field); }}
     >{active ? "Listening…" : "Change"}</button>
   </div>;
+}
+
+function shortcutParts(value: string): string[] {
+  if (value.length === 0) return ["Disabled"];
+  const names: Readonly<Record<string, string>> = {
+    "left ctrl": "Ctrl",
+    "right ctrl": "Ctrl",
+    ctrl: "Ctrl",
+    "left alt": "Alt",
+    "right alt": "Alt",
+    alt: "Alt",
+    "left shift": "Shift",
+    "right shift": "Shift",
+    shift: "Shift",
+    "left windows": "Win",
+    "right windows": "Win",
+    windows: "Win",
+    backspace: "⌫",
+    enter: "Enter",
+  };
+  return value.split("+").map((part) => {
+    const normalized = part.trim().toLowerCase();
+    return names[normalized] ?? normalized.toUpperCase();
+  });
 }
 
 function Dictionary({
@@ -441,15 +476,16 @@ function Dictionary({
     });
   };
   return <section>
-    <header className="pageHeader">
-      <p className="eyebrow">SETTINGS</p>
-      <h1>Dictionary</h1>
-      <p>Teach Undertone names, jargon, and exact replacements.</p>
-    </header>
+    <header className="pageHeader"><h1>Dictionary</h1></header>
     <h2>Vocabulary</h2>
     <div className="card">
       <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addTerm(); }}>
-        <input aria-label="Vocabulary term" value={term} onChange={(event) => setTerm(event.target.value)} />
+        <input
+          aria-label="Vocabulary term"
+          placeholder="Add a name or technical term"
+          value={term}
+          onChange={(event) => setTerm(event.target.value)}
+        />
         <button type="submit" className="smallButton accent">Add</button>
       </form>
       <EditableList
@@ -458,6 +494,7 @@ function Dictionary({
         remove={(value) => { void update({ vocabulary: settings.vocabulary.filter((item) => item !== value) }); }}
       />
     </div>
+    <p className="supportNote">Vocabulary helps recognition preserve unusual words and capitalization.</p>
     <h2>Corrections</h2>
     <div className="card">
       <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addCorrection(); }}>
@@ -476,6 +513,7 @@ function Dictionary({
         }}
       />
     </div>
+    <p className="supportNote">Corrections run locally and always use the exact replacement.</p>
     {settings.provider === "xai" && <div className="card localPolicy">
       <SettingRow title="Send recognition hints" description="xAI receives these terms as key-term hints; other providers do not.">
         <Toggle label="Send recognition hints" checked={settings.sttVocabHints} onChange={(sttVocabHints) => {
@@ -511,7 +549,6 @@ function History({
 }): React.JSX.Element {
   return <section>
     <header className="pageHeader">
-      <p className="eyebrow">SESSION</p>
       <h1>History</h1>
       <p>Recent dictations live in memory and disappear when Undertone exits.</p>
     </header>
@@ -575,129 +612,152 @@ function SpeechAi({
       setTesting(null);
     }
   };
+  const cleanupSubscriptionActive = settings.aiCleanup
+    && settings.cleanupProvider === "openai-subscription";
   const activeCredentialProviders = CLOUD_PROVIDERS.filter(({ id }) => (
-    settings.provider === id || settings.cleanupProvider === id
+    settings.provider === id || (settings.aiCleanup && settings.cleanupProvider === id)
   ));
   const otherCredentialProviders = CLOUD_PROVIDERS.filter(({ id }) => (
-    settings.provider !== id && settings.cleanupProvider !== id
+    settings.provider !== id && (!settings.aiCleanup || settings.cleanupProvider !== id)
   ));
   return <section>
-    <header className="pageHeader">
-      <p className="eyebrow">SETTINGS</p>
-      <h1>Speech &amp; AI</h1>
-      <p>Choose transcription and cleanup services and credentials.</p>
-    </header>
-    <h2>Services</h2>
-    <div className="card">
-      <SettingRow title="Transcription" description="Turns your speech into text.">
-        <div className="serviceControl">
-          <ProviderSelect
-            label="Transcription provider"
-            value={settings.provider}
-            localAvailable={settings.localEngines.stt.installed}
-            providers={TRANSCRIPTION_PROVIDERS}
-            onChange={(provider) => { void update({ provider }); }}
-          />
-          <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
-            {testing === "stt" ? "Testing…" : "Test"}
-          </button>
-          <small className="modelSummary">Model: {modelLabel("stt", settings.sttModel)}</small>
-          {testResults.stt && <small role="status">{testResults.stt}</small>}
+    <header className="pageHeader"><h1>Speech &amp; AI</h1></header>
+    <div className="settingsColumns speechColumns">
+      <div>
+        <h2>Services</h2>
+        <div className="card">
+          <SettingRow title="Transcription">
+            <div className="serviceControl">
+              <ProviderSelect
+                label="Transcription provider"
+                value={settings.provider}
+                localAvailable={settings.localEngines.stt.installed}
+                providers={TRANSCRIPTION_PROVIDERS}
+                onChange={(provider) => { void update({ provider }); }}
+              />
+              <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
+                {testing === "stt" ? "Testing…" : "Test"}
+              </button>
+              <small className="modelSummary">Model · {modelLabel("stt", settings.sttModel)}</small>
+              {testResults.stt && <small role="status">{testResults.stt}</small>}
+            </div>
+          </SettingRow>
+          <SettingRow title="Transcription language">
+            <select
+              aria-label="Transcription language"
+              value={settings.language}
+              onChange={(event) => { void update({ language: event.target.value }); }}
+            >
+              <option value="en">English</option>
+              <option value="de">German</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+            </select>
+          </SettingRow>
+          <SettingRow title="Use AI cleanup">
+            <Toggle
+              label="Use AI cleanup"
+              checked={settings.aiCleanup}
+              onChange={(aiCleanup) => { void update({ aiCleanup }); }}
+            />
+          </SettingRow>
+          <SettingRow title="Cleanup provider">
+            <div className="serviceControl" data-disabled={!settings.aiCleanup}>
+              <ProviderSelect
+                label="Cleanup provider"
+                value={settings.cleanupProvider}
+                localAvailable={settings.localEngines.cleanup.installed}
+                providers={CLEANUP_PROVIDERS}
+                disabled={!settings.aiCleanup}
+                onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
+              />
+              <button type="button" className="smallButton" disabled={testing !== null || !settings.aiCleanup} onClick={() => { void test("cleanup"); }}>
+                {testing === "cleanup" ? "Testing…" : "Test"}
+              </button>
+              <small className="modelSummary">Model · {modelLabel("cleanup", settings.cleanupModel)}</small>
+              {testResults.cleanup && <small role="status">{testResults.cleanup}</small>}
+            </div>
+          </SettingRow>
         </div>
-      </SettingRow>
-      <SettingRow title="AI cleanup" description="Polishes the wording before it is pasted.">
-        <div className="serviceControl">
-          <ProviderSelect
-            label="Cleanup provider"
-            value={settings.cleanupProvider}
-            localAvailable={settings.localEngines.cleanup.installed}
-            providers={CLEANUP_PROVIDERS}
-            onChange={(cleanupProvider) => { void update({ cleanupProvider }); }}
-          />
-          <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("cleanup"); }}>
-            {testing === "cleanup" ? "Testing…" : "Test"}
-          </button>
-          <small className="modelSummary">Model: {modelLabel("cleanup", settings.cleanupModel)}</small>
-          {testResults.cleanup && <small role="status">{testResults.cleanup}</small>}
-        </div>
-      </SettingRow>
-    </div>
 
-    <h2>Credentials</h2>
-    {activeCredentialProviders.length === 0 && settings.cleanupProvider !== "openai-subscription"
-      ? <div className="card emptyList">No cloud credentials are needed for the selected services.</div>
-      : <div className="providerGrid">
-          {settings.cleanupProvider === "openai-subscription" && <SubscriptionCard
-            connected={settings.openAiSubscriptionConnected}
-            action={openAiSubscriptionAction}
-          />}
-          {activeCredentialProviders.map(({ id, label }) => <KeyCard
-            key={id}
-            provider={id}
-            name={label}
-            configured={settings.keyConfigured[id]}
-            update={update}
-          />)}
-        </div>}
-    {otherCredentialProviders.length > 0 && <details className="otherCredentials">
-      <summary>Other credentials</summary>
-      <div className="providerGrid">
-        {otherCredentialProviders.map(({ id, label }) => <KeyCard
-          key={id}
-          provider={id}
-          name={label}
-          configured={settings.keyConfigured[id]}
-          update={update}
-        />)}
-        {settings.cleanupProvider !== "openai-subscription" && <SubscriptionCard
-          connected={settings.openAiSubscriptionConnected}
-          action={openAiSubscriptionAction}
-        />}
+        <h2>Credentials</h2>
+        {activeCredentialProviders.length === 0 && !cleanupSubscriptionActive
+          ? <div className="card emptyList">No cloud credentials are needed.</div>
+          : <div className="providerGrid">
+              {cleanupSubscriptionActive && <SubscriptionCard
+                connected={settings.openAiSubscriptionConnected}
+                action={openAiSubscriptionAction}
+              />}
+              {activeCredentialProviders.map(({ id, label }) => <KeyCard
+                key={id}
+                provider={id}
+                name={label}
+                configured={settings.keyConfigured[id]}
+                update={update}
+              />)}
+            </div>}
+        {otherCredentialProviders.length > 0 && <details className="otherCredentials">
+          <summary>Other credentials</summary>
+          <div className="providerGrid">
+            {otherCredentialProviders.map(({ id, label }) => <KeyCard
+              key={id}
+              provider={id}
+              name={label}
+              configured={settings.keyConfigured[id]}
+              update={update}
+            />)}
+            {!cleanupSubscriptionActive && <SubscriptionCard
+              connected={settings.openAiSubscriptionConnected}
+              action={openAiSubscriptionAction}
+            />}
+          </div>
+        </details>}
+        <p className="privacyNote">Keys and sign-in tokens are encrypted on this computer.</p>
       </div>
-    </details>}
-    <p className="privacyNote">
-      Saved keys and OpenAI sign-in tokens are DPAPI-encrypted and never returned to this page.
-    </p>
 
-    <h2>On-device</h2>
-    <div className="providerGrid">
-      <LocalEngineCard
-        kind="stt"
-        name="Transcription model"
-        status={settings.localEngines.stt}
-        action={localAction}
-      />
-      <LocalEngineCard
-        kind="cleanup"
-        name="Cleanup model"
-        status={settings.localEngines.cleanup}
-        action={localAction}
-      />
-    </div>
-    <div className="card localPolicy">
-      <SettingRow
-        title="Load models on startup"
-        description="Warm selected local providers when Undertone starts."
-      >
-        <Toggle
-          label="Load local models on startup"
-          checked={settings.localLoaded}
-          onChange={(localLoaded) => { void update({ localLoaded }); }}
-        />
-      </SettingRow>
-      <SettingRow title="Auto-eject when idle" description="Free model memory after inactivity.">
-        <select
-          aria-label="Local model idle timeout"
-          value={settings.localIdleMinutes}
-          onChange={(event) => { void update({ localIdleMinutes: Number(event.target.value) }); }}
-        >
-          <option value={0}>Never</option>
-          <option value={5}>After 5 min</option>
-          <option value={15}>After 15 min</option>
-          <option value={30}>After 30 min</option>
-          <option value={60}>After 1 hour</option>
-        </select>
-      </SettingRow>
+      <div>
+        <h2>On-device</h2>
+        <div className="providerGrid">
+          <LocalEngineCard
+            kind="stt"
+            name="Transcription model"
+            status={settings.localEngines.stt}
+            action={localAction}
+          />
+          <LocalEngineCard
+            kind="cleanup"
+            name="Cleanup model"
+            status={settings.localEngines.cleanup}
+            action={localAction}
+          />
+        </div>
+
+        <h2>Local behavior</h2>
+        <div className="card">
+          <SettingRow title="Load models on startup">
+            <Toggle
+              label="Load local models on startup"
+              checked={settings.localLoaded}
+              onChange={(localLoaded) => { void update({ localLoaded }); }}
+            />
+          </SettingRow>
+          <SettingRow title="Unload models when idle">
+            <select
+              aria-label="Local model idle timeout"
+              value={settings.localIdleMinutes}
+              onChange={(event) => { void update({ localIdleMinutes: Number(event.target.value) }); }}
+            >
+              <option value={0}>Never</option>
+              <option value={5}>After 5 min</option>
+              <option value={15}>After 15 min</option>
+              <option value={30}>After 30 min</option>
+              <option value={60}>After 1 hour</option>
+            </select>
+          </SettingRow>
+        </div>
+      </div>
     </div>
   </section>;
 }
@@ -707,17 +767,20 @@ function ProviderSelect<T extends SettingsProviderId>({
   value,
   localAvailable,
   providers,
+  disabled = false,
   onChange,
 }: {
   label: string;
   value: T;
   localAvailable: boolean;
   providers: readonly { id: T; label: string }[];
+  disabled?: boolean;
   onChange: (value: T) => void;
 }): React.JSX.Element {
   return <select
     aria-label={label}
     value={value}
+    disabled={disabled}
     onChange={(event) => onChange(event.target.value as T)}
   >
     {providers.map((provider) => <option
@@ -748,7 +811,7 @@ function SubscriptionCard({
     <div className="keyHead">
       <div>
         <strong>OpenAI Subscription</strong>
-        <small>Cleanup only. Transcription still uses an API key or a local model.</small>
+        <small>AI cleanup only</small>
       </div>
       <span data-configured={connected}>{connected ? "Connected" : "Not connected"}</span>
     </div>
@@ -886,7 +949,7 @@ function modelLabel(kind: "stt" | "cleanup", model: string): string {
   return names[model] ?? model;
 }
 
-function AppUpdates(): React.JSX.Element {
+function AppUpdates({ appVersion }: { appVersion: string }): React.JSX.Element {
   const [updateStatus, setUpdateStatus] = useState<AppUpdateSnapshot | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   useEffect(() => {
@@ -925,44 +988,41 @@ function AppUpdates(): React.JSX.Element {
   };
 
   const busy = updateStatus?.phase === "checking" || updateStatus?.phase === "downloading";
-  return <div className="card updateCard">
-      <div className="updateCopy">
-        <h3>Application updates</h3>
-        <p role="status" data-error={updateStatus?.phase === "error" || updateError !== null}>
-          {updateError ?? updateStatus?.message ?? "Loading update status..."}
-        </p>
-        {updateStatus?.phase === "downloading" && <progress
-          aria-label="Update download progress"
-          max={100}
-          value={updateStatus.progress ?? 0}
-        />}
-      </div>
+  const status = updateError ?? updateStatus?.message ?? "Loading update status…";
+  return <SettingRow title="App updates" description={`Version ${updateStatus?.currentVersion ?? appVersion} · ${status}`}>
+    <div className="updateControl">
       {updateStatus?.phase === "downloaded"
         ? <button type="button" className="smallButton accent" onClick={() => { void installUpdate(); }}>
             Restart and install
           </button>
         : <button
             type="button"
-            className="smallButton accent"
+            className="smallButton"
             disabled={busy || updateStatus?.supported !== true}
             onClick={() => { void checkForUpdates(); }}
           >
             {updateStatus?.phase === "checking"
-              ? "Checking..."
+              ? "Checking…"
               : updateStatus?.phase === "downloading"
                 ? `${Math.round(updateStatus.progress ?? 0)}%`
-                : "Check for updates"}
+                : "Check"}
           </button>}
-  </div>;
+      {updateStatus?.phase === "downloading" && <progress
+        aria-label="Update download progress"
+        max={100}
+        value={updateStatus.progress ?? 0}
+      />}
+    </div>
+  </SettingRow>;
 }
 
 function SettingRow({
   title,
   description,
   children,
-}: React.PropsWithChildren<{ title: string; description: string }>): React.JSX.Element {
+}: React.PropsWithChildren<{ title: string; description?: React.ReactNode }>): React.JSX.Element {
   return <div className="settingRow">
-    <div><h3>{title}</h3><p>{description}</p></div>
+    <div><h3>{title}</h3>{description !== undefined && <p>{description}</p>}</div>
     <div className="control">{children}</div>
   </div>;
 }
@@ -989,18 +1049,44 @@ function Toggle({
 
 function NavItem({
   active,
+  icon,
+  label,
+  description,
   onClick,
-  children,
-}: React.PropsWithChildren<{ active: boolean; onClick: () => void }>): React.JSX.Element {
+}: {
+  active: boolean;
+  icon: Section;
+  label: string;
+  description: string;
+  onClick: () => void;
+}): React.JSX.Element {
   return <button
     type="button"
     className="navItem"
     data-active={active}
+    aria-label={`${label} — ${description}`}
     aria-current={active ? "page" : undefined}
     onClick={onClick}
   >
-    {children}
+    <NavIcon icon={icon} />
+    <span className="navTip"><strong>{label}</strong><small>{description}</small></span>
   </button>;
+}
+
+function NavIcon({ icon }: { icon: Section }): React.JSX.Element {
+  if (icon === "general") return <svg className="navIcon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="m4 10 8-6 8 6v9a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z" />
+  </svg>;
+  if (icon === "speechAi") return <svg className="navIcon" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.6 4.6a10.5 10.5 0 0 0 0 14.8M19.4 4.6a10.5 10.5 0 0 1 0 14.8" />
+  </svg>;
+  if (icon === "dictionary") return <svg className="navIcon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 4h5a3 3 0 0 1 2 1 3 3 0 0 1 2-1h5v15h-5a3 3 0 0 0-2 1 3 3 0 0 0-2-1H5zM12 5v15" />
+  </svg>;
+  return <svg className="navIcon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6M12 7v5l3 2" />
+  </svg>;
 }
 
 function errorMessage(reason: unknown): string {

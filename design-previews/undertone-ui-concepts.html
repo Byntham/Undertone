@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Undertone UI concepts</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      color: #e8efed;
+      background: #111515;
+      font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+      font-synthesis: none;
+    }
+    body { margin: 0; min-width: 900px; min-height: 100vh; background: #111515; }
+    button, select { font: inherit; }
+    button { color: inherit; }
+
+    .lab {
+      min-height: 100vh;
+      padding: 26px 28px 40px;
+      background:
+        radial-gradient(circle at 10% -10%, rgba(176, 247, 236, .10), transparent 30%),
+        radial-gradient(circle at 90% 0%, rgba(60, 132, 125, .12), transparent 26%),
+        #111515;
+    }
+    .labHead {
+      position: relative;
+      z-index: 30;
+      width: min(1240px, 100%);
+      margin: 0 auto 18px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 30px;
+    }
+    .labTitle { display: flex; align-items: center; gap: 13px; }
+    .labTitle svg { width: 42px; height: 42px; border-radius: 11px; box-shadow: 0 10px 28px rgba(0,0,0,.32); }
+    .labTitle h1 { margin: 0; font: 700 20px/1.2 "Segoe UI Variable Display", "Segoe UI", sans-serif; letter-spacing: -.02em; }
+    .labTitle p { margin: 5px 0 0; color: #8d9896; font-size: 12px; }
+    .accentPicker { display: flex; gap: 4px; padding: 5px; border: 1px solid #293634; border-radius: 11px; background: #171d1c; }
+    .accentPicker button {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      border-radius: 7px;
+      padding: 8px 9px;
+      color: #8b9694;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .accentPicker button:hover { color: #d7dfdd; background: #222b2a; }
+    .accentPicker button[aria-pressed="true"] { color: #fff; background: #293735; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+    .swatch { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--swatch); box-shadow: 0 0 0 2px color-mix(in srgb, var(--swatch) 18%, transparent); }
+    .swatch.custom { background: conic-gradient(#ff6b6b,#f7c75b,#62c8b5,#6bb7ff,#a78bfa,#e98bb3,#ff6b6b); }
+    .wheelPopover {
+      position: absolute;
+      z-index: 60;
+      top: 57px;
+      right: 0;
+      width: 224px;
+      padding: 13px;
+      border: 1px solid #34423f;
+      border-radius: 12px;
+      color: #eaf1ef;
+      background: #1b2221;
+      box-shadow: 0 18px 50px rgba(0,0,0,.48);
+    }
+    .wheelPopover[hidden] { display: none; }
+    .wheelHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .wheelHead strong { font-size: 11px; }
+    .wheelClose { width: 24px; height: 24px; border: 0; border-radius: 6px; color: #929e9c; background: transparent; cursor: pointer; }
+    .wheelClose:hover { color: #fff; background: #27312f; }
+    #accentWheel { display: block; width: 180px; height: 180px; margin: 0 auto 11px; border-radius: 50%; cursor: crosshair; touch-action: none; }
+    .lightnessLabel { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; color: #a8b3b1; font-size: 10px; }
+    .lightnessLabel input { grid-column: 1 / -1; width: 100%; accent-color: var(--custom-color,#a78bfa); }
+    .customValueRow { display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: end; margin-top: 11px; }
+    .customPreview { width: 26px; height: 26px; border: 1px solid #42524f; border-radius: 7px; background: var(--custom-color,#a78bfa); }
+    .hexLabel { display: grid; gap: 3px; color: #8c9795; font-size: 9px; }
+    .hexLabel input { width: 100%; border: 1px solid #3e4c49; border-radius: 6px; padding: 5px 7px; color: #eaf1ef; background: #141918; font: 600 10px "Segoe UI Variable Text", "Segoe UI", sans-serif; text-transform: uppercase; }
+    .contrastMessage { margin: 8px 0 0; color: #98c379; font-size: 9px; }
+    .contrastMessage[data-pass="false"] { color: #f07a78; }
+
+    .stage { width: min(1240px, 100%); margin: 0 auto; }
+    .conceptNote {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 34px;
+      margin: 0 2px 10px;
+      color: #a4afad;
+      font-size: 12px;
+    }
+    .conceptNote strong { color: #e7eeec; }
+    .badge { padding: 4px 7px; border-radius: 999px; color: #9fe0d2; background: #1d3935; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+
+    .appWindow {
+      --accent: #62c8b5;
+      --accent-rgb: 98, 200, 181;
+      --bg: color-mix(in srgb, #121616 96%, var(--accent) 4%);
+      --sidebar: color-mix(in srgb, #0d1111 97%, var(--accent) 3%);
+      --panel: color-mix(in srgb, #191d1d 95%, var(--accent) 5%);
+      --panel-strong: color-mix(in srgb, #1d2221 94%, var(--accent) 6%);
+      --line: color-mix(in srgb, #2a302f 92%, var(--accent) 8%);
+      --line-soft: color-mix(in srgb, #222827 94%, var(--accent) 6%);
+      --text: #eef4f2;
+      --muted: #8d9997;
+      --faint: #7f8d8b;
+      --accent-2: #f07a78;
+      --control: color-mix(in srgb, #202625 94%, var(--accent) 6%);
+      position: relative;
+      height: 680px;
+      overflow: hidden;
+      border: 1px solid #2d3a38;
+      border-radius: 16px;
+      color: var(--text);
+      background: var(--bg);
+      box-shadow: 0 28px 80px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.28);
+    }
+    .appWindow[data-accent="blue"] { --accent: #6bb7ff; --accent-rgb: 107, 183, 255; }
+    .appWindow[data-accent="seafoam"] { --accent: #b0f7ec; --accent-rgb: 176, 247, 236; }
+    .appWindow[data-accent="violet"] { --accent: #a78bfa; --accent-rgb: 167, 139, 250; }
+    .appWindow[data-accent="coral"] { --accent: #ff847c; --accent-rgb: 255, 132, 124; }
+    .appWindow[data-accent="amber"] { --accent: #efb45f; --accent-rgb: 239, 180, 95; }
+    .appWindow[data-accent="rose"] { --accent: #e98bb3; --accent-rgb: 233, 139, 179; }
+    .titlebar {
+      position: absolute;
+      z-index: 5;
+      top: 0;
+      right: 0;
+      left: 0;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 12px;
+      color: var(--faint);
+      pointer-events: none;
+    }
+    .windowControls { display: flex; gap: 15px; font-size: 13px; }
+    .appShell { height: 100%; display: grid; grid-template-columns: 208px minmax(0,1fr); }
+    .sidebar {
+      position: relative;
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      padding: 28px 14px 17px;
+      border-right: 1px solid var(--line-soft);
+      background: var(--sidebar);
+    }
+    .brand { height: 58px; display: flex; align-items: center; gap: 11px; padding: 0 9px 20px; }
+    .brand svg { width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; }
+    .brand span { font: 700 14px "Segoe UI Variable Display", "Segoe UI", sans-serif; letter-spacing: -.01em; }
+    .nav { display: grid; gap: 4px; }
+    .nav button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .nav button:hover { color: var(--text); background: var(--panel); }
+    .nav button.active { color: var(--text); background: rgba(var(--accent-rgb), .11); }
+    .nav button.active .navIcon { color: var(--accent); }
+    .navIcon { width: 18px; text-align: center; color: var(--faint); font-size: 14px; }
+    .sidebarFoot { margin-top: auto; padding: 12px 9px 2px; color: var(--faint); font-size: 10px; }
+    .readyDot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .65); }
+
+    .content { position: relative; min-width: 0; overflow: auto; padding: 44px 38px 55px; background: var(--bg); }
+    .contentInner { width: min(850px, 100%); margin: 0 auto; }
+    .pageHead { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin-bottom: 23px; }
+    .pageHead h2 { margin: 0; font: 700 27px/1.1 "Segoe UI Variable Display", "Segoe UI", sans-serif; letter-spacing: -.035em; }
+    .pageHead p:last-child { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+    .key { min-width: 36px; padding: 6px 8px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; color: var(--text); background: var(--control); text-align: center; font-size: 10px; font-weight: 700; }
+
+    .grid { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(270px,.9fr); gap: 18px; align-items: start; }
+    .sectionTitle { margin: 0 0 9px 2px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .card { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+    .row { min-height: 61px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 15px; }
+    .row + .row { border-top: 1px solid var(--line-soft); }
+    .row h4 { margin: 0; color: var(--text); font-size: 11px; font-weight: 600; }
+    .row p { margin: 4px 0 0; color: var(--faint); font-size: 9.5px; line-height: 1.35; }
+    .select { min-width: 132px; padding: 7px 25px 7px 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: var(--control); font-size: 10px; }
+    .segment { display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--control); }
+    .segment button { border: 0; border-radius: 5px; padding: 5px 9px; color: var(--faint); background: transparent; font-size: 9px; cursor: pointer; }
+    .segment button.active { color: var(--text); background: rgba(var(--accent-rgb), .16); box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+    .toggle { width: 34px; height: 19px; position: relative; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; background: var(--control); cursor: pointer; }
+    .toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 11px; height: 11px; border-radius: 50%; background: var(--faint); transition: .15s; }
+    .toggle.on { border-color: var(--accent); background: rgba(var(--accent-rgb), .32); }
+    .toggle.on::after { left: 18px; background: var(--accent); }
+    .miniButton { border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; color: var(--muted); background: var(--control); font-size: 9px; cursor: pointer; }
+    .miniButton:hover { color: var(--text); border-color: var(--accent); }
+    .tip { display: flex; gap: 8px; margin-top: 12px; padding: 10px; border-radius: 8px; color: var(--muted); background: rgba(var(--accent-rgb), .07); font-size: 9px; line-height: 1.4; }
+    .tip b { color: var(--accent); }
+    .tabPanel[hidden] { display: none; }
+    .shortcutSettings { display: grid; grid-template-columns: 1fr 1fr; }
+    .shortcutItem { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; }
+    .shortcutItem.primary { grid-column: 1 / -1; border-bottom: 1px solid var(--line-soft); background: rgba(var(--accent-rgb), .045); }
+    .shortcutItem:nth-child(even) { border-right: 1px solid var(--line-soft); }
+    .shortcutItem:nth-child(n+4) { border-top: 1px solid var(--line-soft); }
+    .shortcutItem strong { display: block; color: var(--text); font-size: 10px; }
+    .shortcutItem small { display: block; margin-top: 3px; color: var(--faint); font-size: 8.5px; }
+    .shortcutAction { display: flex; align-items: center; gap: 7px; }
+    .combo { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px; }
+    .combo .key { min-width: 0; padding: 4px 6px; font-size: 8px; }
+    .infoNote { margin: 9px 2px 0; color: var(--faint); font-size: 9px; line-height: 1.45; }
+    .singleColumn { width: min(760px,100%); display: grid; gap: 17px; }
+    .sectionGap { margin-top: 17px; }
+    .serviceControlMock { min-width: 180px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px; align-items: center; }
+    .serviceControlMock .select { min-width: 0; width: 100%; }
+    .modelMeta { grid-column: 1 / -1; color: var(--faint); font-size: 8.5px; text-align: right; }
+    .providerCard { padding: 14px 15px; }
+    .providerHead { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+    .providerHead strong { font-size: 11px; }
+    .providerHead span { color: var(--accent); font-size: 9px; }
+    .providerCard p { margin: 6px 0 12px; color: var(--faint); font-size: 9px; line-height: 1.4; }
+    .engineGrid { display: grid; gap: 8px; }
+    .engineCard { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    .engineCard strong { display: block; font-size: 10px; }
+    .engineCard small { display: block; margin-top: 4px; color: var(--faint); font-size: 8.5px; }
+    .entryForm { display: flex; align-items: center; gap: 7px; padding: 13px 14px; border-bottom: 1px solid var(--line-soft); }
+    .textInput { min-width: 0; flex: 1 1 auto; border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; color: var(--text); background: var(--control); font: inherit; font-size: 10px; }
+    .textInput::placeholder { color: var(--faint); }
+    .entryArrow { color: var(--faint); }
+    .editableItem { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; color: var(--muted); font-size: 10px; }
+    .editableItem + .editableItem { border-top: 1px solid var(--line-soft); }
+    .removeButton { border: 0; padding: 3px 6px; color: var(--faint); background: transparent; cursor: pointer; }
+    .historyListMock { display: grid; gap: 8px; }
+    .historyItem { display: grid; grid-template-columns: 52px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 13px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    .historyItem time { color: var(--faint); font-size: 8.5px; }
+    .historyItem p { margin: 0; color: var(--text); font-size: 10px; line-height: 1.4; }
+    .historyItem small { display: block; margin-top: 4px; color: var(--faint); font-size: 8.5px; }
+    .historyItem[data-ok="false"] p { color: #e7bd72; }
+    .historyActions { display: flex; gap: 5px; }
+
+    /* Deep Signal layout with Carbon's narrow navigation rail. */
+    .appShell { grid-template-columns: 70px minmax(0,1fr); }
+    .sidebar { align-items: center; padding: 25px 10px 15px; }
+    .brand { height: 52px; padding: 0 0 18px; }
+    .brand svg { width: 31px; height: 31px; }
+    .brand > span { display: none; }
+    .nav { width: 100%; gap: 7px; }
+    .nav button { position: relative; justify-content: center; height: 40px; padding: 0; }
+    .navIcon { width: auto; font-size: 16px; }
+    .navTip {
+      position: absolute;
+      z-index: 20;
+      top: 50%;
+      left: 51px;
+      width: 210px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--text);
+      background: #262630;
+      box-shadow: 0 10px 28px rgba(0,0,0,.38);
+      text-align: left;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-5px,-50%);
+      transition: opacity .12s ease, transform .12s ease;
+    }
+    .navTip::before { content: ""; position: absolute; top: 50%; left: -5px; width: 8px; height: 8px; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); background: #262630; transform: translateY(-50%) rotate(45deg); }
+    .navTip strong { display: block; color: var(--text); font-size: 11px; line-height: 1.2; }
+    .navTip small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .nav button:hover .navTip, .nav button:focus-visible .navTip { opacity: 1; transform: translate(0,-50%); }
+    .sidebarFoot { padding: 0 0 3px; font-size: 0; }
+    .readyDot { width: 7px; height: 7px; margin: 0; }
+    .content { padding: 42px 34px 48px; }
+    .contentInner { width: min(980px,100%); }
+
+    @media (max-width: 1050px) {
+      .appWindow { height: 650px; }
+      .content { padding-right: 26px; padding-left: 26px; }
+      .accentPicker button { padding-right: 7px; padding-left: 7px; }
+      .accentPicker button span:last-child { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="lab">
+    <header class="labHead">
+      <div class="labTitle">
+        <svg viewBox="0 0 48 48" role="img" aria-label="Undertone">
+          <defs><linearGradient id="logo-bg-a" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37283c"/><stop offset="1" stop-color="#201c29"/></linearGradient></defs>
+          <rect width="48" height="48" rx="11" fill="url(#logo-bg-a)"/>
+          <path d="M10 15v15c0 7 5 11 14 11s14-4 14-11V15M10 25h9c3 0 3-7 6-7s3 14 6 14 3-7 7-7" fill="none" stroke="#62c8b5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M10 28h9c3 0 3-5 6-5s3 10 6 10 3-5 7-5" fill="none" stroke="#f07a78" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <h1>Undertone settings study</h1>
+          <p>Full navigation, descriptive rail labels, and live accent controls — no production code changed</p>
+        </div>
+      </div>
+      <div class="accentPicker" role="group" aria-label="Accent color">
+        <button aria-label="Mint accent" aria-pressed="false" data-accent="mint"><span class="swatch" style="--swatch:#62c8b5"></span><span>Mint</span></button>
+        <button aria-label="Seafoam accent B0F7EC" aria-pressed="true" data-accent="seafoam"><span class="swatch" style="--swatch:#b0f7ec"></span><span>Seafoam</span></button>
+        <button aria-label="Blue accent" aria-pressed="false" data-accent="blue"><span class="swatch" style="--swatch:#6bb7ff"></span><span>Blue</span></button>
+        <button aria-label="Violet accent" aria-pressed="false" data-accent="violet"><span class="swatch" style="--swatch:#a78bfa"></span><span>Violet</span></button>
+        <button aria-label="Coral accent" aria-pressed="false" data-accent="coral"><span class="swatch" style="--swatch:#ff847c"></span><span>Coral</span></button>
+        <button aria-label="Amber accent" aria-pressed="false" data-accent="amber"><span class="swatch" style="--swatch:#efb45f"></span><span>Amber</span></button>
+        <button aria-label="Rose accent" aria-pressed="false" data-accent="rose"><span class="swatch" style="--swatch:#e98bb3"></span><span>Rose</span></button>
+        <button aria-label="Custom accent color" aria-expanded="false" aria-pressed="false" data-custom-toggle><span class="swatch custom"></span><span>Custom</span></button>
+      </div>
+      <div class="wheelPopover" hidden>
+        <div class="wheelHead"><strong>Custom accent</strong><button class="wheelClose" type="button" aria-label="Close color wheel">×</button></div>
+        <canvas id="accentWheel" width="320" height="320" role="img" aria-label="Hue and saturation color wheel"></canvas>
+        <label class="lightnessLabel" for="accentLightness"><span>Lightness</span><output id="lightnessValue">68%</output><input id="accentLightness" type="range" min="0" max="100" value="68"></label>
+        <div class="customValueRow">
+          <span class="customPreview" aria-hidden="true"></span>
+          <label class="hexLabel" for="accentHex"><span>Hex color</span><input id="accentHex" type="text" inputmode="text" value="#986CEF" maxlength="7" spellcheck="false"></label>
+        </div>
+        <p class="contrastMessage" data-pass="true" role="status">Strong contrast · 5.0:1</p>
+      </div>
+    </header>
+
+    <main class="stage">
+      <div class="conceptNote" aria-live="polite">
+        <span class="badge">Combined direction</span>
+        <span><strong>Seafoam · #B0F7EC</strong> — Your selected preset on Deep Signal's canvas and compact navigation.</span>
+      </div>
+
+      <section class="appWindow" data-accent="seafoam" aria-label="Undertone settings preview">
+        <div class="titlebar"><div class="windowControls"><span>—</span><span>□</span><span>×</span></div></div>
+        <div class="appShell">
+          <aside class="sidebar">
+            <div class="brand">
+              <svg viewBox="0 0 48 48" aria-hidden="true">
+                <defs><linearGradient id="logo-bg-b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37283c"/><stop offset="1" stop-color="#201c29"/></linearGradient></defs>
+                <rect width="48" height="48" rx="11" fill="url(#logo-bg-b)"/>
+                <path d="M10 15v15c0 7 5 11 14 11s14-4 14-11V15M10 25h9c3 0 3-7 6-7s3 14 6 14 3-7 7-7" fill="none" stroke="#62c8b5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M10 28h9c3 0 3-5 6-5s3 10 6 10 3-5 7-5" fill="none" stroke="#f07a78" stroke-width="3" stroke-linecap="round"/>
+              </svg>
+              <span>Undertone</span>
+            </div>
+            <nav class="nav" aria-label="Settings">
+              <button class="active" aria-current="page" aria-label="General — shortcuts, dictation, input, and app behavior" data-panel-target="general">
+                <span class="navIcon">⌂</span><span class="navTip"><strong>General</strong><small>Shortcuts, dictation, input, and app behavior</small></span>
+              </button>
+              <button aria-label="Speech and AI — language, providers, cleanup, credentials, and local models" data-panel-target="speechAi">
+                <span class="navIcon">◉</span><span class="navTip"><strong>Speech &amp; AI</strong><small>Language, providers, cleanup, credentials, and local models</small></span>
+              </button>
+              <button aria-label="Dictionary — vocabulary and corrections" data-panel-target="dictionary">
+                <span class="navIcon">≡</span><span class="navTip"><strong>Dictionary</strong><small>Vocabulary and corrections</small></span>
+              </button>
+              <button aria-label="History — recent dictations and retries" data-panel-target="history">
+                <span class="navIcon">↺</span><span class="navTip"><strong>History</strong><small>Recent dictations and retries</small></span>
+              </button>
+            </nav>
+            <div class="sidebarFoot"><span class="readyDot"></span>Ready in tray</div>
+          </aside>
+
+          <div class="content">
+            <div class="contentInner">
+              <section class="tabPanel active" data-panel="general">
+                <header class="pageHead"><div><h2>General</h2></div></header>
+
+                <h3 class="sectionTitle">Shortcuts</h3>
+                <section class="card shortcutSettings">
+                  <div class="shortcutItem primary"><div><strong>Push to talk</strong></div><div class="shortcutAction"><div class="combo"><span class="key">F13</span></div><button class="miniButton">Change</button></div></div>
+                  <div class="shortcutItem"><div><strong>Re-paste last dictation</strong></div><div class="shortcutAction"><div class="combo"><span class="key">Ctrl</span><span class="key">Shift</span><span class="key">V</span></div><button class="miniButton">Change</button></div></div>
+                  <div class="shortcutItem"><div><strong>Commit open turn</strong><small>Paste the full stacked turn</small></div><div class="shortcutAction"><div class="combo"><span class="key">Ctrl</span><span class="key">Alt</span><span class="key">Enter</span></div><button class="miniButton">Change</button></div></div>
+                  <div class="shortcutItem"><div><strong>Remove last fragment</strong></div><div class="shortcutAction"><div class="combo"><span class="key">Ctrl</span><span class="key">Alt</span><span class="key">⌫</span></div><button class="miniButton">Change</button></div></div>
+                  <div class="shortcutItem"><div><strong>Discard open turn</strong></div><div class="shortcutAction"><div class="combo"><span class="key">Ctrl</span><span class="key">Alt</span><span class="key">Shift</span><span class="key">⌫</span></div><button class="miniButton">Change</button></div></div>
+                </section>
+
+                <div class="grid sectionGap">
+                  <div>
+                    <h3 class="sectionTitle">Dictation</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Dictation mode</h4><p>Stack a turn or paste each utterance instantly.</p></div><div class="segment"><button class="active">Stack</button><button>Instant</button></div></div>
+                      <div class="row"><div><h4>Cleanup timing</h4></div><select class="select" aria-label="Cleanup timing"><option>After every fragment</option><option>When committing</option></select></div>
+                    </section>
+                    <h3 class="sectionTitle sectionGap">Output</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Fix spacing &amp; capitalization</h4></div><button class="toggle on" aria-label="Fix spacing and capitalization on"></button></div>
+                      <div class="row"><div><h4>Restore clipboard</h4><p>Put previous clipboard text back after pasting.</p></div><button class="toggle" aria-label="Restore clipboard off"></button></div>
+                    </section>
+                  </div>
+                  <div>
+                    <h3 class="sectionTitle">Input &amp; feedback</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Microphone</h4><p>System default input</p></div><button class="miniButton">Test</button></div>
+                      <div class="row"><div><h4>Dictation sound cues</h4></div><button class="toggle on" aria-label="Dictation sound cues on"></button></div>
+                    </section>
+                    <p class="infoNote">The visual status overlay is always on. It appears only while dictating or processing and never takes focus.</p>
+                    <h3 class="sectionTitle sectionGap">Application</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Start with Windows</h4><p>Launch quietly in the tray.</p></div><button class="toggle on" aria-label="Start with Windows on"></button></div>
+                      <div class="row"><div><h4>App updates</h4><p>Version 1.8.0 · Up to date</p></div><button class="miniButton">Check</button></div>
+                      <div class="row"><div><h4>Diagnostics</h4><p>Settings folder and application log</p></div><button class="miniButton">Open</button></div>
+                    </section>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tabPanel" data-panel="speechAi" hidden>
+                <header class="pageHead"><div><h2>Speech &amp; AI</h2></div></header>
+                <div class="grid">
+                  <div>
+                    <h3 class="sectionTitle">Services</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Transcription</h4></div><div class="serviceControlMock"><select class="select" aria-label="Transcription provider"><option>OpenAI</option><option>xAI</option><option>OpenRouter</option><option>Local</option></select><button class="miniButton">Test</button><span class="modelMeta">Model · gpt-transcribe</span></div></div>
+                      <div class="row"><div><h4>Transcription language</h4></div><select class="select" aria-label="Transcription language"><option>English</option><option>German</option><option>Spanish</option><option>French</option></select></div>
+                      <div class="row"><div><h4>Use AI cleanup</h4></div><button class="toggle on" aria-label="AI cleanup on"></button></div>
+                      <div class="row"><div><h4>Cleanup provider</h4></div><div class="serviceControlMock"><select class="select" aria-label="Cleanup provider"><option>OpenAI Subscription</option><option>OpenAI API</option><option>xAI</option><option>Local</option></select><button class="miniButton">Test</button><span class="modelMeta">Model · gpt-5.6-luna</span></div></div>
+                    </section>
+                    <h3 class="sectionTitle sectionGap">Credentials</h3>
+                    <section class="card providerCard">
+                      <div class="providerHead"><strong>OpenAI subscription</strong><span>Connected</span></div>
+                      <p>Sign-in tokens are encrypted on this computer.</p>
+                      <button class="miniButton">Disconnect</button>
+                    </section>
+                    <section class="card providerCard" style="margin-top:8px">
+                      <div class="providerHead"><strong>OpenAI API</strong><span>Configured</span></div>
+                      <p>The saved key is protected by Windows.</p>
+                      <button class="miniButton">Replace key</button>
+                    </section>
+                    <p class="infoNote">Only credentials required by the selected services are shown. Other saved providers stay collapsed.</p>
+                  </div>
+                  <div>
+                    <h3 class="sectionTitle">On-device</h3>
+                    <div class="engineGrid">
+                      <div class="engineCard"><div><strong>Transcription model</strong><small>Installed · CPU build</small></div><button class="miniButton">Load</button></div>
+                      <div class="engineCard"><div><strong>Cleanup model</strong><small>Not installed · 1.8 GB</small></div><button class="miniButton">Install</button></div>
+                    </div>
+                    <h3 class="sectionTitle sectionGap">Local behavior</h3>
+                    <section class="card">
+                      <div class="row"><div><h4>Load models on startup</h4></div><button class="toggle" aria-label="Load models on startup off"></button></div>
+                      <div class="row"><div><h4>Unload models when idle</h4></div><select class="select" aria-label="Idle timeout"><option>After 15 min</option></select></div>
+                    </section>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tabPanel" data-panel="dictionary" hidden>
+                <header class="pageHead"><div><h2>Dictionary</h2></div></header>
+                <div class="singleColumn">
+                  <div>
+                    <h3 class="sectionTitle">Vocabulary</h3>
+                    <section class="card">
+                      <form class="entryForm"><input class="textInput" aria-label="Vocabulary term" placeholder="Add a name or technical term"><button class="miniButton" type="button">Add</button></form>
+                      <div class="editableItem"><span>Undertone</span><button class="removeButton" aria-label="Remove Undertone">×</button></div>
+                      <div class="editableItem"><span>Kubernetes</span><button class="removeButton" aria-label="Remove Kubernetes">×</button></div>
+                    </section>
+                    <p class="tip"><b>●</b><span>Vocabulary helps recognition preserve unusual words and capitalization.</span></p>
+                  </div>
+                  <div>
+                    <h3 class="sectionTitle">Corrections</h3>
+                    <section class="card">
+                      <form class="entryForm"><input class="textInput" aria-label="Misheard phrase" placeholder="What was heard"><span class="entryArrow">→</span><input class="textInput" aria-label="Replacement" placeholder="Replacement"><button class="miniButton" type="button">Add</button></form>
+                      <div class="editableItem"><span>under tone&nbsp;&nbsp;→&nbsp;&nbsp;Undertone</span><button class="removeButton" aria-label="Remove correction">×</button></div>
+                    </section>
+                    <p class="tip"><b>●</b><span>Corrections run locally after transcription and always use the exact replacement.</span></p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tabPanel" data-panel="history" hidden>
+                <header class="pageHead"><div><h2>History</h2><p>Recent dictations live in memory and disappear when Undertone exits.</p></div></header>
+                <div class="historyListMock">
+                  <article class="historyItem" data-ok="true"><time>10:42 AM</time><div><p>Let’s move the design review to tomorrow afternoon.</p><small>Cleaned and pasted successfully</small></div><div class="historyActions"><button class="miniButton">Copy</button><button class="miniButton">Re-paste</button></div></article>
+                  <article class="historyItem" data-ok="true"><time>10:39 AM</time><div><p>Undertone is ready.</p><small>Heard: under tone is ready</small></div><div class="historyActions"><button class="miniButton">Copy</button><button class="miniButton">Re-paste</button></div></article>
+                  <article class="historyItem" data-ok="false"><time>10:38 AM</time><div><p>A provider request timed out.</p><small>Your audio is still available for retry.</small></div><div class="historyActions"><button class="miniButton">Retry</button></div></article>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const accents = {
+      mint: 'Balanced and calm; closest to Undertone’s current brand mark.',
+      seafoam: 'Your selected #B0F7EC preset: bright, airy, and highly legible.',
+      blue: 'Clear and familiar, with a slightly more conventional Windows feel.',
+      violet: 'Expressive and distinctive without becoming visually loud.',
+      coral: 'Warm and energetic; strongly connects to the lower waveform in the icon.',
+      amber: 'Confident and warm, with the strongest contrast against the dark canvas.',
+      rose: 'Soft and characterful, sitting between the icon’s plum and coral tones.'
+    };
+
+    const app = document.querySelector('.appWindow');
+    const note = document.querySelector('.conceptNote');
+    document.querySelectorAll('.accentPicker [data-accent]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const accent = button.dataset.accent;
+        app.style.removeProperty('--accent');
+        app.style.removeProperty('--accent-rgb');
+        app.dataset.accent = accent;
+        document.querySelectorAll('.accentPicker button').forEach((item) => {
+          item.setAttribute('aria-pressed', String(item === button));
+        });
+        wheelPopover.hidden = true;
+        customToggle.setAttribute('aria-expanded', 'false');
+        const label = button.textContent.trim();
+        note.innerHTML = `<span class="badge">Combined direction</span><span><strong>${label} accent</strong> — ${accents[accent]}</span>`;
+      });
+    });
+
+    const wheelPopover = document.querySelector('.wheelPopover');
+    const customToggle = document.querySelector('[data-custom-toggle]');
+    const wheelClose = document.querySelector('.wheelClose');
+    const canvas = document.getElementById('accentWheel');
+    const context = canvas.getContext('2d');
+    const lightnessInput = document.getElementById('accentLightness');
+    const lightnessValue = document.getElementById('lightnessValue');
+    const hexInput = document.getElementById('accentHex');
+    const contrastMessage = document.querySelector('.contrastMessage');
+    const customSwatch = customToggle.querySelector('.swatch');
+    let customHue = 260;
+    let customSaturation = 80;
+    let customLightness = 68;
+
+    function hslToRgb(hue, saturation, lightness) {
+      const s = saturation / 100;
+      const l = lightness / 100;
+      const a = s * Math.min(l, 1 - l);
+      const channel = (offset) => {
+        const k = (offset + hue / 30) % 12;
+        return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+      };
+      return [channel(0), channel(8), channel(4)].map((value) => Math.round(value * 255));
+    }
+
+    function rgbToHsl(red, green, blue) {
+      const r = red / 255;
+      const g = green / 255;
+      const b = blue / 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const delta = max - min;
+      const lightness = (max + min) / 2;
+      let hue = 0;
+      if (delta !== 0) {
+        if (max === r) hue = 60 * (((g - b) / delta) % 6);
+        else if (max === g) hue = 60 * ((b - r) / delta + 2);
+        else hue = 60 * ((r - g) / delta + 4);
+      }
+      if (hue < 0) hue += 360;
+      const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+      return [hue, saturation * 100, lightness * 100];
+    }
+
+    function rgbToHex(rgb) {
+      return `#${rgb.map((value) => value.toString(16).padStart(2, '0')).join('')}`.toUpperCase();
+    }
+
+    function contrastRatio(foreground, background) {
+      const luminance = (rgb) => {
+        const values = rgb.map((value) => {
+          const channel = value / 255;
+          return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+        });
+        return .2126 * values[0] + .7152 * values[1] + .0722 * values[2];
+      };
+      const first = luminance(foreground);
+      const second = luminance(background);
+      return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
+    }
+
+    function renderWheel() {
+      const size = canvas.width;
+      const radius = size / 2;
+      const image = context.createImageData(size, size);
+      for (let y = 0; y < size; y += 1) {
+        for (let x = 0; x < size; x += 1) {
+          const dx = x - radius;
+          const dy = y - radius;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          const index = (y * size + x) * 4;
+          if (distance > radius) {
+            image.data[index + 3] = 0;
+            continue;
+          }
+          const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+          const saturation = distance / radius * 100;
+          const [red, green, blue] = hslToRgb(hue, saturation, customLightness);
+          image.data[index] = red;
+          image.data[index + 1] = green;
+          image.data[index + 2] = blue;
+          image.data[index + 3] = 255;
+        }
+      }
+      context.putImageData(image, 0, 0);
+      const angle = customHue * Math.PI / 180;
+      const markerRadius = customSaturation / 100 * radius;
+      const markerX = radius + Math.cos(angle) * markerRadius;
+      const markerY = radius + Math.sin(angle) * markerRadius;
+      context.beginPath();
+      context.arc(markerX, markerY, 7, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(0,0,0,.8)';
+      context.lineWidth = 5;
+      context.stroke();
+      context.beginPath();
+      context.arc(markerX, markerY, 7, 0, Math.PI * 2);
+      context.strokeStyle = 'white';
+      context.lineWidth = 2;
+      context.stroke();
+    }
+
+    function updateCustomControls(applyToPreview) {
+      const rgb = hslToRgb(customHue, customSaturation, customLightness);
+      const hex = rgbToHex(rgb);
+      const ratio = contrastRatio(rgb, [21, 21, 27]);
+      const passes = ratio >= 4.5;
+      document.documentElement.style.setProperty('--custom-color', hex);
+      customSwatch.style.background = hex;
+      hexInput.value = hex;
+      lightnessInput.value = String(Math.round(customLightness));
+      lightnessValue.value = `${Math.round(customLightness)}%`;
+      contrastMessage.dataset.pass = String(passes);
+      contrastMessage.textContent = passes
+        ? `Strong contrast · ${ratio.toFixed(1)}:1`
+        : `Low contrast · ${ratio.toFixed(1)}:1 — choose a lighter color`;
+      if (!applyToPreview) return;
+      app.dataset.accent = 'custom';
+      app.style.setProperty('--accent', hex);
+      app.style.setProperty('--accent-rgb', rgb.join(', '));
+      document.querySelectorAll('.accentPicker button').forEach((item) => {
+        item.setAttribute('aria-pressed', String(item === customToggle));
+      });
+      note.innerHTML = `<span class="badge">Custom color</span><span><strong>${hex}</strong> — ${passes ? 'Strong contrast on Deep Signal.' : 'Low contrast; try increasing lightness.'}</span>`;
+    }
+
+    function chooseWheelColor(event) {
+      const rect = canvas.getBoundingClientRect();
+      const scale = canvas.width / rect.width;
+      const radius = canvas.width / 2;
+      const dx = (event.clientX - rect.left) * scale - radius;
+      const dy = (event.clientY - rect.top) * scale - radius;
+      customHue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+      customSaturation = Math.min(100, Math.sqrt(dx * dx + dy * dy) / radius * 100);
+      renderWheel();
+      updateCustomControls(true);
+    }
+
+    customToggle.addEventListener('click', () => {
+      wheelPopover.hidden = !wheelPopover.hidden;
+      customToggle.setAttribute('aria-expanded', String(!wheelPopover.hidden));
+    });
+    wheelClose.addEventListener('click', () => {
+      wheelPopover.hidden = true;
+      customToggle.setAttribute('aria-expanded', 'false');
+      customToggle.focus();
+    });
+    canvas.addEventListener('pointerdown', (event) => {
+      canvas.setPointerCapture(event.pointerId);
+      chooseWheelColor(event);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (canvas.hasPointerCapture(event.pointerId)) chooseWheelColor(event);
+    });
+    canvas.addEventListener('pointerup', (event) => canvas.releasePointerCapture(event.pointerId));
+    lightnessInput.addEventListener('input', () => {
+      customLightness = Number(lightnessInput.value);
+      renderWheel();
+      updateCustomControls(true);
+    });
+    hexInput.addEventListener('input', () => {
+      const value = hexInput.value.trim();
+      if (!/^#[0-9a-fA-F]{6}$/.test(value)) return;
+      const rgb = [1, 3, 5].map((index) => parseInt(value.slice(index, index + 2), 16));
+      [customHue, customSaturation, customLightness] = rgbToHsl(...rgb);
+      renderWheel();
+      updateCustomControls(true);
+    });
+    renderWheel();
+    updateCustomControls(false);
+
+    document.querySelectorAll('[data-panel-target]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const target = button.dataset.panelTarget;
+        document.querySelectorAll('[data-panel-target]').forEach((item) => {
+          const active = item === button;
+          item.classList.toggle('active', active);
+          if (active) item.setAttribute('aria-current', 'page');
+          else item.removeAttribute('aria-current');
+        });
+        document.querySelectorAll('[data-panel]').forEach((panel) => {
+          const active = panel.dataset.panel === target;
+          panel.hidden = !active;
+          panel.classList.toggle('active', active);
+        });
+        document.querySelector('.content').scrollTop = 0;
+      });
+    });
+
+    document.querySelectorAll('.toggle').forEach((toggle) => {
+      toggle.addEventListener('click', () => toggle.classList.toggle('on'));
+    });
+    document.querySelectorAll('.segment').forEach((segment) => {
+      segment.addEventListener('click', (event) => {
+        if (event.target.tagName !== 'BUTTON') return;
+        segment.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button === event.target));
+      });
+    });
+  </script>
+</body>
+</html>
