@@ -39,6 +39,8 @@ describe("text preparation pipeline", () => {
       context: "I already said ",
       app: "slack.exe (Chat)",
       corrections: {},
+      reasoningEffort: "none",
+      serviceTier: "priority",
     });
     expect(captured).not.toHaveProperty("after");
   });

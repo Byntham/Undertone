@@ -1,6 +1,7 @@
 import { isRecord } from "./config";
 import { SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
+import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
 
 export { SYSTEM_PROMPT } from "./cleanupPrompt";
 
@@ -11,10 +12,10 @@ export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
 };
 
 export const DEFAULT_CLEANUP_MODELS: Readonly<Record<string, string>> = {
-  xai: "grok-4.20-0309-non-reasoning",
-  openai: "gpt-4o-mini",
+  xai: "grok-4.3",
+  openai: "gpt-5.6-luna",
   "openai-subscription": "gpt-5.6-luna",
-  openrouter: "openai/gpt-4o-mini",
+  openrouter: "openai/gpt-5.6-luna",
   local: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
 };
 
@@ -44,6 +45,8 @@ export interface LocalCleanupRuntime {
 export interface SubscriptionCleanupRuntime {
   complete(options: {
     model: string;
+    reasoningEffort: CleanupReasoningEffort;
+    serviceTier: CleanupServiceTier;
     systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
@@ -59,6 +62,8 @@ export interface CleanupOptions {
   model?: string;
   provider?: string;
   timeoutSeconds?: number;
+  reasoningEffort?: CleanupReasoningEffort;
+  serviceTier?: CleanupServiceTier;
   systemPrompt?: string;
   throwOnError?: boolean;
 }
@@ -89,6 +94,8 @@ export class CleanupClient {
       try {
         const content = await this.subscription.complete({
           model,
+          reasoningEffort: options.reasoningEffort ?? "none",
+          serviceTier: options.serviceTier ?? "priority",
           systemPrompt: options.systemPrompt || SYSTEM_PROMPT,
           userPrompt: user,
           timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
@@ -126,6 +133,19 @@ export class CleanupClient {
 
     const formatKey = `${provider}:${effectiveModel}`;
     let responseFormat = this.responseFormats.get(formatKey) ?? "json_schema";
+    const modelOptions = provider === "openai" && effectiveModel === "gpt-5.6-luna"
+      ? {
+          reasoning_effort: options.reasoningEffort ?? "none",
+          service_tier: options.serviceTier ?? "priority",
+        }
+      : provider === "openrouter" && effectiveModel === "openai/gpt-5.6-luna"
+        ? {
+            reasoning: { effort: options.reasoningEffort ?? "none" },
+            service_tier: options.serviceTier ?? "priority",
+          }
+        : provider === "xai" && effectiveModel === "grok-4.3"
+          ? { reasoning_effort: "none" }
+          : {};
     const request = (format: ResponseFormat) => this.http.post(url, {
       headers,
       body: JSON.stringify({
@@ -137,6 +157,7 @@ export class CleanupClient {
         response_format: format === "json_schema"
           ? JSON_SCHEMA_RESPONSE_FORMAT
           : JSON_OBJECT_RESPONSE_FORMAT,
+        ...modelOptions,
       }),
       timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
     });

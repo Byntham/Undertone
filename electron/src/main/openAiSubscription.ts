@@ -1,29 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
-import { isRecord } from "../core/config";
+import {
+  isRecord,
+  type CleanupReasoningEffort,
+  type CleanupServiceTier,
+} from "../core/config";
 import type { SubscriptionCleanupRuntime } from "../core/cleanup";
-import type { HttpClient, HttpGetClient, HttpResponse } from "../platform/http";
-import type { ProviderModelOption } from "../shared/settings";
+import type { HttpClient, HttpResponse } from "../platform/http";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
-const MODELS_URL = "https://chatgpt.com/backend-api/codex/models?client_version=0.146.1";
 const REDIRECT_URI = "http://localhost:1455/auth/callback";
 const CALLBACK_PORT = 1455;
 const TOKEN_TIMEOUT_MS = 30_000;
 const LOGIN_TIMEOUT_MS = 3 * 60_000;
-const MODEL_CACHE_MS = 15 * 60_000;
 const REFRESH_SKEW_MS = 60_000;
-const DEFAULT_MODEL_ORDER = [
-  "gpt-5.6-luna",
-  "gpt-5.6-terra",
-  "gpt-5.6-sol",
-  "gpt-5.4-mini",
-  "gpt-5.4",
-] as const;
+const DEFAULT_MODEL = "gpt-5.6-luna";
 
 export interface OpenAiSubscriptionCredentials {
   accessToken: string;
@@ -33,17 +28,12 @@ export interface OpenAiSubscriptionCredentials {
 }
 
 interface OpenAiSubscriptionOptions {
-  http: HttpClient & HttpGetClient;
+  http: HttpClient;
   credentials: OpenAiSubscriptionCredentials | null;
   persist(credentials: OpenAiSubscriptionCredentials | null): Promise<void>;
   openExternal(url: string): Promise<void>;
   appVersion: string;
   now?: () => number;
-}
-
-interface ModelCache {
-  expiresAt: number;
-  models: ProviderModelOption[];
 }
 
 export class OpenAiSubscription implements SubscriptionCleanupRuntime {
@@ -52,7 +42,6 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
   private refreshOperation: Promise<OpenAiSubscriptionCredentials> | null = null;
   private connectOperation: Promise<void> | null = null;
   private cancelConnect: (() => void) | null = null;
-  private modelCache: ModelCache | null = null;
 
   constructor(private readonly options: OpenAiSubscriptionOptions) {
     this.credentials = options.credentials;
@@ -74,38 +63,25 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
   async disconnect(): Promise<void> {
     await this.options.persist(null);
     this.credentials = null;
-    this.modelCache = null;
   }
 
   dispose(): void {
     this.cancelConnect?.();
   }
 
-  async listModels(refresh = false): Promise<{ models: ProviderModelOption[]; defaultModel: string | null }> {
-    if (!refresh && this.modelCache !== null && this.modelCache.expiresAt > this.now()) {
-      return {
-        models: this.modelCache.models,
-        defaultModel: preferredDefault(this.modelCache.models),
-      };
-    }
-    const response = await this.authorizedGet(MODELS_URL, TOKEN_TIMEOUT_MS);
-    assertSuccess(response, "OpenAI Subscription model discovery");
-    const models = parseModels(response.body);
-    this.modelCache = { expiresAt: this.now() + MODEL_CACHE_MS, models };
-    return { models, defaultModel: preferredDefault(models) };
-  }
-
   async complete(options: {
     model: string;
+    reasoningEffort: CleanupReasoningEffort;
+    serviceTier: CleanupServiceTier;
     systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
   }): Promise<string> {
     if (!this.connected()) throw new Error("Connect your OpenAI account before using subscription cleanup.");
-    const model = options.model.trim().length > 0
-      ? options.model.trim()
-      : (await this.listModels()).defaultModel;
-    if (model === null) throw new Error("Your OpenAI subscription returned no cleanup models.");
+    const model = options.model.trim() || DEFAULT_MODEL;
+    const lunaOptions = model === "gpt-5.6-luna"
+      ? { service_tier: options.serviceTier }
+      : {};
     const requestBody = JSON.stringify({
       model,
       instructions: options.systemPrompt,
@@ -126,7 +102,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
           },
         },
       },
-      reasoning: { effort: "low" },
+      reasoning: { effort: model === "gpt-5.6-luna" ? options.reasoningEffort : "low" },
+      ...lunaOptions,
       tools: [],
       parallel_tool_calls: false,
       store: false,
@@ -169,7 +146,6 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       const credentials = await this.exchangeCode(code, verifier);
       await this.options.persist(credentials);
       this.credentials = credentials;
-      this.modelCache = null;
     } finally {
       this.cancelConnect = null;
       closeServer(callback.server);
@@ -214,22 +190,6 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       this.refreshOperation = null;
     });
     return await this.refreshOperation;
-  }
-
-  private async authorizedGet(url: string, timeoutMs: number): Promise<HttpResponse> {
-    let credentials = await this.refresh();
-    let response = await this.options.http.get(url, {
-      headers: this.headers(credentials, "application/json"),
-      timeoutMs,
-    });
-    if (response.status === 401) {
-      credentials = await this.refresh(true);
-      response = await this.options.http.get(url, {
-        headers: this.headers(credentials, "application/json"),
-        timeoutMs,
-      });
-    }
-    return response;
   }
 
   private async authorizedPost(url: string, body: string, timeoutMs: number): Promise<HttpResponse> {
@@ -296,42 +256,6 @@ export function accountIdFromAccessToken(accessToken: string): string | null {
   } catch {
     return null;
   }
-}
-
-function parseModels(body: string): ProviderModelOption[] {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body) as unknown;
-  } catch {
-    throw new Error("OpenAI Subscription returned an invalid model list.");
-  }
-  if (!isRecord(payload) || !Array.isArray(payload.models)) {
-    throw new Error("OpenAI Subscription returned an invalid model list.");
-  }
-  const unique = new Map<string, ProviderModelOption>();
-  for (const entry of payload.models) {
-    if (!isRecord(entry)) continue;
-    if (typeof entry.visibility === "string" && entry.visibility.toLowerCase() !== "list") continue;
-    if (entry.show_in_picker === false || entry.showInPicker === false) continue;
-    const id = typeof entry.slug === "string" ? entry.slug.trim()
-      : typeof entry.id === "string" ? entry.id.trim()
-        : "";
-    if (id.length === 0) continue;
-    const name = typeof entry.display_name === "string" && entry.display_name.trim().length > 0
-      ? entry.display_name.trim()
-      : id;
-    unique.set(id, { id, name });
-  }
-  return [...unique.values()].sort((left, right) => (
-    left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" })
-  ));
-}
-
-function preferredDefault(models: readonly ProviderModelOption[]): string | null {
-  for (const id of DEFAULT_MODEL_ORDER) {
-    if (models.some((model) => model.id.toLowerCase() === id)) return id;
-  }
-  return models[0]?.id ?? null;
 }
 
 export function parseResponseText(body: string): string {

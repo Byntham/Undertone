@@ -63,6 +63,7 @@ describe("transcription providers", () => {
     const form = expectForm(first.request.body);
     expect(form.get("model")).toBe(DEFAULT_STT_MODELS.openai);
     expect(form.get("language")).toBe("en");
+    expect(form.has("languages[]")).toBe(false);
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
 
@@ -72,7 +73,10 @@ describe("transcription providers", () => {
       provider: "openai",
       model: "whisper-1",
     });
-    expect(expectForm(http.calls[1]!.request.body).get("model")).toBe("whisper-1");
+    const overrideForm = expectForm(http.calls[1]!.request.body);
+    expect(overrideForm.get("model")).toBe("whisper-1");
+    expect(overrideForm.get("language")).toBe("en");
+    expect(overrideForm.has("languages[]")).toBe(false);
   });
 
   it("sends OpenRouter base64 JSON without vocabulary fields", async () => {
@@ -93,6 +97,7 @@ describe("transcription providers", () => {
     expect(typeof call.request.body).toBe("string");
     const body = JSON.parse(call.request.body as string) as Record<string, unknown>;
     expect(body.model).toBe(DEFAULT_STT_MODELS.openrouter);
+    expect(body.language).toBe("en");
     expect(body).not.toHaveProperty("provider");
     const inputAudio = body.input_audio as Record<string, unknown>;
     expect(inputAudio.format).toBe("wav");

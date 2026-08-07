@@ -38,6 +38,8 @@ describe("configuration", () => {
     expect(second.provider).toBe("local");
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
+    expect(second.cleanup_reasoning_effort).toBe("none");
+    expect(second.cleanup_service_tier).toBe("priority");
     expect(second.hotkey).toBe("left ctrl+left windows");
     expect(second.repaste_hotkey).toBe("left alt+v");
     expect(second.commit_hotkey).toBe("left ctrl+left alt");
@@ -55,6 +57,17 @@ describe("configuration", () => {
       stack_cleanup_strategy: "live-delta-commit-full",
     }).stack_cleanup_strategy)
       .toBe("live-full");
+  });
+
+  it("repairs invalid Luna request settings and migrates fast to priority", () => {
+    const config = normalizeConfig({
+      cleanup_reasoning_effort: "minimal",
+      cleanup_service_tier: "turbo",
+    });
+    expect(config.cleanup_reasoning_effort).toBe("none");
+    expect(config.cleanup_service_tier).toBe("priority");
+    expect(normalizeConfig({ cleanup_service_tier: "fast" }).cleanup_service_tier)
+      .toBe("priority");
   });
 
   it("keeps only current fields and repairs model override containers", () => {

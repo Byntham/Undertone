@@ -8,29 +8,18 @@ import {
 } from "../src/main/openAiSubscription";
 import type {
   HttpClient,
-  HttpGetClient,
-  HttpGetRequest,
   HttpRequest,
   HttpResponse,
 } from "../src/platform/http";
 
-class FakeHttp implements HttpClient, HttpGetClient {
+class FakeHttp implements HttpClient {
   readonly posts: Array<{ url: string; request: HttpRequest }> = [];
-  readonly gets: Array<{ url: string; request: HttpGetRequest }> = [];
   readonly postResponses: HttpResponse[] = [];
-  readonly getResponses: HttpResponse[] = [];
 
   async post(url: string, request: HttpRequest): Promise<HttpResponse> {
     this.posts.push({ url, request });
     const response = this.postResponses.shift();
     if (response === undefined) throw new Error("No fake POST response configured");
-    return response;
-  }
-
-  async get(url: string, request: HttpGetRequest): Promise<HttpResponse> {
-    this.gets.push({ url, request });
-    const response = this.getResponses.shift();
-    if (response === undefined) throw new Error("No fake GET response configured");
     return response;
   }
 }
@@ -48,27 +37,32 @@ describe("OpenAI Subscription", () => {
     ].join("\n\n"))).toBe('{"text":"done"}');
   });
 
-  it("refreshes expired credentials and discovers only visible account models", async () => {
+  it("refreshes expired credentials and uses Luna when no override is configured", async () => {
     const http = new FakeHttp();
-    http.postResponses.push(tokenResponse("new-account", "new-access", "new-refresh"));
-    http.getResponses.push({
+    http.postResponses.push(tokenResponse("new-account", "new-access", "new-refresh"), {
       status: 200,
-      body: JSON.stringify({ models: [
-        { slug: "hidden", display_name: "Hidden", show_in_picker: false },
-        { slug: "gpt-5.6-sol", display_name: "GPT-5.6 Sol", visibility: "list" },
-        { slug: "gpt-5.6-luna", display_name: "GPT-5.6 Luna", visibility: "list" },
-      ] }),
+      body: `data: ${JSON.stringify({ type: "response.output_text.done", text: '{"text":"clean"}' })}`,
     });
     const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
     const subscription = createSubscription(http, expiredCredentials(), persisted);
-    const result = await subscription.listModels();
-    expect(result.defaultModel).toBe("gpt-5.6-luna");
-    expect(result.models.map(({ id }) => id)).toEqual(["gpt-5.6-luna", "gpt-5.6-sol"]);
+    await subscription.complete({
+      model: "",
+      reasoningEffort: "none",
+      serviceTier: "priority",
+      systemPrompt: "Copyedit only.",
+      userPrompt: "raw",
+      timeoutMs: 2_500,
+    });
     expect(persisted[0]).toMatchObject({ refreshToken: "new-refresh", accountId: "new-account" });
     expect(http.posts[0]?.url).toBe("https://auth.openai.com/oauth/token");
-    expect(http.gets[0]?.request.headers).toMatchObject({
+    expect(http.posts[1]?.request.headers).toMatchObject({
       Authorization: expect.stringContaining("Bearer "),
       "ChatGPT-Account-ID": "new-account",
+    });
+    expect(JSON.parse(http.posts[1]!.request.body as string)).toMatchObject({
+      model: "gpt-5.6-luna",
+      reasoning: { effort: "none" },
+      service_tier: "priority",
     });
   });
 
@@ -85,6 +79,8 @@ describe("OpenAI Subscription", () => {
     const subscription = createSubscription(http, validCredentials(), persisted);
     expect(await subscription.complete({
       model: "gpt-5.6-luna",
+      reasoningEffort: "high",
+      serviceTier: "priority",
       systemPrompt: "Copyedit only.",
       userPrompt: "raw",
       timeoutMs: 2_500,
@@ -97,12 +93,38 @@ describe("OpenAI Subscription", () => {
       originator: "undertone",
     });
     const body = JSON.parse(call.request.body as string) as Record<string, unknown>;
-    expect(body).toMatchObject({ model: "gpt-5.6-luna", store: false, stream: true });
+    expect(body).toMatchObject({
+      model: "gpt-5.6-luna",
+      reasoning: { effort: "high" },
+      service_tier: "priority",
+      store: false,
+      stream: true,
+    });
     expect(body).not.toHaveProperty("metadata");
 
     await subscription.disconnect();
     expect(subscription.connected()).toBe(false);
     expect(persisted.at(-1)).toBeNull();
+  });
+
+  it("does not apply Luna request tuning to another subscription model", async () => {
+    const http = new FakeHttp();
+    http.postResponses.push({
+      status: 200,
+      body: `data: ${JSON.stringify({ type: "response.output_text.done", text: '{"text":"clean"}' })}`,
+    });
+    const subscription = createSubscription(http, validCredentials(), []);
+    await subscription.complete({
+      model: "gpt-5.6-terra",
+      reasoningEffort: "max",
+      serviceTier: "priority",
+      systemPrompt: "Copyedit only.",
+      userPrompt: "raw",
+      timeoutMs: 2_500,
+    });
+    const body = JSON.parse(http.posts[0]!.request.body as string) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "low" });
+    expect(body).not.toHaveProperty("service_tier");
   });
 });
 

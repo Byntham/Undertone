@@ -30,7 +30,6 @@ import {
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import { OverlayController } from "../core/overlayController";
-import { ProviderModelCatalog } from "../core/providerModels";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
   DictationPipelineQueue,
@@ -75,7 +74,6 @@ import type {
   LocalEngineSnapshot,
   HistoryAction,
   CloudProviderId,
-  ModelProviderId,
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
@@ -145,7 +143,6 @@ if (!gotLock || devQuitRequest) {
   let productionPausedForDev = false;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
-  let providerModelCatalog: ProviderModelCatalog | null = null;
   let openAiSubscription: OpenAiSubscription | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
     stt: { installing: false, phase: "", fraction: 0 },
@@ -937,7 +934,6 @@ if (!gotLock || devQuitRequest) {
     });
     transcriberClient = new Transcriber(http, localStt);
     cleanupClient = new CleanupClient(http, localCleanup, openAiSubscription);
-    providerModelCatalog = new ProviderModelCatalog(http);
     const paster = new ClipboardPaster(
       {
         readText: () => clipboard.readText(),
@@ -1150,11 +1146,6 @@ if (!gotLock || devQuitRequest) {
       }
       const next = applySettingsPatch(config, value);
       await store.save(next);
-      for (const provider of ["xai", "openai", "openrouter"] as const) {
-        if (providerKey(config, provider) !== providerKey(next, provider)) {
-          providerModelCatalog?.clear(provider);
-        }
-      }
       if (previousMode !== next.dictation_mode && pipeline !== null) {
         await pipeline.enqueueTransition(() => {
           config = next;
@@ -1447,6 +1438,8 @@ if (!gotLock || devQuitRequest) {
       provider,
       model,
       timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
+      reasoningEffort: config.cleanup_reasoning_effort,
+      serviceTier: config.cleanup_service_tier,
       systemPrompt: config.cleanup_prompt,
       throwOnError: true,
     });
@@ -1463,36 +1456,6 @@ if (!gotLock || devQuitRequest) {
     if (value.action === "connect") await subscription.connect();
     else await subscription.disconnect();
     return currentSettingsSnapshot();
-  });
-  ipcMain.handle("provider:models", async (event, value: unknown) => {
-    authorizeSettingsSender(event.sender, settingsWindow);
-    if (!isRecord(value)
-      || !isModelProvider(value.provider)
-      || (value.kind !== "stt" && value.kind !== "cleanup")
-      || (value.provider === "openai-subscription" && value.kind !== "cleanup")
-      || typeof value.refresh !== "boolean") {
-      throw new Error("Invalid provider model request");
-    }
-    if (value.provider === "openai-subscription") {
-      const subscription = openAiSubscription;
-      if (subscription === null) throw new Error("OpenAI Subscription is not ready");
-      const result = await subscription.listModels(value.refresh);
-      return {
-        provider: value.provider,
-        kind: value.kind,
-        selectable: true,
-        defaultModel: result.defaultModel,
-        models: result.models,
-      };
-    }
-    const catalog = providerModelCatalog;
-    if (catalog === null) throw new Error("Provider model discovery is not ready");
-    return await catalog.list(
-      value.provider,
-      value.kind,
-      providerKey(config, value.provider),
-      value.refresh,
-    );
   });
   ipcMain.handle("microphone:test", async (event) => {
     authorizeSettingsSender(event.sender, settingsWindow);
@@ -1761,10 +1724,6 @@ function authorizeSettingsSender(
 
 function isCloudProvider(value: unknown): value is CloudProviderId {
   return value === "xai" || value === "openai" || value === "openrouter";
-}
-
-function isModelProvider(value: unknown): value is ModelProviderId {
-  return isCloudProvider(value) || value === "openai-subscription";
 }
 
 function openAiCredentials(config: UndertoneConfig): OpenAiSubscriptionCredentials | null {

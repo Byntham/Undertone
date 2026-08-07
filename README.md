@@ -45,13 +45,17 @@ is used only for deterministic insertion seams.
   diagnostic paths.
 - **Speech & AI** - independent STT/cleanup providers, OpenAI Subscription
   sign-in for cleanup, write-only cloud keys, local model install/load/eject
-  controls, provider tests, model overrides, and advanced local residency and
-  cleanup controls.
+  controls, provider tests, read-only effective model labels, and advanced local
+  residency and cleanup controls.
 - **Dictionary** - vocabulary, exact corrections, and contextual xAI-only
   recognition hints.
 - **History** - session-only copy, re-paste, and retry actions.
 
 Changes autosave. Diagnostics are written to `%APPDATA%\Undertone\app.log`.
+Model overrides remain available in `%APPDATA%\Undertone\config.json` through
+`stt_models` and `cleanup_models`. Luna request tuning is config-only through
+`cleanup_reasoning_effort` (default `none`) and `cleanup_service_tier` (default
+`priority`; legacy `fast` values are migrated to `priority`).
 
 ## Build and run
 
