@@ -70,6 +70,12 @@ describe("configuration", () => {
       .toBe("priority");
   });
 
+  it("keeps cleanup timeout config-only and repairs invalid values", () => {
+    expect(normalizeConfig({ cleanup_timeout: 4.5 }).cleanup_timeout).toBe(4.5);
+    expect(normalizeConfig({ cleanup_timeout: 31 }).cleanup_timeout).toBe(2.5);
+    expect(normalizeConfig({ cleanup_timeout: "slow" }).cleanup_timeout).toBe(2.5);
+  });
+
   it("keeps only current fields and repairs model override containers", () => {
     const config = normalizeConfig({
       language: "fr",
@@ -79,12 +85,16 @@ describe("configuration", () => {
       stt_model: "whisper-1",
       stt_models: "invalid",
       cleanup_models: null,
+      cleanup_prompt: "obsolete",
+      cleanup_prompts: { Fast: "obsolete" },
     });
     expect(config.language).toBe("fr");
     expect(config).not.toHaveProperty("sample_rate");
     expect(config).not.toHaveProperty("dev_mode");
     expect(config).not.toHaveProperty("onboarded");
     expect(config).not.toHaveProperty("stt_model");
+    expect(config).not.toHaveProperty("cleanup_prompt");
+    expect(config).not.toHaveProperty("cleanup_prompts");
     expect(config.stt_models).toEqual({});
     expect(config.cleanup_models).toEqual({});
     expect(modelOverride(config, "stt", "openai")).toBe("");

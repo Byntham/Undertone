@@ -36,9 +36,6 @@ describe("settings model", () => {
       sttVocabHints: true,
       vocabulary: [],
       corrections: {},
-      cleanupTimeout: 2.5,
-      cleanupPrompt: "",
-      cleanupPrompts: {},
       localEngines: {
         stt: {
           installed: false,
@@ -155,9 +152,6 @@ describe("settings model", () => {
       sttVocabHints: false,
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
-      cleanupTimeout: 4.5,
-      cleanupPrompt: " custom prompt ",
-      cleanupPrompts: { Fast: "multi\nline prompt" },
       stackCleanupStrategy: "commit-full",
     });
     expect(next).not.toBe(config);
@@ -172,11 +166,8 @@ describe("settings model", () => {
     expect(next.stt_vocab_hints).toBe(false);
     expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
-    expect(next.cleanup_timeout).toBe(4.5);
     expect(next.cleanup_reasoning_effort).toBe("none");
     expect(next.cleanup_service_tier).toBe("priority");
-    expect(next.cleanup_prompt).toBe("custom prompt");
-    expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });
     expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(config.language).toBe("en");
   });
@@ -240,8 +231,12 @@ describe("settings model", () => {
       .toThrow(/Invalid transcription language/u);
     expect(() => applySettingsPatch(config, { localIdleMinutes: 7 }))
       .toThrow(/invalid/u);
-    expect(() => applySettingsPatch(config, { cleanupTimeout: 31 }))
-      .toThrow(/between/u);
+    expect(() => applySettingsPatch(config, { cleanupTimeout: 4.5 }))
+      .toThrow(/Unsupported settings field/u);
+    expect(() => applySettingsPatch(config, { cleanupPrompt: "custom" }))
+      .toThrow(/Unsupported settings field/u);
+    expect(() => applySettingsPatch(config, { cleanupPrompts: { Fast: "custom" } }))
+      .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { cleanupReasoningEffort: "minimal" }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { cleanupServiceTier: "priority" }))

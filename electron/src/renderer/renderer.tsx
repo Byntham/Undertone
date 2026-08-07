@@ -674,116 +674,32 @@ function SpeechAi({
         action={localAction}
       />
     </div>
-    <details className="advancedSection">
-      <summary>Advanced</summary>
-      <div className="advancedGroup">
-        <h3>On-device behavior</h3>
-        <div className="card">
-          <SettingRow
-            title="Load models on startup"
-            description="Warm selected local providers when Undertone starts."
-          >
-            <Toggle
-              label="Load local models on startup"
-              checked={settings.localLoaded}
-              onChange={(localLoaded) => { void update({ localLoaded }); }}
-            />
-          </SettingRow>
-          <SettingRow title="Auto-eject when idle" description="Free model memory after inactivity.">
-            <select
-              aria-label="Local model idle timeout"
-              value={settings.localIdleMinutes}
-              onChange={(event) => { void update({ localIdleMinutes: Number(event.target.value) }); }}
-            >
-              <option value={0}>Never</option>
-              <option value={5}>After 5 min</option>
-              <option value={15}>After 15 min</option>
-              <option value={30}>After 30 min</option>
-              <option value={60}>After 1 hour</option>
-            </select>
-          </SettingRow>
-        </div>
-      </div>
-      <div className="advancedGroup">
-        <h3>Cleanup tuning</h3>
-        <div className="card modelCard">
-          <form className="modelControl" onSubmit={(event) => {
-            event.preventDefault();
-            const field = event.currentTarget.elements.namedItem("cleanupTimeout");
-            if (field instanceof HTMLInputElement) {
-              void update({ cleanupTimeout: Number(field.value) });
-            }
-          }}>
-            <label htmlFor="cleanup-timeout">Cleanup timeout (seconds)</label>
-            <div className="modelEntry">
-              <input id="cleanup-timeout" name="cleanupTimeout" type="number" min="0.5" max="30" step="0.1" defaultValue={settings.cleanupTimeout} />
-              <button type="submit" className="smallButton accent">Save</button>
-            </div>
-          </form>
-          <PromptControl current={settings.cleanupPrompt} saved={settings.cleanupPrompts} update={update} />
-        </div>
-      </div>
-    </details>
+    <div className="card localPolicy">
+      <SettingRow
+        title="Load models on startup"
+        description="Warm selected local providers when Undertone starts."
+      >
+        <Toggle
+          label="Load local models on startup"
+          checked={settings.localLoaded}
+          onChange={(localLoaded) => { void update({ localLoaded }); }}
+        />
+      </SettingRow>
+      <SettingRow title="Auto-eject when idle" description="Free model memory after inactivity.">
+        <select
+          aria-label="Local model idle timeout"
+          value={settings.localIdleMinutes}
+          onChange={(event) => { void update({ localIdleMinutes: Number(event.target.value) }); }}
+        >
+          <option value={0}>Never</option>
+          <option value={5}>After 5 min</option>
+          <option value={15}>After 15 min</option>
+          <option value={30}>After 30 min</option>
+          <option value={60}>After 1 hour</option>
+        </select>
+      </SettingRow>
+    </div>
   </section>;
-}
-
-function PromptControl({
-  current,
-  saved,
-  update,
-}: {
-  current: string;
-  saved: Record<string, string>;
-  update: (patch: SettingsPatch) => Promise<boolean>;
-}): React.JSX.Element {
-  const [value, setValue] = useState(current);
-  const [selected, setSelected] = useState("");
-  const [saveName, setSaveName] = useState("");
-  const save = (): void => {
-    const patch: SettingsPatch = { cleanupPrompt: value };
-    if (selected.length > 0) patch.cleanupPrompts = { ...saved, [selected]: value };
-    void update(patch);
-  };
-  const saveAs = (): void => {
-    const name = saveName.trim();
-    if (name.length === 0 || value.trim().length === 0) return;
-    void update({ cleanupPrompt: value, cleanupPrompts: { ...saved, [name]: value } });
-    setSelected(name);
-    setSaveName("");
-  };
-  return <form className="modelControl" onSubmit={(event) => {
-    event.preventDefault();
-    save();
-  }}>
-    <div className="promptHead">
-      <label htmlFor="cleanup-prompt">Cleanup system prompt</label>
-      <select aria-label="Saved cleanup prompt" value={selected} onChange={(event) => {
-        const name = event.target.value;
-        setSelected(name);
-        setValue(name.length === 0 ? "" : saved[name] ?? "");
-        void update({ cleanupPrompt: name.length === 0 ? "" : saved[name] ?? "" });
-      }}>
-        <option value="">Built-in default</option>
-        {Object.keys(saved).sort((left, right) => left.localeCompare(right)).map((name) => <option key={name} value={name}>{name}</option>)}
-      </select>
-    </div>
-    <textarea id="cleanup-prompt" value={value} placeholder="Empty uses the built-in prompt." onChange={(event) => setValue(event.target.value)} />
-    <div className="promptActions">
-      <small>Empty uses the built-in default.</small>
-      <button type="submit" className="smallButton accent">Save</button>
-    </div>
-    <div className="promptActions">
-      <input aria-label="New prompt save name" placeholder="New save name" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
-      <button type="button" className="smallButton" onClick={saveAs}>Save as new</button>
-      {selected.length > 0 && <button type="button" className="clearButton" onClick={() => {
-        const next = { ...saved };
-        delete next[selected];
-        setSelected("");
-        setValue("");
-        void update({ cleanupPrompt: "", cleanupPrompts: next });
-      }}>Delete save</button>}
-    </div>
-  </form>;
 }
 
 function ProviderSelect<T extends SettingsProviderId>({
@@ -1142,9 +1058,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     sttVocabHints: true,
     vocabulary: ["Undertone", "Kubernetes"],
     corrections: { "under tone": "Undertone" },
-    cleanupTimeout: 2.5,
-    cleanupPrompt: "",
-    cleanupPrompts: {},
     localEngines: {
       stt: {
         installed: true,

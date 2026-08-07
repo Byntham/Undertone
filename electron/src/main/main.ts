@@ -1440,7 +1440,6 @@ if (!gotLock || devQuitRequest) {
       timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
       reasoningEffort: config.cleanup_reasoning_effort,
       serviceTier: config.cleanup_service_tier,
-      systemPrompt: config.cleanup_prompt,
       throwOnError: true,
     });
     if (cleaned === null) throw new Error("Cleanup test failed");
