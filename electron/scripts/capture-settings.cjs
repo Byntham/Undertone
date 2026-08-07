@@ -112,21 +112,12 @@ app.whenReady().then(async () => {
   await win.webContents.executeJavaScript(`{
     const otherCredentials = document.querySelector('details.otherCredentials');
     if (otherCredentials) otherCredentials.open = false;
-    const advanced = document.querySelector('details.advancedSection');
-    if (advanced) advanced.open = true;
-    const advancedStart = advanced?.querySelector('.advancedGroup');
-    if (advancedStart) advancedStart.scrollIntoView({ block: 'start' });
-  }`);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const speechAiAdvancedStart = await win.webContents.capturePage();
-  await writeFile(path.join(output, "speech-ai-advanced-start.png"), speechAiAdvancedStart.toPNG());
-  await win.webContents.executeJavaScript(`{
     const main = document.querySelector('main');
     if (main) main.scrollTop = main.scrollHeight;
   }`);
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const speechAiAdvanced = await win.webContents.capturePage();
-  await writeFile(path.join(output, "speech-ai-advanced.png"), speechAiAdvanced.toPNG());
+  const speechAiOnDevice = await win.webContents.capturePage();
+  await writeFile(path.join(output, "speech-ai-on-device.png"), speechAiOnDevice.toPNG());
   console.log(JSON.stringify({ scale, results }));
   win.destroy();
   server.close();

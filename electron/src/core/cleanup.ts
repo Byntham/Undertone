@@ -3,8 +3,6 @@ import { SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
 import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
 
-export { SYSTEM_PROMPT } from "./cleanupPrompt";
-
 export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
   xai: "https://api.x.ai/v1/chat/completions",
   openai: "https://api.openai.com/v1/chat/completions",
@@ -47,7 +45,6 @@ export interface SubscriptionCleanupRuntime {
     model: string;
     reasoningEffort: CleanupReasoningEffort;
     serviceTier: CleanupServiceTier;
-    systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
   }): Promise<string>;
@@ -64,7 +61,6 @@ export interface CleanupOptions {
   timeoutSeconds?: number;
   reasoningEffort?: CleanupReasoningEffort;
   serviceTier?: CleanupServiceTier;
-  systemPrompt?: string;
   throwOnError?: boolean;
 }
 
@@ -96,7 +92,6 @@ export class CleanupClient {
           model,
           reasoningEffort: options.reasoningEffort ?? "none",
           serviceTier: options.serviceTier ?? "priority",
-          systemPrompt: options.systemPrompt || SYSTEM_PROMPT,
           userPrompt: user,
           timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
         });
@@ -151,7 +146,7 @@ export class CleanupClient {
       body: JSON.stringify({
         model: effectiveModel,
         messages: [
-          { role: "system", content: options.systemPrompt || SYSTEM_PROMPT },
+          { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: user },
         ],
         response_format: format === "json_schema"

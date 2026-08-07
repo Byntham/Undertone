@@ -38,8 +38,6 @@ export interface UndertoneConfig extends ConfigRecord {
   cleanup_timeout: number;
   cleanup_reasoning_effort: CleanupReasoningEffort;
   cleanup_service_tier: CleanupServiceTier;
-  cleanup_prompt: string;
-  cleanup_prompts: Record<string, string>;
 }
 
 export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
@@ -75,8 +73,6 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   cleanup_timeout: 2.5,
   cleanup_reasoning_effort: "none",
   cleanup_service_tier: "priority",
-  cleanup_prompt: "",
-  cleanup_prompts: {},
 };
 
 export const KEY_FIELDS = {
@@ -123,6 +119,12 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   } else if (config.cleanup_service_tier !== "default"
     && config.cleanup_service_tier !== "priority") {
     config.cleanup_service_tier = DEFAULT_CONFIG.cleanup_service_tier;
+  }
+  if (typeof config.cleanup_timeout !== "number"
+    || !Number.isFinite(config.cleanup_timeout)
+    || config.cleanup_timeout < 0.5
+    || config.cleanup_timeout > 30) {
+    config.cleanup_timeout = DEFAULT_CONFIG.cleanup_timeout;
   }
   if (typeof config.commit_hotkey !== "string") {
     config.commit_hotkey = DEFAULT_CONFIG.commit_hotkey;

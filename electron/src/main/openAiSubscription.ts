@@ -6,6 +6,7 @@ import {
   type CleanupReasoningEffort,
   type CleanupServiceTier,
 } from "../core/config";
+import { SYSTEM_PROMPT } from "../core/cleanupPrompt";
 import type { SubscriptionCleanupRuntime } from "../core/cleanup";
 import type { HttpClient, HttpResponse } from "../platform/http";
 
@@ -73,7 +74,6 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
     model: string;
     reasoningEffort: CleanupReasoningEffort;
     serviceTier: CleanupServiceTier;
-    systemPrompt: string;
     userPrompt: string;
     timeoutMs: number;
   }): Promise<string> {
@@ -84,7 +84,7 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       : {};
     const requestBody = JSON.stringify({
       model,
-      instructions: options.systemPrompt,
+      instructions: SYSTEM_PROMPT,
       input: [{
         role: "user",
         content: [{ type: "input_text", text: options.userPrompt }],

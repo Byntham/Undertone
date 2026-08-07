@@ -47,9 +47,6 @@ const PATCH_FIELDS = new Set([
   "sttVocabHints",
   "vocabulary",
   "corrections",
-  "cleanupTimeout",
-  "cleanupPrompt",
-  "cleanupPrompts",
 ]);
 
 const TRANSCRIPTION_PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
@@ -118,9 +115,6 @@ export function settingsSnapshot(
     sttVocabHints: config.stt_vocab_hints,
     vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
-    cleanupTimeout: config.cleanup_timeout,
-    cleanupPrompt: config.cleanup_prompt,
-    cleanupPrompts: { ...config.cleanup_prompts },
     localEngines: {
       stt: { ...localEngines.stt },
       cleanup: { ...localEngines.cleanup },
@@ -246,24 +240,6 @@ export function applySettingsPatch(
   }
   if (value.corrections !== undefined) {
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
-  }
-  if (value.cleanupTimeout !== undefined) {
-    if (typeof value.cleanupTimeout !== "number"
-      || !Number.isFinite(value.cleanupTimeout)
-      || value.cleanupTimeout < 0.5
-      || value.cleanupTimeout > 30) {
-      throw new Error("cleanupTimeout must be between 0.5 and 30 seconds");
-    }
-    next.cleanup_timeout = value.cleanupTimeout;
-  }
-  if (value.cleanupPrompt !== undefined) {
-    if (typeof value.cleanupPrompt !== "string" || value.cleanupPrompt.length > 40_000) {
-      throw new Error("cleanupPrompt is invalid");
-    }
-    next.cleanup_prompt = value.cleanupPrompt.trim();
-  }
-  if (value.cleanupPrompts !== undefined) {
-    next.cleanup_prompts = textMap(value.cleanupPrompts, "cleanupPrompts", 50, 40_000);
   }
   return next;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
 import {
   OpenAiSubscription,
   accountIdFromAccessToken,
@@ -49,7 +50,6 @@ describe("OpenAI Subscription", () => {
       model: "",
       reasoningEffort: "none",
       serviceTier: "priority",
-      systemPrompt: "Copyedit only.",
       userPrompt: "raw",
       timeoutMs: 2_500,
     });
@@ -81,7 +81,6 @@ describe("OpenAI Subscription", () => {
       model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
-      systemPrompt: "Copyedit only.",
       userPrompt: "raw",
       timeoutMs: 2_500,
     })).toBe('{"text":"clean"}');
@@ -95,6 +94,7 @@ describe("OpenAI Subscription", () => {
     const body = JSON.parse(call.request.body as string) as Record<string, unknown>;
     expect(body).toMatchObject({
       model: "gpt-5.6-luna",
+      instructions: SYSTEM_PROMPT,
       reasoning: { effort: "high" },
       service_tier: "priority",
       store: false,
@@ -118,7 +118,6 @@ describe("OpenAI Subscription", () => {
       model: "gpt-5.6-terra",
       reasoningEffort: "max",
       serviceTier: "priority",
-      systemPrompt: "Copyedit only.",
       userPrompt: "raw",
       timeoutMs: 2_500,
     });

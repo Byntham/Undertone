@@ -78,9 +78,6 @@ export interface SettingsSnapshot {
   sttVocabHints: boolean;
   vocabulary: string[];
   corrections: Record<string, string>;
-  cleanupTimeout: number;
-  cleanupPrompt: string;
-  cleanupPrompts: Record<string, string>;
   localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
 }
 
@@ -117,9 +114,6 @@ export interface SettingsPatch {
   sttVocabHints?: boolean;
   vocabulary?: string[];
   corrections?: Record<string, string>;
-  cleanupTimeout?: number;
-  cleanupPrompt?: string;
-  cleanupPrompts?: Record<string, string>;
 }
 
 export interface SettingsApi {

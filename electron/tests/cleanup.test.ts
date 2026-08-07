@@ -4,12 +4,12 @@ import {
   CLEANUP_API_URLS,
   CleanupClient,
   DEFAULT_CLEANUP_MODELS,
-  SYSTEM_PROMPT,
   dropEchoedContext,
   plausibleLength,
   type LocalCleanupRuntime,
   type SubscriptionCleanupRuntime,
 } from "../src/core/cleanup";
+import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
 import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http";
 
 class FakeHttp implements HttpClient {
@@ -58,14 +58,12 @@ describe("cleanup providers", () => {
       model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
-      systemPrompt: "Clean this.",
     })).toBe("subscription result");
     expect(http.calls).toHaveLength(0);
     expect(calls[0]).toMatchObject({
       model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
-      systemPrompt: "Clean this.",
     });
   });
 
@@ -90,7 +88,7 @@ describe("cleanup providers", () => {
     }
   });
 
-  it("honors model, timeout, and developer prompt overrides", async () => {
+  it("honors model and timeout while always using the production prompt", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     await client.cleanup({
@@ -98,13 +96,12 @@ describe("cleanup providers", () => {
       provider: "openrouter",
       model: "my-model",
       timeoutSeconds: 7.5,
-      systemPrompt: "Be terse.",
     });
     const request = http.calls[0]!.request;
     expect(request.timeoutMs).toBe(7_500);
     const body = jsonBody(request);
     expect(body.model).toBe("my-model");
-    expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe("Be terse.");
+    expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe(SYSTEM_PROMPT);
   });
 
   it("applies compatible tuning only to each provider's opinionated cleanup model", async () => {

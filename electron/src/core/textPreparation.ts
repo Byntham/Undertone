@@ -37,7 +37,6 @@ export interface CleanupRequest {
   timeoutSeconds: number;
   reasoningEffort: CleanupReasoningEffort;
   serviceTier: CleanupServiceTier;
-  systemPrompt: string;
 }
 
 export interface TextPreparationDependencies {
@@ -82,7 +81,6 @@ export async function prepareText(
       timeoutSeconds: nonzeroNumber(config.cleanup_timeout, DEFAULT_CONFIG.cleanup_timeout),
       reasoningEffort: config.cleanup_reasoning_effort,
       serviceTier: config.cleanup_service_tier,
-      systemPrompt: stringValue(config.cleanup_prompt, ""),
     });
     if (cleaned !== null) {
       final = finalize(cleaned, context.before, corrections, {
