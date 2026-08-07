@@ -62,7 +62,8 @@ describe("transcription providers", () => {
     expect(first.url).toBe("https://api.openai.com/v1/audio/transcriptions");
     const form = expectForm(first.request.body);
     expect(form.get("model")).toBe(DEFAULT_STT_MODELS.openai);
-    expect(form.get("language")).toBe("en");
+    expect(form.get("languages[]")).toBe("en");
+    expect(form.has("language")).toBe(false);
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
 
@@ -93,6 +94,7 @@ describe("transcription providers", () => {
     expect(typeof call.request.body).toBe("string");
     const body = JSON.parse(call.request.body as string) as Record<string, unknown>;
     expect(body.model).toBe(DEFAULT_STT_MODELS.openrouter);
+    expect(body.language).toBe("en");
     expect(body).not.toHaveProperty("provider");
     const inputAudio = body.input_audio as Record<string, unknown>;
     expect(inputAudio.format).toBe("wav");

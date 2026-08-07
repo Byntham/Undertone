@@ -29,16 +29,14 @@ describe("settings model", () => {
       cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
       openAiSubscriptionConnected: false,
-      sttModel: "",
-      cleanupModel: "",
+      sttModel: "ggml-large-v3-turbo.bin",
+      cleanupModel: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       localLoaded: false,
       localIdleMinutes: 0,
       sttVocabHints: true,
       vocabulary: [],
       corrections: {},
       cleanupTimeout: 2.5,
-      cleanupReasoningEffort: "none",
-      cleanupServiceTier: "default",
       cleanupPrompt: "",
       cleanupPrompts: {},
       localEngines: {
@@ -67,14 +65,17 @@ describe("settings model", () => {
     expect(snapshot).not.toHaveProperty("api_key");
   });
 
-  it("updates providers, write-only keys, and provider-specific models", () => {
-    let config = normalizeConfig({ api_key: "x-secret", openai_api_key: "old-secret" });
+  it("updates providers and write-only keys while exposing config model overrides", () => {
+    let config = normalizeConfig({
+      api_key: "x-secret",
+      openai_api_key: "old-secret",
+      stt_models: { openai: "custom-stt" },
+      cleanup_models: { openrouter: "custom-cleanup" },
+    });
     config = applySettingsPatch(config, {
       provider: "openai",
       cleanupProvider: "openrouter",
       providerKey: { provider: "openai", value: "  replacement  " },
-      sttModel: { provider: "openai", value: "custom-stt" },
-      cleanupModel: { provider: "openrouter", value: "custom-cleanup" },
     });
     expect(config.provider).toBe("openai");
     expect(config.cleanup_provider).toBe("openrouter");
@@ -96,7 +97,6 @@ describe("settings model", () => {
       openai_oauth_account_id: "account",
     }), {
       cleanupProvider: "openai-subscription",
-      cleanupModel: { provider: "openai-subscription", value: "gpt-5.6-luna" },
     });
     const snapshot = settingsSnapshot(config, "1.8.0", true);
     expect(snapshot.cleanupProvider).toBe("openai-subscription");
@@ -107,14 +107,22 @@ describe("settings model", () => {
       .toThrow(/supported provider/u);
     expect(() => applySettingsPatch(config, {
       sttModel: { provider: "openai-subscription", value: "gpt-5.6-luna" },
-    })).toThrow(/cloud provider/u);
+    })).toThrow(/Unsupported settings field/u);
   });
 
-  it("clears model overrides and rejects malformed provider updates", () => {
-    const config = normalizeConfig({ stt_models: { xai: "custom" } });
-    expect(applySettingsPatch(config, {
+  it("keeps model selection config-only and rejects malformed provider updates", () => {
+    const config = normalizeConfig({
+      provider: "xai",
+      stt_models: { xai: "custom" },
+      cleanup_models: { openai: "custom-cleanup" },
+    });
+    expect(settingsSnapshot(config, "1.8.0", true).sttModel).toBe("custom");
+    expect(() => applySettingsPatch(config, {
       sttModel: { provider: "xai", value: "" },
-    }).stt_models).toEqual({});
+    })).toThrow(/Unsupported settings field/u);
+    expect(() => applySettingsPatch(config, {
+      cleanupModel: { provider: "openai", value: "gpt-5.6-luna" },
+    })).toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { provider: "unknown" }))
       .toThrow(/supported provider/u);
     expect(() => applySettingsPatch(config, {
@@ -123,12 +131,6 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, {
       providerKey: { provider: "xai", value: "ok", leaked: true },
     })).toThrow(/invalid fields/u);
-    expect(() => applySettingsPatch(config, {
-      cleanupModel: { provider: "xai", value: "bad\nmodel" },
-    })).toThrow(/invalid/u);
-    expect(() => applySettingsPatch(config, {
-      sttModel: { provider: "local", value: "other.bin" },
-    })).toThrow(/cloud provider/u);
   });
 
   it("falls back to local when a corrupt config contains unknown providers", () => {
@@ -154,8 +156,6 @@ describe("settings model", () => {
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
       cleanupTimeout: 4.5,
-      cleanupReasoningEffort: "low",
-      cleanupServiceTier: "fast",
       cleanupPrompt: " custom prompt ",
       cleanupPrompts: { Fast: "multi\nline prompt" },
       stackCleanupStrategy: "commit-full",
@@ -173,8 +173,8 @@ describe("settings model", () => {
     expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
     expect(next.cleanup_timeout).toBe(4.5);
-    expect(next.cleanup_reasoning_effort).toBe("low");
-    expect(next.cleanup_service_tier).toBe("fast");
+    expect(next.cleanup_reasoning_effort).toBe("none");
+    expect(next.cleanup_service_tier).toBe("priority");
     expect(next.cleanup_prompt).toBe("custom prompt");
     expect(next.cleanup_prompts).toEqual({ Fast: "multi\nline prompt" });
     expect(next.stack_cleanup_strategy).toBe("commit-full");
@@ -243,9 +243,9 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { cleanupTimeout: 31 }))
       .toThrow(/between/u);
     expect(() => applySettingsPatch(config, { cleanupReasoningEffort: "minimal" }))
-      .toThrow(/cleanupReasoningEffort/u);
+      .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { cleanupServiceTier: "priority" }))
-      .toThrow(/cleanupServiceTier/u);
+      .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { scratchHotkey: "ctrl+alt" }))
       .toThrow(/one non-modifier/u);
     expect(() => applySettingsPatch(config, { discardHotkey: "ctrl+k+s" }))

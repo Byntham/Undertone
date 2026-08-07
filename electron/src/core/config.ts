@@ -2,7 +2,7 @@ export type ProviderId = "xai" | "openai" | "openai-subscription" | "openrouter"
 export type DictationMode = "stack" | "instant";
 export type StackCleanupStrategy = "live-full" | "commit-full";
 export type CleanupReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
-export type CleanupServiceTier = "default" | "fast";
+export type CleanupServiceTier = "default" | "priority";
 export type ConfigRecord = Record<string, unknown>;
 
 export interface UndertoneConfig extends ConfigRecord {
@@ -74,7 +74,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
   cleanup_reasoning_effort: "none",
-  cleanup_service_tier: "default",
+  cleanup_service_tier: "priority",
   cleanup_prompt: "",
   cleanup_prompts: {},
 };
@@ -118,7 +118,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   if (!CLEANUP_REASONING_EFFORTS.has(config.cleanup_reasoning_effort)) {
     config.cleanup_reasoning_effort = DEFAULT_CONFIG.cleanup_reasoning_effort;
   }
-  if (config.cleanup_service_tier !== "default" && config.cleanup_service_tier !== "fast") {
+  if ((config.cleanup_service_tier as unknown) === "fast") {
+    config.cleanup_service_tier = "priority";
+  } else if (config.cleanup_service_tier !== "default"
+    && config.cleanup_service_tier !== "priority") {
     config.cleanup_service_tier = DEFAULT_CONFIG.cleanup_service_tier;
   }
   if (typeof config.commit_hotkey !== "string") {

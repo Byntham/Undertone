@@ -16,18 +16,9 @@ export type DictationModeSetting = "stack" | "instant";
 export type StackCleanupStrategySetting =
   | "live-full"
   | "commit-full";
-export type CleanupReasoningEffortSetting =
-  | "none"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
-export type CleanupServiceTierSetting = "default" | "fast";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
-export type ProviderModelKind = ProviderTestKind;
 export type AppUpdatePhase =
   | "unavailable"
   | "idle"
@@ -55,19 +46,6 @@ export interface LocalEngineSnapshot {
   installPhase: string;
   installFraction: number;
   installBytes: number;
-}
-
-export interface ProviderModelOption {
-  id: string;
-  name: string;
-}
-
-export interface ProviderModelCatalogSnapshot {
-  provider: ModelProviderId;
-  kind: ProviderModelKind;
-  selectable: boolean;
-  defaultModel: string | null;
-  models: ProviderModelOption[];
 }
 
 export interface SettingsSnapshot {
@@ -101,8 +79,6 @@ export interface SettingsSnapshot {
   vocabulary: string[];
   corrections: Record<string, string>;
   cleanupTimeout: number;
-  cleanupReasoningEffort: CleanupReasoningEffortSetting;
-  cleanupServiceTier: CleanupServiceTierSetting;
   cleanupPrompt: string;
   cleanupPrompts: Record<string, string>;
   localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
@@ -136,16 +112,12 @@ export interface SettingsPatch {
   provider?: TranscriptionProviderId;
   cleanupProvider?: CleanupProviderId;
   providerKey?: { provider: CloudProviderId; value: string };
-  sttModel?: { provider: CloudProviderId; value: string };
-  cleanupModel?: { provider: ModelProviderId; value: string };
   localLoaded?: boolean;
   localIdleMinutes?: number;
   sttVocabHints?: boolean;
   vocabulary?: string[];
   corrections?: Record<string, string>;
   cleanupTimeout?: number;
-  cleanupReasoningEffort?: CleanupReasoningEffortSetting;
-  cleanupServiceTier?: CleanupServiceTierSetting;
   cleanupPrompt?: string;
   cleanupPrompts?: Record<string, string>;
 }
@@ -160,11 +132,6 @@ export interface SettingsApi {
   systemAction(action: SystemAction): Promise<void>;
   providerTest(kind: ProviderTestKind): Promise<string>;
   openAiSubscriptionAction(action: OpenAiSubscriptionAction): Promise<SettingsSnapshot>;
-  providerModels(
-    provider: ModelProviderId,
-    kind: ProviderModelKind,
-    refresh?: boolean,
-  ): Promise<ProviderModelCatalogSnapshot>;
   microphoneTest(): Promise<number>;
   updateStatus(): Promise<AppUpdateSnapshot>;
   checkForUpdates(): Promise<AppUpdateSnapshot>;

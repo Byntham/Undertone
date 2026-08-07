@@ -5,8 +5,8 @@ type TranscriptionProviderId = Exclude<ProviderId, "openai-subscription">;
 
 export const DEFAULT_STT_MODELS: Readonly<Record<TranscriptionProviderId, string>> = {
   xai: "",
-  openai: "gpt-4o-mini-transcribe",
-  openrouter: "openai/gpt-4o-mini-transcribe",
+  openai: "gpt-transcribe",
+  openrouter: "openai/gpt-transcribe",
   local: "ggml-large-v3-turbo.bin",
 };
 
@@ -98,7 +98,7 @@ export class Transcriber {
   private async transcribeOpenAi(options: NormalizedOptions): Promise<string> {
     const form = audioForm(options.wav);
     form.append("model", options.model || DEFAULT_STT_MODELS.openai);
-    form.append("language", options.language);
+    form.append("languages[]", options.language);
     const payload = await this.postJson(
       "https://api.openai.com/v1/audio/transcriptions",
       "OpenAI",

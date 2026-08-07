@@ -6,9 +6,7 @@ import type {
   LocalEngineKind,
   HistoryAction,
   CloudProviderId,
-  ModelProviderId,
   OpenAiSubscriptionAction,
-  ProviderModelKind,
   ProviderTestKind,
   SettingsApi,
   SettingsPatch,
@@ -48,13 +46,6 @@ const api: SettingsApi = {
       ReturnType<SettingsApi["openAiSubscriptionAction"]>
     >
   ),
-  providerModels: async (
-    provider: ModelProviderId,
-    kind: ProviderModelKind,
-    refresh = false,
-  ) => await ipcRenderer.invoke("provider:models", { provider, kind, refresh }) as Awaited<
-    ReturnType<SettingsApi["providerModels"]>
-  >,
   microphoneTest: async () => await ipcRenderer.invoke("microphone:test") as number,
   updateStatus: async () => await ipcRenderer.invoke("update:status") as AppUpdateSnapshot,
   checkForUpdates: async () => await ipcRenderer.invoke("update:check") as AppUpdateSnapshot,

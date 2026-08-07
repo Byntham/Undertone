@@ -57,14 +57,14 @@ describe("cleanup providers", () => {
       provider: "openai-subscription",
       model: "gpt-5.6-luna",
       reasoningEffort: "high",
-      serviceTier: "fast",
+      serviceTier: "priority",
       systemPrompt: "Clean this.",
     })).toBe("subscription result");
     expect(http.calls).toHaveLength(0);
     expect(calls[0]).toMatchObject({
       model: "gpt-5.6-luna",
       reasoningEffort: "high",
-      serviceTier: "fast",
+      serviceTier: "priority",
       systemPrompt: "Clean this.",
     });
   });
@@ -107,13 +107,13 @@ describe("cleanup providers", () => {
     expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe("Be terse.");
   });
 
-  it("applies Chat Completions tuning only to direct OpenAI Luna cleanup", async () => {
+  it("applies compatible tuning only to each provider's opinionated cleanup model", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     const tuned = {
       ...baseOptions,
       reasoningEffort: "low" as const,
-      serviceTier: "fast" as const,
+      serviceTier: "priority" as const,
     };
 
     await client.cleanup({
@@ -123,8 +123,26 @@ describe("cleanup providers", () => {
     });
     expect(jsonBody(http.calls[0]!.request)).toMatchObject({
       reasoning_effort: "low",
-      service_tier: "fast",
+      service_tier: "priority",
     });
+
+    await client.cleanup({
+      ...tuned,
+      provider: "openrouter",
+      model: "openai/gpt-5.6-luna",
+    });
+    expect(jsonBody(http.calls[1]!.request)).toMatchObject({
+      reasoning: { effort: "low" },
+      service_tier: "priority",
+    });
+    expect(jsonBody(http.calls[1]!.request)).not.toHaveProperty("provider");
+
+    await client.cleanup({
+      ...tuned,
+      provider: "xai",
+      model: "grok-4.3",
+    });
+    expect(jsonBody(http.calls[2]!.request)).toMatchObject({ reasoning_effort: "none" });
 
     await client.cleanup({
       ...tuned,
@@ -134,11 +152,12 @@ describe("cleanup providers", () => {
     await client.cleanup({
       ...tuned,
       provider: "openrouter",
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-5.6-terra",
     });
-    for (const call of http.calls.slice(1)) {
+    for (const call of http.calls.slice(3)) {
       const body = jsonBody(call.request);
       expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body).not.toHaveProperty("reasoning");
       expect(body).not.toHaveProperty("service_tier");
     }
   });

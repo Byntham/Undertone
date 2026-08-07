@@ -10,9 +10,7 @@ import type {
   LocalEngineSnapshot,
   HistoryAction,
   HistorySnapshotEntry,
-  ModelProviderId,
   OpenAiSubscriptionAction,
-  ProviderModelCatalogSnapshot,
   ProviderTestKind,
   SettingsPatch,
   SettingsProviderId,
@@ -587,7 +585,7 @@ function SpeechAi({
     <header className="pageHeader">
       <p className="eyebrow">SETTINGS</p>
       <h1>Speech &amp; AI</h1>
-      <p>Choose transcription and cleanup services, credentials, and local models.</p>
+      <p>Choose transcription and cleanup services and credentials.</p>
     </header>
     <h2>Services</h2>
     <div className="card">
@@ -603,6 +601,7 @@ function SpeechAi({
           <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
             {testing === "stt" ? "Testing…" : "Test"}
           </button>
+          <small className="modelSummary">Model: {modelLabel("stt", settings.sttModel)}</small>
           {testResults.stt && <small role="status">{testResults.stt}</small>}
         </div>
       </SettingRow>
@@ -618,6 +617,7 @@ function SpeechAi({
           <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("cleanup"); }}>
             {testing === "cleanup" ? "Testing…" : "Test"}
           </button>
+          <small className="modelSummary">Model: {modelLabel("cleanup", settings.cleanupModel)}</small>
           {testResults.cleanup && <small role="status">{testResults.cleanup}</small>}
         </div>
       </SettingRow>
@@ -676,70 +676,6 @@ function SpeechAi({
     </div>
     <details className="advancedSection">
       <summary>Advanced</summary>
-      {(settings.provider !== "local" || settings.cleanupProvider !== "local") && <div className="advancedGroup">
-        <h3>Model selection</h3>
-        <div className="card modelCard">
-          {settings.provider !== "local" && <ModelControl
-            key={`stt-${settings.provider}`}
-            label="Transcription model"
-            kind="stt"
-            provider={settings.provider}
-            current={settings.sttModel}
-            configured={settings.keyConfigured[settings.provider]}
-            update={update}
-          />}
-          {settings.cleanupProvider !== "local" && <ModelControl
-            key={`cleanup-${settings.cleanupProvider}`}
-            label="Cleanup model"
-            kind="cleanup"
-            provider={settings.cleanupProvider}
-            current={settings.cleanupModel}
-            configured={settings.cleanupProvider === "openai-subscription"
-              ? settings.openAiSubscriptionConnected
-              : settings.keyConfigured[settings.cleanupProvider]}
-            update={update}
-          />}
-        </div>
-        {((settings.cleanupProvider === "openai" && settings.cleanupModel === "gpt-5.6-luna")
-          || (settings.cleanupProvider === "openai-subscription"
-            && (settings.cleanupModel === "" || settings.cleanupModel === "gpt-5.6-luna")))
-          && <div className="card modelCard lunaRequestCard">
-            <div className="modelControl">
-              <label htmlFor="luna-reasoning-effort">Luna reasoning effort</label>
-              <select
-                id="luna-reasoning-effort"
-                value={settings.cleanupReasoningEffort}
-                onChange={(event) => { void update({
-                  cleanupReasoningEffort: event.target.value as SettingsSnapshot["cleanupReasoningEffort"],
-                }); }}
-              >
-                <option value="none">None</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="xhigh">Extra high</option>
-                <option value="max">Max</option>
-              </select>
-              <small>Applied to gpt-5.6-luna through the selected OpenAI connection.</small>
-            </div>
-            <div className="modelControl">
-              <label htmlFor="luna-service-tier">Luna processing speed</label>
-              <select
-                id="luna-service-tier"
-                value={settings.cleanupServiceTier}
-                onChange={(event) => { void update({
-                  cleanupServiceTier: event.target.value as SettingsSnapshot["cleanupServiceTier"],
-                }); }}
-              >
-                <option value="default">Standard</option>
-                <option value="fast">Fast (premium)</option>
-              </select>
-              <small>{settings.cleanupProvider === "openai-subscription"
-                ? "Fast mode requests priority processing through your connected OpenAI account."
-                : "Fast mode reduces latency and uses premium API pricing."}</small>
-            </div>
-          </div>}
-      </div>}
       <div className="advancedGroup">
         <h3>On-device behavior</h3>
         <div className="card">
@@ -1018,124 +954,20 @@ function KeyCard({
   </form>;
 }
 
-function ModelControl({
-  label,
-  kind,
-  provider,
-  current,
-  configured,
-  update,
-}: {
-  label: string;
-  kind: "stt" | "cleanup";
-  provider: ModelProviderId;
-  current: string;
-  configured: boolean;
-  update: (patch: SettingsPatch) => Promise<boolean>;
-}): React.JSX.Element {
-  const customOption = "__undertone_custom_model__";
-  const allowCustom = provider !== "openai-subscription";
-  const [selection, setSelection] = useState(current);
-  const [customValue, setCustomValue] = useState(current);
-  const [catalog, setCatalog] = useState<ProviderModelCatalogSnapshot | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const loadModels = async (refresh: boolean): Promise<void> => {
-    if (!configured && !(provider === "xai" && kind === "stt")) return;
-    setLoading(true);
-    setCatalogError(null);
-    try {
-      setCatalog(await settingsApi.providerModels(provider, kind, refresh));
-    } catch (reason) {
-      setCatalogError(errorMessage(reason));
-    } finally {
-      setLoading(false);
-    }
+function modelLabel(kind: "stt" | "cleanup", model: string): string {
+  if (model.length === 0) return kind === "stt" ? "xAI managed" : "Provider managed";
+  const names: Readonly<Record<string, string>> = {
+    "gpt-transcribe": "GPT Transcribe",
+    "openai/gpt-transcribe": "GPT Transcribe",
+    "gpt-4o-transcribe": "GPT-4o Transcribe",
+    "openai/gpt-4o-transcribe": "GPT-4o Transcribe",
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+    "openai/gpt-5.6-luna": "GPT-5.6 Luna",
+    "grok-4.3": "Grok 4.3",
+    "ggml-large-v3-turbo.bin": "Whisper Large V3 Turbo",
+    "Qwen3-4B-Instruct-2507-Q4_K_M.gguf": "Qwen3 4B Instruct",
   };
-  useEffect(() => { void loadModels(false); }, [provider, kind, configured]);
-  if (catalog?.selectable === false) {
-    return <div className="modelControl modelManaged">
-      <strong>{label}</strong>
-      <small>xAI manages the transcription model for its speech-to-text endpoint.</small>
-    </div>;
-  }
-  const discovered = catalog?.models ?? [];
-  const currentIsDiscovered = discovered.some((model) => model.id === current);
-  const value = selection === customOption ? customValue : selection;
-  const defaultLabel = catalog?.defaultModel === null || catalog?.defaultModel === undefined
-    ? "Provider default"
-    : `Provider default (${catalog.defaultModel})`;
-  const save = (): void => {
-    if (kind === "stt") {
-      if (provider !== "openai-subscription") {
-        void update({ sttModel: { provider, value } });
-      }
-    } else {
-      void update({ cleanupModel: { provider, value } });
-    }
-  };
-  return <form className="modelControl" onSubmit={(event) => { event.preventDefault(); save(); }}>
-    <label htmlFor={`${kind}-model`}>{label}</label>
-    <div className="modelEntry">
-      <select
-        id={`${kind}-model`}
-        value={selection}
-        onChange={(event) => {
-          const next = event.target.value;
-          setSelection(next);
-          if (next === customOption && !currentIsDiscovered) setCustomValue(current);
-        }}
-      >
-        <option value="">{defaultLabel}</option>
-        {current.length > 0 && !currentIsDiscovered
-          && <option value={current} disabled={!allowCustom}>
-            {allowCustom ? `Current: ${current}` : `Unavailable: ${current}`}
-          </option>}
-        {discovered.map((model) => <option key={model.id} value={model.id}>
-          {model.name === model.id ? model.id : `${model.name} — ${model.id}`}
-        </option>)}
-        {allowCustom && <option value={customOption}>Custom model…</option>}
-      </select>
-      <button
-        type="button"
-        className="smallButton"
-        disabled={loading || !configured}
-        onClick={() => { void loadModels(true); }}
-      >
-        {loading ? "Loading…" : "Refresh"}
-      </button>
-      <button
-        type="submit"
-        className="smallButton accent"
-        disabled={selection === customOption && customValue.trim().length === 0}
-      >
-        Save
-      </button>
-    </div>
-    {allowCustom && selection === customOption && <input
-      className="modelCustomInput"
-      aria-label={`Custom ${label.toLowerCase()}`}
-      value={customValue}
-      placeholder="Enter a model ID"
-      spellCheck={false}
-      onChange={(event) => setCustomValue(event.target.value)}
-    />}
-    {!configured
-      ? <small>{provider === "openai-subscription"
-          ? "Connect your OpenAI account to load available models."
-          : `Save the ${providerLabel(provider)} API key to load available models.`}</small>
-      : catalogError !== null
-        ? <small className="fieldError" role="status">{catalogError} The saved selection is unchanged.</small>
-        : <small>{loading ? "Loading available models…" : "Model selections are saved until you change them."}</small>}
-  </form>;
-}
-
-function providerLabel(provider: SettingsProviderId): string {
-  if (provider === "openai-subscription") return "OpenAI Subscription";
-  if (provider === "openai") return "OpenAI";
-  if (provider === "openrouter") return "OpenRouter";
-  if (provider === "xai") return "xAI";
-  return "Local";
+  return names[model] ?? model;
 }
 
 function AppUpdates(): React.JSX.Element {
@@ -1259,6 +1091,19 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+function previewModel(kind: "stt" | "cleanup", provider: SettingsProviderId): string {
+  if (kind === "stt") {
+    if (provider === "xai") return "";
+    if (provider === "openai") return "gpt-transcribe";
+    if (provider === "openrouter") return "openai/gpt-transcribe";
+    return "ggml-large-v3-turbo.bin";
+  }
+  if (provider === "xai") return "grok-4.3";
+  if (provider === "openrouter") return "openai/gpt-5.6-luna";
+  if (provider === "local") return "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+  return "gpt-5.6-luna";
+}
+
 function settingsApiForRenderer(): Window["undertoneSettings"] {
   if (window.undertoneSettings !== undefined) return window.undertoneSettings;
   const loopback = location.hostname === "localhost"
@@ -1290,7 +1135,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     cleanupProvider: "openai-subscription",
     keyConfigured: { xai: false, openai: true, openrouter: false },
     openAiSubscriptionConnected: true,
-    sttModel: "",
+    sttModel: "gpt-transcribe",
     cleanupModel: "gpt-5.6-luna",
     localLoaded: false,
     localIdleMinutes: 0,
@@ -1298,8 +1143,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     vocabulary: ["Undertone", "Kubernetes"],
     corrections: { "under tone": "Undertone" },
     cleanupTimeout: 2.5,
-    cleanupReasoningEffort: "none",
-    cleanupServiceTier: "default",
     cleanupPrompt: "",
     cleanupPrompts: {},
     localEngines: {
@@ -1345,21 +1188,14 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
           },
         };
       }
-      if (patch.sttModel !== undefined && patch.sttModel.provider === preview.provider) {
-        preview = { ...preview, sttModel: patch.sttModel.value.trim() };
-      }
-      if (patch.cleanupModel !== undefined
-        && patch.cleanupModel.provider === preview.cleanupProvider) {
-        preview = { ...preview, cleanupModel: patch.cleanupModel.value.trim() };
-      }
       if (patch.provider !== undefined && patch.provider !== preview.provider) {
-        preview = { ...preview, sttModel: "" };
+        preview = { ...preview, sttModel: previewModel("stt", patch.provider) };
       }
       if (patch.cleanupProvider !== undefined
         && patch.cleanupProvider !== preview.cleanupProvider) {
-        preview = { ...preview, cleanupModel: "" };
+        preview = { ...preview, cleanupModel: previewModel("cleanup", patch.cleanupProvider) };
       }
-      const { providerKey: _providerKey, sttModel: _sttModel, cleanupModel: _cleanupModel, ...plain } = patch;
+      const { providerKey: _providerKey, ...plain } = patch;
       preview = { ...preview, ...plain };
       return preview;
     },
@@ -1426,32 +1262,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     async openAiSubscriptionAction(action) {
       preview = { ...preview, openAiSubscriptionConnected: action === "connect" };
       return preview;
-    },
-    async providerModels(provider, kind) {
-      const models = provider === "openai-subscription"
-        ? [
-            { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
-            { id: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
-            { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
-          ]
-        : kind === "stt"
-        ? [
-            { id: "gpt-4o-mini-transcribe", name: "GPT-4o mini Transcribe" },
-            { id: "gpt-4o-transcribe", name: "GPT-4o Transcribe" },
-          ]
-        : [
-            { id: "gpt-4o-mini", name: "GPT-4o mini" },
-            { id: "gpt-4.1-mini", name: "GPT-4.1 mini" },
-          ];
-      return {
-        provider,
-        kind,
-        selectable: !(provider === "xai" && kind === "stt"),
-        defaultModel: provider === "openai-subscription"
-          ? "gpt-5.6-luna"
-          : kind === "stt" ? "gpt-4o-mini-transcribe" : "gpt-4o-mini",
-        models,
-      };
     },
     async microphoneTest() { return 0.18; },
     async updateStatus() { return previewUpdate; },

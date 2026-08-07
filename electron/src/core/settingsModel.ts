@@ -1,6 +1,5 @@
 import {
   DEFAULT_CONFIG,
-  CLEANUP_REASONING_EFFORTS,
   KEY_FIELDS,
   modelOverride,
   normalizeConfig,
@@ -8,10 +7,11 @@ import {
   type ProviderId,
   type UndertoneConfig,
 } from "./config";
+import { DEFAULT_CLEANUP_MODELS } from "./cleanup";
+import { DEFAULT_STT_MODELS } from "./transcriber";
 import type {
   CloudProviderId,
   CleanupProviderId,
-  ModelProviderId,
   LocalEngineSnapshot,
   SettingsSnapshot,
   TranscriptionProviderId,
@@ -42,16 +42,12 @@ const PATCH_FIELDS = new Set([
   "provider",
   "cleanupProvider",
   "providerKey",
-  "sttModel",
-  "cleanupModel",
   "localLoaded",
   "localIdleMinutes",
   "sttVocabHints",
   "vocabulary",
   "corrections",
   "cleanupTimeout",
-  "cleanupReasoningEffort",
-  "cleanupServiceTier",
   "cleanupPrompt",
   "cleanupPrompts",
 ]);
@@ -65,13 +61,6 @@ const CLEANUP_PROVIDERS = new Set<ProviderId>([
   "local",
 ]);
 const CLOUD_PROVIDERS = new Set<CloudProviderId>(["xai", "openai", "openrouter"]);
-const MODEL_PROVIDERS = new Set<ModelProviderId>([
-  "xai",
-  "openai",
-  "openai-subscription",
-  "openrouter",
-]);
-
 export function settingsSnapshot(
   config: UndertoneConfig,
   appVersion: string,
@@ -120,16 +109,16 @@ export function settingsSnapshot(
     openAiSubscriptionConnected: config.openai_oauth_access_token.trim().length > 0
       && config.openai_oauth_refresh_token.trim().length > 0
       && config.openai_oauth_account_id.trim().length > 0,
-    sttModel: modelOverride(config, "stt", provider),
-    cleanupModel: modelOverride(config, "cleanup", cleanupProvider),
+    sttModel: modelOverride(config, "stt", provider) || DEFAULT_STT_MODELS[provider],
+    cleanupModel: modelOverride(config, "cleanup", cleanupProvider)
+      || DEFAULT_CLEANUP_MODELS[cleanupProvider]
+      || "",
     localLoaded: config.local_loaded,
     localIdleMinutes: config.local_idle_minutes,
     sttVocabHints: config.stt_vocab_hints,
     vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
     cleanupTimeout: config.cleanup_timeout,
-    cleanupReasoningEffort: config.cleanup_reasoning_effort,
-    cleanupServiceTier: config.cleanup_service_tier,
     cleanupPrompt: config.cleanup_prompt,
     cleanupPrompts: { ...config.cleanup_prompts },
     localEngines: {
@@ -239,14 +228,6 @@ export function applySettingsPatch(
     const update = providerKeyUpdate(value.providerKey);
     next[KEY_FIELDS[update.provider]] = update.value;
   }
-  if (value.sttModel !== undefined) {
-    const update = modelUpdate(value.sttModel, "sttModel");
-    setModelOverride(next.stt_models, update.provider, update.value);
-  }
-  if (value.cleanupModel !== undefined) {
-    const update = modelUpdate(value.cleanupModel, "cleanupModel");
-    setModelOverride(next.cleanup_models, update.provider, update.value);
-  }
   if (value.localLoaded !== undefined) {
     next.local_loaded = booleanField(value.localLoaded, "localLoaded");
   }
@@ -274,20 +255,6 @@ export function applySettingsPatch(
       throw new Error("cleanupTimeout must be between 0.5 and 30 seconds");
     }
     next.cleanup_timeout = value.cleanupTimeout;
-  }
-  if (value.cleanupReasoningEffort !== undefined) {
-    if (typeof value.cleanupReasoningEffort !== "string"
-      || !CLEANUP_REASONING_EFFORTS.has(value.cleanupReasoningEffort)) {
-      throw new Error("cleanupReasoningEffort is invalid");
-    }
-    next.cleanup_reasoning_effort = value.cleanupReasoningEffort as
-      UndertoneConfig["cleanup_reasoning_effort"];
-  }
-  if (value.cleanupServiceTier !== undefined) {
-    if (value.cleanupServiceTier !== "default" && value.cleanupServiceTier !== "fast") {
-      throw new Error("cleanupServiceTier is invalid");
-    }
-    next.cleanup_service_tier = value.cleanupServiceTier;
   }
   if (value.cleanupPrompt !== undefined) {
     if (typeof value.cleanupPrompt !== "string" || value.cleanupPrompt.length > 40_000) {
@@ -338,22 +305,6 @@ function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: 
   return { provider: value.provider as CloudProviderId, value: secret };
 }
 
-function modelUpdate(
-  value: unknown,
-  name: string,
-): { provider: ModelProviderId; value: string } {
-  exactObject(value, ["provider", "value"], name);
-  const supported: ReadonlySet<string> = name === "sttModel" ? CLOUD_PROVIDERS : MODEL_PROVIDERS;
-  if (typeof value.provider !== "string"
-    || !supported.has(value.provider)) {
-    throw new Error(`${name}.provider must be a cloud provider`);
-  }
-  return {
-    provider: value.provider as ModelProviderId,
-    value: boundedSingleLine(value.value, `${name}.value`, 512),
-  };
-}
-
 function boundedSingleLine(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== "string") throw new Error(`${name} must be a string`);
   const result = value.trim();
@@ -374,15 +325,6 @@ function exactObject(
     || fields.some((key) => !(key in value))) {
     throw new Error(`${name} has invalid fields`);
   }
-}
-
-function setModelOverride(
-  models: Record<string, string>,
-  provider: ModelProviderId,
-  value: string,
-): void {
-  if (value.length === 0) delete models[provider];
-  else models[provider] = value;
 }
 
 function booleanField(value: unknown, name: string): boolean {
