@@ -98,7 +98,7 @@ export class Transcriber {
   private async transcribeOpenAi(options: NormalizedOptions): Promise<string> {
     const form = audioForm(options.wav);
     form.append("model", options.model || DEFAULT_STT_MODELS.openai);
-    form.append("languages[]", options.language);
+    form.append("language", options.language);
     const payload = await this.postJson(
       "https://api.openai.com/v1/audio/transcriptions",
       "OpenAI",
