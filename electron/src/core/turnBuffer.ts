@@ -1,56 +1,32 @@
-import type { StackCleanupStrategy } from "./config";
+import type { OpenTurnCleanupStrategy } from "./config";
 
-export interface TurnFragment {
-  id: string;
+interface TurnFragment {
   raw: string;
   text: string;
-  createdAt: number;
 }
-
-export interface OpenTurn {
-  id: string;
+interface OpenTurn {
   fragments: TurnFragment[];
   text: string;
-  cleanupStrategy: StackCleanupStrategy;
-  startedAt: number;
-  updatedAt: number;
+  cleanupStrategy: OpenTurnCleanupStrategy;
 }
 
-export interface TurnAppendResult {
+interface TurnAppendResult {
   fragmentCount: number;
-  charCount: number;
   text: string;
 }
 
-export interface TurnScratchResult {
-  removed: string;
+interface TurnScratchResult {
   fragmentCount: number;
-  charCount: number;
   text: string;
 }
 
-export interface TurnDraftSnapshot {
+interface TurnDraftSnapshot {
   text: string;
   fragmentCount: number;
-  charCount: number;
 }
 
 export class TurnBuffer {
   private open: OpenTurn | null = null;
-  private nextFragmentId = 1;
-  private nextTurnId = 1;
-
-  hasOpenTurn(): boolean {
-    return this.open !== null && this.open.text.length > 0;
-  }
-
-  fragmentCount(): number {
-    return this.open?.fragments.length ?? 0;
-  }
-
-  charCount(): number {
-    return this.open?.text.length ?? 0;
-  }
 
   /** Peek joined turn text without clearing. */
   peekText(): string | null {
@@ -72,7 +48,6 @@ export class TurnBuffer {
     return {
       text: this.open.text,
       fragmentCount: this.open.fragments.length,
-      charCount: this.open.text.length,
     };
   }
 
@@ -80,36 +55,28 @@ export class TurnBuffer {
   append(
     raw: string,
     text: string,
-    cleanupStrategy: StackCleanupStrategy,
+    cleanupStrategy: OpenTurnCleanupStrategy,
   ): TurnAppendResult {
-    const createdAt = Date.now();
     if (this.open === null) {
       this.open = {
-        id: String(this.nextTurnId++),
         fragments: [],
         text: "",
         cleanupStrategy,
-        startedAt: createdAt,
-        updatedAt: createdAt,
       };
     }
     this.open.fragments.push({
-      id: String(this.nextFragmentId++),
       raw,
       text,
-      createdAt,
     });
     this.open.text = text;
-    this.open.updatedAt = createdAt;
     return {
       fragmentCount: this.open.fragments.length,
-      charCount: this.open.text.length,
       text: this.open.text,
     };
   }
 
   /** Cleanup timing is fixed when a turn starts and changes with the next turn. */
-  activeCleanupStrategy(): StackCleanupStrategy | null {
+  activeCleanupStrategy(): OpenTurnCleanupStrategy | null {
     return this.open?.cleanupStrategy ?? null;
   }
 
@@ -118,28 +85,22 @@ export class TurnBuffer {
     if (this.open === null || this.open.fragments.length === 0) return;
     this.open.text = text;
     this.open.fragments.at(-1)!.text = text;
-    this.open.updatedAt = Date.now();
   }
 
   /** Remove the last fragment and restore the preceding display snapshot. */
   scratchLast(): TurnScratchResult | null {
     if (this.open === null || this.open.fragments.length === 0) return null;
-    const removed = this.open.fragments.pop()!;
+    this.open.fragments.pop();
     if (this.open.fragments.length === 0) {
       this.open = null;
       return {
-        removed: removed.text,
         fragmentCount: 0,
-        charCount: 0,
         text: "",
       };
     }
     this.open.text = this.open.fragments.at(-1)!.text;
-    this.open.updatedAt = Date.now();
     return {
-      removed: removed.text,
       fragmentCount: this.open.fragments.length,
-      charCount: this.open.text.length,
       text: this.open.text,
     };
   }
@@ -150,8 +111,4 @@ export class TurnBuffer {
     this.open = null;
     return had;
   }
-}
-
-export function isStackDictationMode(mode: unknown): boolean {
-  return mode === "stack";
 }

@@ -4,11 +4,11 @@ import {
   providerKey,
   type UndertoneConfig,
 } from "./config";
-import { InsertionMemory } from "./textPreparation";
+import type { DictationCompletion } from "./gestures";
 import type { TextPreparationResult } from "./textPreparation";
-import { applyCorrections, finalize } from "./textproc";
+import { finalizeTranscript } from "./corrections";
 import { SessionHistory, type DictationTarget } from "./pipelineQueue";
-import { isStackDictationMode, type TurnBuffer } from "./turnBuffer";
+import type { TurnBuffer } from "./turnBuffer";
 
 export interface TranscriberPort {
   transcribe(options: {
@@ -22,7 +22,11 @@ export interface TranscriberPort {
 }
 
 export interface PasterPort {
-  paste(text: string, restoreClipboard: boolean): Promise<void>;
+  paste(
+    text: string,
+    restoreClipboard: boolean,
+    target?: DictationTarget,
+  ): Promise<boolean>;
   copyFallback(text: string): void;
 }
 
@@ -36,13 +40,9 @@ export interface DictationRunnerDependencies {
   prepareText(
     text: string,
     config: UndertoneConfig,
-    context: "insertion" | "isolated",
   ): Promise<TextPreparationResult>;
-  restoreTarget(target: DictationTarget | null): Promise<boolean>;
-  getForegroundWindow(): Promise<string>;
   paster: PasterPort;
   history: SessionHistory;
-  insertionMemory: InsertionMemory;
   turnBuffer: TurnBuffer;
   feedback: DictationFeedback;
 }
@@ -54,10 +54,10 @@ export class DictationJobRunner {
     wav: Uint8Array,
     target: DictationTarget | null,
     config: UndertoneConfig,
+    completion: DictationCompletion = "commit",
     feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
     const provider = stringValue(config.provider, DEFAULT_CONFIG.provider);
-
     let transcript: string;
     try {
       transcript = await this.dependencies.transcriber.transcribe({
@@ -74,13 +74,14 @@ export class DictationJobRunner {
       feedback.message(message, "error");
       return;
     }
-    await this.runTranscript(transcript, target, config, feedback);
+    await this.runTranscript(transcript, target, config, completion, feedback);
   }
 
   async runTranscript(
     transcript: string,
     target: DictationTarget | null,
     config: UndertoneConfig,
+    completion: DictationCompletion = "commit",
     feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
     if (transcript.length === 0) {
@@ -89,127 +90,36 @@ export class DictationJobRunner {
     }
 
     const corrections = isStringMap(config.corrections) ? config.corrections : {};
-    const raw = applyCorrections(transcript, corrections);
-    if (isStackDictationMode(config.dictation_mode)) {
-      let stacked: Awaited<ReturnType<DictationJobRunner["appendToTurn"]>>;
-      try {
-        stacked = await this.appendToTurn(transcript, config);
-      } catch {
-        const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
-          ?? config.stack_cleanup_strategy;
-        const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
-        const text = finalize(rawTurn, null, corrections, {
-          smart: Boolean(config.smart_formatting),
-        });
-        stacked = {
-          ...this.dependencies.turnBuffer.append(transcript, text, cleanupStrategy),
-          cleanupFailed: true,
-        };
-      }
-      if (stacked.cleanupFailed) {
+    let appended: Awaited<ReturnType<DictationJobRunner["appendToTurn"]>>;
+    try {
+      appended = await this.appendToTurn(transcript, config);
+    } catch {
+      const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
+        ?? config.stack_cleanup_strategy;
+      const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
+      const text = finalizeTranscript(rawTurn, corrections);
+      appended = {
+        ...this.dependencies.turnBuffer.append(transcript, text, cleanupStrategy),
+        cleanupFailed: true,
+      };
+    }
+
+    if (completion === "open-turn") {
+      if (appended.cleanupFailed) {
         feedback.message("AI cleanup failed — used basic formatting", "warning");
       } else {
-        feedback.message(
-          turnStatusFeedback(stacked.fragmentCount, transcript),
-          "normal",
-        );
+        feedback.message(turnStatusFeedback(appended.fragmentCount, transcript), "normal");
       }
       return;
     }
-
-    let refocused = await this.dependencies.restoreTarget(target);
-    const prepared = await this.dependencies.prepareText(transcript, config, "insertion");
-    const final = prepared.text;
-    if (refocused) refocused = await this.dependencies.restoreTarget(target);
-    const historyRaw = raw === final ? null : raw;
-    if (!refocused) {
-      this.clipboardFallback(final, historyRaw, config, feedback);
-      return;
-    }
-
-    const inputGeneration = this.dependencies.insertionMemory.captureGeneration();
-    try {
-      await this.dependencies.paster.paste(final, Boolean(config.restore_clipboard));
-    } catch {
-      this.clipboardFallback(final, historyRaw, config, feedback);
-      return;
-    }
-    this.dependencies.history.registerSuccess(final, historyRaw);
-    const foreground = await this.dependencies.getForegroundWindow();
-    this.dependencies.insertionMemory.registerPaste(foreground, final, inputGeneration);
-    if (prepared.cleanupFailed) {
-      feedback.message("AI cleanup failed — used basic formatting", "warning");
-    } else {
-      feedback.dismiss();
-    }
+    await this.commitTurn(config, feedback, target, appended.cleanupFailed);
   }
 
   async commit(
     config: UndertoneConfig,
     feedback: DictationFeedback = this.dependencies.feedback,
   ): Promise<void> {
-    let text = this.dependencies.turnBuffer.peekText();
-    let cleanupFailed = false;
-    if (text === null) {
-      feedback.message("Nothing to commit", "warning");
-      return;
-    }
-    if (this.dependencies.turnBuffer.activeCleanupStrategy() !== "live-full") {
-      const rawTurn = this.dependencies.turnBuffer.rawText();
-      if (rawTurn === null) {
-        feedback.message("Nothing to commit", "warning");
-        return;
-      }
-      const prepared = await this.dependencies.prepareText(rawTurn, config, "isolated");
-      text = prepared.text;
-      cleanupFailed = prepared.cleanupFailed;
-      this.dependencies.turnBuffer.replaceText(text);
-    }
-
-    const inputGeneration = this.dependencies.insertionMemory.captureGeneration();
-    try {
-      await this.dependencies.paster.paste(text, Boolean(config.restore_clipboard));
-    } catch {
-      // Keep the open turn so the user can retry commit; only stage clipboard.
-      this.dependencies.paster.copyFallback(text);
-      const shortcut = stringValue(config.commit_hotkey, "")
-        || stringValue(config.repaste_hotkey, "");
-      const message = shortcut.length > 0
-        ? `Couldn't paste — focus the target and press ${shortcut}`
-        : "Couldn't paste — the turn is on your clipboard and still open";
-      feedback.message(message, "warning");
-      return;
-    }
-    this.dependencies.turnBuffer.clear();
-    this.dependencies.history.registerSuccess(text, null);
-    const foreground = await this.dependencies.getForegroundWindow();
-    this.dependencies.insertionMemory.registerPaste(foreground, text, inputGeneration);
-    if (cleanupFailed) {
-      feedback.message("AI cleanup failed — used basic formatting", "warning");
-    } else {
-      feedback.dismiss();
-    }
-  }
-
-  private async appendToTurn(
-    transcript: string,
-    config: UndertoneConfig,
-  ): Promise<ReturnType<TurnBuffer["append"]> & { cleanupFailed: boolean }> {
-    const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
-      ?? config.stack_cleanup_strategy;
-    const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
-    const preparationConfig = cleanupStrategy === "commit-full"
-      ? { ...config, ai_cleanup: false }
-      : config;
-    const prepared = await this.dependencies.prepareText(
-      rawTurn,
-      preparationConfig,
-      "isolated",
-    );
-    return {
-      ...this.dependencies.turnBuffer.append(transcript, prepared.text, cleanupStrategy),
-      cleanupFailed: prepared.cleanupFailed,
-    };
+    await this.commitTurn(config, feedback, null, false);
   }
 
   discard(feedback: DictationFeedback = this.dependencies.feedback): void {
@@ -236,20 +146,88 @@ export class DictationJobRunner {
     );
   }
 
-  private clipboardFallback(
-    final: string,
-    raw: string | null,
+  private async appendToTurn(
+    transcript: string,
+    config: UndertoneConfig,
+  ): Promise<ReturnType<TurnBuffer["append"]> & { cleanupFailed: boolean }> {
+    const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
+      ?? config.stack_cleanup_strategy;
+    const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
+    const preparationConfig = cleanupStrategy === "commit-full"
+      ? { ...config, ai_cleanup: false }
+      : config;
+    const prepared = await this.dependencies.prepareText(
+      rawTurn,
+      preparationConfig,
+    );
+    return {
+      ...this.dependencies.turnBuffer.append(transcript, prepared.text, cleanupStrategy),
+      cleanupFailed: prepared.cleanupFailed,
+    };
+  }
+
+  private async commitTurn(
     config: UndertoneConfig,
     feedback: DictationFeedback,
-  ): void {
-    this.dependencies.paster.copyFallback(final);
-    this.dependencies.history.registerSuccess(final, raw);
-    const shortcut = stringValue(config.repaste_hotkey, "");
-    const message = shortcut.length > 0
-      ? `Couldn't paste — press ${shortcut} where you want it`
-      : "Couldn't paste — the text is on your clipboard";
-    feedback.message(message, "warning");
+    target: DictationTarget | null,
+    cleanupFailed: boolean,
+  ): Promise<void> {
+    let text = this.dependencies.turnBuffer.peekText();
+    if (text === null) {
+      feedback.message("Nothing to commit", "warning");
+      return;
+    }
+    if (this.dependencies.turnBuffer.activeCleanupStrategy() !== "live-full") {
+      const rawTurn = this.dependencies.turnBuffer.rawText();
+      if (rawTurn === null) {
+        feedback.message("Nothing to commit", "warning");
+        return;
+      }
+      const prepared = await this.dependencies.prepareText(rawTurn, config);
+      text = prepared.text;
+      cleanupFailed = cleanupFailed || prepared.cleanupFailed;
+      this.dependencies.turnBuffer.replaceText(text);
+    }
+
+    try {
+      const pasted = await this.dependencies.paster.paste(
+        text,
+        Boolean(config.restore_clipboard),
+        target ?? undefined,
+      );
+      if (!pasted) {
+        this.focusChanged(config, feedback);
+        return;
+      }
+    } catch {
+      // Keep the turn so the user can choose a target and retry manually.
+      this.dependencies.paster.copyFallback(text);
+      const shortcut = stringValue(config.commit_hotkey, "")
+        || stringValue(config.repaste_hotkey, "");
+      const message = shortcut.length > 0
+        ? `Couldn't paste — focus the target and press ${shortcut}`
+        : "Couldn't paste — the turn is on your clipboard and still open";
+      feedback.message(message, "warning");
+      return;
+    }
+
+    this.dependencies.turnBuffer.clear();
+    this.dependencies.history.registerSuccess(text);
+    if (cleanupFailed) {
+      feedback.message("AI cleanup failed — used basic formatting", "warning");
+    } else {
+      feedback.dismiss();
+    }
   }
+
+  private focusChanged(config: UndertoneConfig, feedback: DictationFeedback): void {
+    const shortcut = stringValue(config.commit_hotkey, "");
+    const message = shortcut.length > 0
+      ? `Focus changed — press ${shortcut} to paste`
+      : "Focus changed — commit the open turn manually";
+    feedback.message(message, "error");
+  }
+
 }
 
 function turnStatusFeedback(

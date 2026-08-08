@@ -7,8 +7,11 @@ import {
   type ProviderId,
   type UndertoneConfig,
 } from "./config";
-import { DEFAULT_CLEANUP_MODELS } from "./cleanup";
-import { DEFAULT_STT_MODELS } from "./transcriber";
+import {
+  DEFAULT_CLEANUP_MODELS,
+  DEFAULT_STT_MODELS,
+  LIVE_STT_MODELS,
+} from "../shared/models";
 import type {
   CloudProviderId,
   CleanupProviderId,
@@ -18,6 +21,7 @@ import type {
 } from "../shared/settings";
 import {
   actionShortcutsOverlap,
+  KEEP_OPEN_SHORTCUT,
   normalizeReleaseShortcut,
   normalizeShortcut,
   normalizeTriggerShortcut,
@@ -26,7 +30,6 @@ import {
 
 const PATCH_FIELDS = new Set([
   "language",
-  "smartFormatting",
   "aiCleanup",
   "restoreClipboard",
   "soundCues",
@@ -36,9 +39,8 @@ const PATCH_FIELDS = new Set([
   "commitHotkey",
   "scratchHotkey",
   "discardHotkey",
-  "dictationMode",
   "liveTranscription",
-  "stackCleanupStrategy",
+  "openTurnCleanupStrategy",
   "inputDevice",
   "provider",
   "cleanupProvider",
@@ -80,7 +82,6 @@ export function settingsSnapshot(
   ) as CleanupProviderId;
   return {
     language: config.language,
-    smartFormatting: config.smart_formatting,
     aiCleanup: config.ai_cleanup,
     restoreClipboard: config.restore_clipboard,
     soundCues: config.sound_cues,
@@ -91,9 +92,8 @@ export function settingsSnapshot(
     scratchHotkey: config.scratch_hotkey,
     discardHotkey: config.discard_hotkey,
     shortcutWarning: shortcutWarning(config),
-    dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
     liveTranscription: config.live_transcription,
-    stackCleanupStrategy: config.stack_cleanup_strategy,
+    openTurnCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
     microphones: [...microphones],
     appVersion,
@@ -108,7 +108,7 @@ export function settingsSnapshot(
     openAiSubscriptionConnected: config.openai_oauth_access_token.trim().length > 0
       && config.openai_oauth_refresh_token.trim().length > 0
       && config.openai_oauth_account_id.trim().length > 0,
-    sttModel: modelOverride(config, "stt", provider) || DEFAULT_STT_MODELS[provider],
+    sttModel: activeSttModel(config, provider),
     cleanupModel: modelOverride(config, "cleanup", cleanupProvider)
       || DEFAULT_CLEANUP_MODELS[cleanupProvider]
       || "",
@@ -122,6 +122,16 @@ export function settingsSnapshot(
       cleanup: { ...localEngines.cleanup },
     },
   };
+}
+
+function activeSttModel(
+  config: UndertoneConfig,
+  provider: TranscriptionProviderId,
+): string {
+  if (config.live_transcription && (provider === "openai" || provider === "xai")) {
+    return LIVE_STT_MODELS[provider] ?? "";
+  }
+  return modelOverride(config, "stt", provider) || DEFAULT_STT_MODELS[provider];
 }
 
 function snapshotProvider(value: unknown, supported: ReadonlySet<ProviderId>): ProviderId {
@@ -147,9 +157,6 @@ export function applySettingsPatch(
       throw new Error("Invalid transcription language");
     }
     next.language = value.language;
-  }
-  if (value.smartFormatting !== undefined) {
-    next.smart_formatting = booleanField(value.smartFormatting, "smartFormatting");
   }
   if (value.aiCleanup !== undefined) {
     next.ai_cleanup = booleanField(value.aiCleanup, "aiCleanup");
@@ -198,21 +205,15 @@ export function applySettingsPatch(
     changedShortcuts.add("discard_hotkey");
   }
   if (changedShortcuts.size > 0) validateShortcutChanges(next, changedShortcuts);
-  if (value.dictationMode !== undefined) {
-    if (value.dictationMode !== "stack" && value.dictationMode !== "instant") {
-      throw new Error("dictationMode must be stack or instant");
-    }
-    next.dictation_mode = value.dictationMode;
-  }
   if (value.liveTranscription !== undefined) {
     next.live_transcription = booleanField(value.liveTranscription, "liveTranscription");
   }
-  if (value.stackCleanupStrategy !== undefined) {
-    if (value.stackCleanupStrategy !== "live-full"
-      && value.stackCleanupStrategy !== "commit-full") {
-      throw new Error("stackCleanupStrategy is invalid");
+  if (value.openTurnCleanupStrategy !== undefined) {
+    if (value.openTurnCleanupStrategy !== "live-full"
+      && value.openTurnCleanupStrategy !== "commit-full") {
+      throw new Error("openTurnCleanupStrategy is invalid");
     }
-    next.stack_cleanup_strategy = value.stackCleanupStrategy;
+    next.stack_cleanup_strategy = value.openTurnCleanupStrategy;
   }
   if (value.inputDevice !== undefined) {
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);
@@ -351,27 +352,6 @@ function stringMap(
   return result;
 }
 
-function textMap(
-  value: unknown,
-  name: string,
-  maximumEntries: number,
-  maximumLength: number,
-): Record<string, string> {
-  if (!isRecord(value) || Object.keys(value).length > maximumEntries) {
-    throw new Error(`${name} is invalid`);
-  }
-  const result: Record<string, string> = {};
-  for (const [key, child] of Object.entries(value)) {
-    const normalizedKey = boundedSingleLine(key, `${name}.key`, 128);
-    if (normalizedKey.length === 0) throw new Error(`${name} is invalid`);
-    if (typeof child !== "string" || child.trim().length === 0 || child.length > maximumLength) {
-      throw new Error(`${name} is invalid`);
-    }
-    result[normalizedKey] = child.trim();
-  }
-  return result;
-}
-
 type ShortcutConfigKey = "hotkey" | ActionShortcutConfigKey;
 type ActionShortcutConfigKey =
   | "repaste_hotkey"
@@ -393,10 +373,20 @@ function validateShortcutChanges(
   config: UndertoneConfig,
   changed: ReadonlySet<ShortcutConfigKey>,
 ): void {
+  if (changed.has("hotkey")
+    && pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT)) {
+    throw new Error("The Dictate shortcut cannot include Left Alt; Left Alt keeps a recording open");
+  }
+  for (const action of ACTION_SHORTCUTS) {
+    if (changed.has(action.key)
+      && actionShortcutsOverlap(config[action.key], KEEP_OPEN_SHORTCUT)) {
+      throw new Error(`Left Alt is reserved for keeping a recording open`);
+    }
+  }
   for (const action of ACTION_SHORTCUTS) {
     if ((changed.has("hotkey") || changed.has(action.key))
       && pttActionShortcutsOverlap(config.hotkey, config[action.key])) {
-      throw new Error(`Push-to-talk overlaps the ${action.label} shortcut`);
+      throw new Error(`The Dictate shortcut overlaps the ${action.label} shortcut`);
     }
   }
   for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
@@ -412,6 +402,22 @@ function validateShortcutChanges(
 }
 
 function shortcutWarning(config: UndertoneConfig): string | null {
+  try {
+    if (pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT)) {
+      return "The Dictate shortcut includes Left Alt, which is reserved for keeping a recording open.";
+    }
+  } catch {
+    // Unsupported saved shortcuts are reported by the shortcut loader.
+  }
+  for (const action of ACTION_SHORTCUTS) {
+    try {
+      if (actionShortcutsOverlap(config[action.key], KEEP_OPEN_SHORTCUT)) {
+        return `${action.label} uses Left Alt, which is reserved for keeping a recording open.`;
+      }
+    } catch {
+      // Unsupported saved shortcuts are reported by the shortcut loader.
+    }
+  }
   const pttConflicts = ACTION_SHORTCUTS.filter((action) => {
     try {
       return pttActionShortcutsOverlap(config.hotkey, config[action.key]);
@@ -420,7 +426,7 @@ function shortcutWarning(config: UndertoneConfig): string | null {
     }
   }).map((action) => action.label);
   if (pttConflicts.length > 0) {
-    return `Push-to-talk overlaps ${joinLabels(pttConflicts)}. Change one of these shortcuts.`;
+    return `The Dictate shortcut overlaps ${joinLabels(pttConflicts)}. Change one of these shortcuts.`;
   }
   for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
     for (let right = left + 1; right < ACTION_SHORTCUTS.length; right += 1) {

@@ -12,8 +12,7 @@ export type ShortcutSetting =
   | "commitHotkey"
   | "scratchHotkey"
   | "discardHotkey";
-export type DictationModeSetting = "stack" | "instant";
-export type StackCleanupStrategySetting =
+export type OpenTurnCleanupStrategySetting =
   | "live-full"
   | "commit-full";
 export type HistoryAction = "copy" | "repaste" | "retry";
@@ -50,7 +49,6 @@ export interface LocalEngineSnapshot {
 
 export interface SettingsSnapshot {
   language: string;
-  smartFormatting: boolean;
   aiCleanup: boolean;
   restoreClipboard: boolean;
   soundCues: boolean;
@@ -61,9 +59,8 @@ export interface SettingsSnapshot {
   scratchHotkey: string;
   discardHotkey: string;
   shortcutWarning: string | null;
-  dictationMode: DictationModeSetting;
   liveTranscription: boolean;
-  stackCleanupStrategy: StackCleanupStrategySetting;
+  openTurnCleanupStrategy: OpenTurnCleanupStrategySetting;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
@@ -86,7 +83,6 @@ export interface HistorySnapshotEntry {
   id: number;
   ok: boolean;
   text: string;
-  raw: string | null;
   error: string | null;
   timestamp: number;
   retryable: boolean;
@@ -94,7 +90,6 @@ export interface HistorySnapshotEntry {
 
 export interface SettingsPatch {
   language?: string;
-  smartFormatting?: boolean;
   aiCleanup?: boolean;
   restoreClipboard?: boolean;
   soundCues?: boolean;
@@ -104,9 +99,8 @@ export interface SettingsPatch {
   commitHotkey?: string;
   scratchHotkey?: string;
   discardHotkey?: string;
-  dictationMode?: DictationModeSetting;
   liveTranscription?: boolean;
-  stackCleanupStrategy?: StackCleanupStrategySetting;
+  openTurnCleanupStrategy?: OpenTurnCleanupStrategySetting;
   inputDevice?: string;
   provider?: TranscriptionProviderId;
   cleanupProvider?: CleanupProviderId;

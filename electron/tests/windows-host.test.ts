@@ -12,13 +12,15 @@ describe("Windows host", () => {
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     const ready = await host.start();
-    expect(ready.protocol).toBe(3);
+    expect(ready.protocol).toBe(6);
     expect(ready.keyboardHook).toBe(true);
     expect(ready.mouseHook).toBe(true);
     const foreground = await host.getForeground();
     expect(typeof foreground.window).toBe("string");
-    const caret = await host.getCaretContext(20, 20);
-    expect(caret === null || typeof caret.before === "string").toBe(true);
+    expect(typeof foreground.focus).toBe("string");
+    expect(foreground.focusIdentity === null
+      || typeof foreground.focusIdentity === "string").toBe(true);
+    expect(typeof foreground.generation).toBe("string");
     const protectedValue = await host.protectSecret("test-only-secret");
     expect(protectedValue).toMatch(/^dpapi:/);
     expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
@@ -189,7 +191,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 3,
+        protocol: 6,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -213,17 +215,15 @@ describe("Windows host", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_HOST_DESKTOP_E2E !== "1")(
-    "restores a WPF target, reads its caret, and pastes through SendInput",
+    "validates focused controls and pastes through SendInput",
     async () => {
       const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-e2e-"));
       const scriptPath = path.join(temporary, "target.ps1");
       const target = desktopTargetPaths(temporary, "target");
       const thief = desktopTargetPaths(temporary, "thief");
-      const password = desktopTargetPaths(temporary, "password");
       const previousClipboard = getClipboardText();
       let targetProcess: ReturnType<typeof spawn> | null = null;
       let thiefProcess: ReturnType<typeof spawn> | null = null;
-      let passwordProcess: ReturnType<typeof spawn> | null = null;
       const host = new WindowsHost({ requestTimeoutMs: 5_000 });
       try {
         await writeFile(scriptPath, WPF_TARGET_SCRIPT, "utf8");
@@ -241,39 +241,45 @@ describe("Windows host", () => {
           "",
           0,
         );
-        passwordProcess = startDesktopTarget(
-          scriptPath,
-          "Undertone Electron Host Password",
-          password,
-          "never-read-this-secret",
-          0,
-          true,
-        );
         const targetWindow = await waitForTextFile(target.hwnd);
         const thiefWindow = await waitForTextFile(thief.hwnd);
-        const passwordWindow = await waitForTextFile(password.hwnd);
 
         await host.start();
-        expect(await host.focusWindow(passwordWindow)).toBe(true);
-        expect(await host.getCaretContext(120, 120)).toBeNull();
-        expect(await host.focusWindow(thiefWindow)).toBe(true);
+        await activateTarget(thief);
+        await waitForForeground(host, (foreground) => foreground.window === thiefWindow);
         expect((await host.getForeground()).window).toBe(thiefWindow);
-        expect(await host.focusWindow(targetWindow)).toBe(true);
-        expect((await host.getForeground()).window).toBe(targetWindow);
-        expect(await host.getCaretContext(120, 120)).toEqual({
-          before: "I like ",
-          after: "apples.",
-        });
+        await activateTarget(target);
+        const textTarget = await waitForForeground(
+          host,
+          (foreground) => foreground.window === targetWindow
+            && foreground.focusIdentity !== null,
+        );
+        expect(textTarget.window).toBe(targetWindow);
+        expect(textTarget.focusIdentity).not.toBeNull();
+
+        await writeFile(target.focusOther, "", "utf8");
+        const otherTarget = await waitForForeground(host, (foreground) => (
+          foreground.window === targetWindow
+          && foreground.focusIdentity !== null
+          && foreground.focusIdentity !== textTarget.focusIdentity
+        ));
+        expect(otherTarget.window).toBe(textTarget.window);
+        setClipboardText("should not paste");
+        expect(await host.sendGuardedPaste(textTarget)).toBe(false);
+
+        await writeFile(target.focusText, "", "utf8");
+        const freshTarget = await waitForForeground(host, (foreground) => (
+          foreground.window === targetWindow
+          && foreground.focusIdentity === textTarget.focusIdentity
+        ));
 
         setClipboardText("hello ");
-        expect(await host.sendPaste()).toBe(true);
+        expect(await host.sendGuardedPaste(freshTarget)).toBe(true);
         await delay(300);
         await writeFile(target.stop, "", "utf8");
         await writeFile(thief.stop, "", "utf8");
-        await writeFile(password.stop, "", "utf8");
         await waitForChildExit(targetProcess, 5_000);
         await waitForChildExit(thiefProcess, 5_000);
-        await waitForChildExit(passwordProcess, 5_000);
         expect(await readFile(target.result, "utf8")).toBe("I like hello apples.");
       } finally {
         try {
@@ -284,7 +290,6 @@ describe("Windows host", () => {
           } finally {
             targetProcess?.kill();
             thiefProcess?.kill();
-            passwordProcess?.kill();
             await rm(temporary, { recursive: true, force: true });
           }
         }
@@ -298,6 +303,9 @@ interface DesktopTargetPaths {
   hwnd: string;
   result: string;
   stop: string;
+  activate: string;
+  focusOther: string;
+  focusText: string;
 }
 
 const WPF_TARGET_SCRIPT = String.raw`param(
@@ -305,11 +313,48 @@ const WPF_TARGET_SCRIPT = String.raw`param(
   [string]$HwndPath,
   [string]$ResultPath,
   [string]$StopPath,
+  [string]$ActivatePath,
+  [string]$FocusOtherPath,
+  [string]$FocusTextPath,
   [string]$InitialText,
-  [int]$CaretIndex,
+  [int]$InsertionIndex,
   [switch]$Password
 )
 Add-Type -AssemblyName PresentationFramework
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+public static class TestFocus {
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint attachTo, bool value);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  public static void Activate(IntPtr target) {
+    uint ignored;
+    var foreground = GetForegroundWindow();
+    var foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, out ignored);
+    var targetThread = GetWindowThreadProcessId(target, out ignored);
+    var currentThread = GetCurrentThreadId();
+    var attachedForeground = foregroundThread != 0 && foregroundThread != currentThread
+      && AttachThreadInput(currentThread, foregroundThread, true);
+    var attachedTarget = targetThread != 0 && targetThread != currentThread
+      && targetThread != foregroundThread && AttachThreadInput(currentThread, targetThread, true);
+    try {
+      for (var attempt = 0; attempt < 10 && GetForegroundWindow() != target; attempt++) {
+        BringWindowToTop(target);
+        SetForegroundWindow(target);
+        Thread.Sleep(20);
+      }
+    } finally {
+      if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+      if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+    }
+  }
+}
+'@
 $window = New-Object System.Windows.Window
 $window.Title = $Title
 $window.Width = 500
@@ -321,18 +366,36 @@ if ($Password) {
 } else {
   $textBox = New-Object System.Windows.Controls.TextBox
   $textBox.Text = $InitialText
-  $textBox.CaretIndex = [Math]::Min($CaretIndex, $textBox.Text.Length)
+  $textBox.CaretIndex = [Math]::Min($InsertionIndex, $textBox.Text.Length)
 }
-$window.Content = $textBox
+$other = New-Object System.Windows.Controls.Button
+$other.Content = "Other control"
+$panel = New-Object System.Windows.Controls.StackPanel
+[void]$panel.Children.Add($textBox)
+[void]$panel.Children.Add($other)
+$window.Content = $panel
 $window.Add_ContentRendered({
-  $handle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
-  [IO.File]::WriteAllText($HwndPath, $handle.ToInt64().ToString())
+  $script:windowHandle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+  [IO.File]::WriteAllText($HwndPath, $script:windowHandle.ToInt64().ToString())
   $window.Activate() | Out-Null
   $textBox.Focus() | Out-Null
 })
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(50)
 $timer.Add_Tick({
+  if (Test-Path -LiteralPath $ActivatePath) {
+    Remove-Item -LiteralPath $ActivatePath
+    [TestFocus]::Activate($script:windowHandle)
+    $textBox.Focus() | Out-Null
+  }
+  if (Test-Path -LiteralPath $FocusOtherPath) {
+    Remove-Item -LiteralPath $FocusOtherPath
+    $other.Focus() | Out-Null
+  }
+  if (Test-Path -LiteralPath $FocusTextPath) {
+    Remove-Item -LiteralPath $FocusTextPath
+    $textBox.Focus() | Out-Null
+  }
   if (Test-Path -LiteralPath $StopPath) {
     $result = if ($Password) { $textBox.Password } else { $textBox.Text }
     [IO.File]::WriteAllText($ResultPath, $result)
@@ -349,6 +412,9 @@ function desktopTargetPaths(directory: string, name: string): DesktopTargetPaths
     hwnd: path.join(directory, `${name}.hwnd`),
     result: path.join(directory, `${name}.txt`),
     stop: path.join(directory, `${name}.stop`),
+    activate: path.join(directory, `${name}.activate`),
+    focusOther: path.join(directory, `${name}.focus-other`),
+    focusText: path.join(directory, `${name}.focus-text`),
   };
 }
 
@@ -357,7 +423,7 @@ function startDesktopTarget(
   title: string,
   files: DesktopTargetPaths,
   initialText: string,
-  caretIndex: number,
+  insertionIndex: number,
   password = false,
 ): ReturnType<typeof spawn> {
   const arguments_ = [
@@ -370,11 +436,31 @@ function startDesktopTarget(
     "-HwndPath", files.hwnd,
     "-ResultPath", files.result,
     "-StopPath", files.stop,
+    "-ActivatePath", files.activate,
+    "-FocusOtherPath", files.focusOther,
+    "-FocusTextPath", files.focusText,
     "-InitialText", initialText,
-    "-CaretIndex", String(caretIndex),
+    "-InsertionIndex", String(insertionIndex),
   ];
   if (password) arguments_.push("-Password");
   return spawn("powershell", arguments_, { windowsHide: true, stdio: "ignore" });
+}
+
+async function activateTarget(files: DesktopTargetPaths): Promise<void> {
+  await writeFile(files.activate, "", "utf8");
+}
+
+async function waitForForeground(
+  host: WindowsHost,
+  matches: (foreground: Awaited<ReturnType<WindowsHost["getForeground"]>>) => boolean,
+): Promise<Awaited<ReturnType<WindowsHost["getForeground"]>>> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const foreground = await host.getForeground();
+    if (matches(foreground)) return foreground;
+    await delay(25);
+  }
+  throw new Error("Foreground target did not reach the expected state");
 }
 
 async function waitForTextFile(file: string): Promise<string> {

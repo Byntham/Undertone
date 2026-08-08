@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 
 import { isRecord } from "./config";
+import { LIVE_STT_MODELS } from "../shared/models";
 
 export type LiveTranscriptionProvider = "openai" | "xai";
 
@@ -218,7 +219,7 @@ class OpenAiLiveSession extends BaseLiveSession {
           input: {
             format: { type: "audio/pcm", rate: this.sampleRate },
             transcription: {
-              model: "gpt-live-transcribe",
+              model: LIVE_STT_MODELS.openai,
               languages: [this.options.language],
               delay: "low",
             },

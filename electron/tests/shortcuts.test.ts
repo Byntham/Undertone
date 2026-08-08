@@ -127,6 +127,31 @@ describe("trigger shortcut binding", () => {
     expect(binding.update(up(0xa2)).completed).toBe(false);
   });
 
+  it("can consume an armed action without firing on later key releases", () => {
+    const binding = new ActionShortcutBinding("ctrl+alt", "release");
+    binding.update(down(0xa2));
+    expect(binding.update(down(0xa4)).pressed).toBe(true);
+    binding.reset();
+    expect(binding.update(up(0xa4)).completed).toBe(false);
+    expect(binding.update(up(0xa2)).completed).toBe(false);
+  });
+
+  it("recognizes a bare Alt release while PTT modifiers remain held", () => {
+    const binding = new ActionShortcutBinding("left alt", "release", false, true);
+    binding.update(down(0xa2));
+    binding.update(down(0x5b));
+    expect(binding.update(down(0xa4)).pressed).toBe(true);
+    expect(binding.update(up(0xa4)).completed).toBe(true);
+  });
+
+  it("does not treat Alt+Tab as the bare Alt recording action", () => {
+    const binding = new ActionShortcutBinding("left alt", "release", false, true);
+    expect(binding.update(down(0xa4)).pressed).toBe(true);
+    binding.update(down(0x09));
+    binding.update(up(0x09));
+    expect(binding.update(up(0xa4)).completed).toBe(false);
+  });
+
   it("accepts one configurable trigger and rejects ambiguous action chords", () => {
     expect(normalizeTriggerShortcut("Control + Z")).toBe("ctrl+z");
     expect(normalizeTriggerShortcut("F8")).toBe("f8");
@@ -185,7 +210,7 @@ describe("shortcut collision handling", () => {
         onStart() { audioStarts += 1; return true; },
         onFinish() { audioFinalizations += 1; },
         onDiscard() { audioCancellations += 1; },
-      }, { shortTapMs: 0 });
+      }, { tapMs: 0 });
       const send = (event: ReturnType<typeof down> | ReturnType<typeof up>): void => {
         const pttTransition = ptt.update(event);
         const actionTransition = action.update(event);
@@ -220,7 +245,7 @@ describe("shortcut collision handling", () => {
       onStart() { audioStarts += 1; return true; },
       onFinish() { audioFinalizations += 1; },
       onDiscard() {},
-    }, { shortTapMs: 0 });
+    }, { tapMs: 0 });
     const send = (event: ReturnType<typeof down> | ReturnType<typeof up>): void => {
       const pttTransition = ptt.update(event);
       const actionTransition = action.update(event);

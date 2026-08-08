@@ -42,11 +42,14 @@ import {
   type DictationTarget,
   type PendingDictation,
 } from "../core/pipelineQueue";
-import { InsertionMemory, prepareText } from "../core/textPreparation";
+import { prepareText } from "../core/textPreparation";
 import { Transcriber } from "../core/transcriber";
-import { isStackDictationMode, TurnBuffer } from "../core/turnBuffer";
+import { TurnBuffer } from "../core/turnBuffer";
 import {
   ActionShortcutBinding,
+  actionShortcutsOverlap,
+  KEEP_OPEN_SHORTCUT,
+  pttActionShortcutsOverlap,
   PttActionRouter,
   ShortcutBinding,
   ShortcutCapture,
@@ -78,7 +81,6 @@ import type {
   LocalEngineKind,
   LocalEngineSnapshot,
   HistoryAction,
-  CloudProviderId,
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
@@ -98,7 +100,6 @@ const isolatedProfile = electronPreview || packagedSmoke;
 
 interface CapturedAudio {
   wav: Uint8Array | null;
-  durationMs: number;
 }
 
 interface LiveCapture {
@@ -106,8 +107,7 @@ interface LiveCapture {
   session: LiveTranscriptionSession;
   encoder: StreamingPcm16Encoder;
   text: string;
-  state: "listening" | "finalizing";
-  failureShown: boolean;
+  state: "listening" | "finalizing" | "processing";
 }
 
 if (packagedSmoke) {
@@ -173,6 +173,8 @@ if (!gotLock || devQuitRequest) {
   const pendingAudioFinalizations = new Map<number, {
     resolve: (capture: CapturedAudio | null) => void;
     timer: ReturnType<typeof setTimeout>;
+    streamed: boolean;
+    liveFailed: boolean;
   }>();
   let nextAudioFinalizationId = 1;
   let activeAudioCaptureId: number | null = null;
@@ -181,7 +183,6 @@ if (!gotLock || devQuitRequest) {
     completed: boolean;
     resolve: (shortcut: string | null) => void;
   } | null = null;
-  const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
@@ -195,7 +196,15 @@ if (!gotLock || devQuitRequest) {
   const commitShortcut = new ActionShortcutBinding(config.commit_hotkey, "release", true);
   const scratchShortcut = new ActionShortcutBinding(config.scratch_hotkey, "trigger", true);
   const discardShortcut = new ActionShortcutBinding(config.discard_hotkey, "trigger", true);
+  const keepOpenShortcut = new ActionShortcutBinding(
+    KEEP_OPEN_SHORTCUT,
+    "release",
+    false,
+    true,
+  );
   const pttActionRouter = new PttActionRouter();
+  let keepOpenArmedForRecording = false;
+  let pttCompletionDeferred = false;
   let overlayDisplayId: number | undefined;
   let turnDraftUserPositioned = false;
   let normalTrayImage: Electron.NativeImage | null = null;
@@ -291,7 +300,7 @@ if (!gotLock || devQuitRequest) {
     if (draftWindow === null || draftWindow.isDestroyed()) return;
     const snapshot = turnBuffer.snapshot();
     const provisional = [...liveCaptures.values()]
-      .filter((capture) => capture.text.trim().length > 0);
+      .filter((capture) => capture.state !== "processing" && capture.text.trim().length > 0);
     const text = [snapshot?.text ?? "", ...provisional.map((capture) => capture.text)]
       .map((part) => part.trim()).filter(Boolean).join(" ");
     const liveState = [...liveCaptures.values()].some(({ state }) => state === "listening")
@@ -329,7 +338,7 @@ if (!gotLock || devQuitRequest) {
     text: string,
     kind: OverlayTone = "normal",
   ): void => {
-    const barOnlySignal = (text.startsWith("Too short") && kind === "warning")
+    const barOnlySignal = (text.startsWith("Recording too short") && kind === "warning")
       || (text === "No speech detected" && kind === "error");
     const duration = barOnlySignal
       ? 1_000
@@ -361,14 +370,7 @@ if (!gotLock || devQuitRequest) {
       ? `Undertone — Dev: ${activeDevBranch}`
       : paused
         ? "Undertone — paused"
-        : isStackDictationMode(config.dictation_mode)
-          ? (() => {
-      const commit = config.commit_hotkey.trim();
-            return commit.length > 0
-        ? `Undertone — hold ${config.hotkey}; commit with ${commit}`
-              : `Undertone — hold ${config.hotkey} to stack a turn`;
-          })()
-          : `Undertone — hold ${config.hotkey} to dictate`;
+        : "Undertone — hold to paste, tap to toggle, Left Alt to keep open";
     tray?.setToolTip(devBranch === undefined || devBranch.length === 0
       ? tooltip
       : `${tooltip}\nDev: ${devBranch}`);
@@ -376,23 +378,34 @@ if (!gotLock || devQuitRequest) {
 
   const configureShortcuts = (): void => {
     pttActionRouter.reset();
+    keepOpenArmedForRecording = false;
+    pttCompletionDeferred = false;
     try {
-      pttShortcut.set(config.hotkey);
+      const dictateHotkey = pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT)
+        ? DEFAULT_CONFIG.hotkey
+        : config.hotkey;
+      pttShortcut.set(dictateHotkey);
+      if (dictateHotkey !== config.hotkey) {
+        showFeedback(
+          `Left Alt is reserved; using ${DEFAULT_CONFIG.hotkey} for Dictate`,
+          "warning",
+        );
+      }
     } catch {
       pttShortcut.set(DEFAULT_CONFIG.hotkey);
       showFeedback(
-        `The saved push-to-talk shortcut is unsupported; using ${DEFAULT_CONFIG.hotkey}`,
+        `The saved Dictate shortcut is unsupported; using ${DEFAULT_CONFIG.hotkey}`,
         "warning",
       );
     }
     try {
-      repasteShortcut.set(config.repaste_hotkey, true);
+      repasteShortcut.set(actionShortcut(config.repaste_hotkey), true);
     } catch {
       repasteShortcut.set("", true);
       showFeedback("The saved re-paste shortcut is unsupported", "warning");
     }
     try {
-      commitShortcut.set(config.commit_hotkey, true);
+      commitShortcut.set(actionShortcut(config.commit_hotkey), true);
     } catch {
       commitShortcut.set("", true);
       showFeedback("The saved commit shortcut is unsupported", "warning");
@@ -409,6 +422,7 @@ if (!gotLock || devQuitRequest) {
       discardShortcut.set("", true);
       showFeedback("The saved discard shortcut is unsupported", "warning");
     }
+    keepOpenShortcut.set(KEEP_OPEN_SHORTCUT);
   };
 
   const repasteLast = (): void => {
@@ -436,7 +450,12 @@ if (!gotLock || devQuitRequest) {
   const captureForegroundTarget = async (): Promise<DictationTarget | null> => {
     try {
       const foreground = await windowsHost.getForeground();
-      return { window: foreground.window, executable: foreground.executable };
+      return {
+        window: foreground.window,
+        focus: foreground.focus,
+        focusIdentity: foreground.focusIdentity,
+        generation: foreground.generation,
+      };
     } catch {
       return null;
     }
@@ -467,13 +486,12 @@ if (!gotLock || devQuitRequest) {
     if (capture === undefined) return;
     const shouldCancelRecording = activeAudioCaptureId === captureId;
     liveCaptures.delete(captureId);
+    const pending = pendingAudioFinalizations.get(captureId);
+    if (pending !== undefined) pending.liveFailed = true;
     console.warn(`Live ${capture.provider} transcription failed: ${error.message}`);
     publishTurnDraft();
     if (shouldCancelRecording) gestures.cancel();
-    if (!capture.failureShown) {
-      capture.failureShown = true;
-      showFeedback(`Live transcription failed: ${error.message}`, "error");
-    }
+    showFeedback(`Live transcription failed: ${error.message}`, "error");
   };
 
   const gestures = new TapStateMachine({
@@ -510,7 +528,6 @@ if (!gotLock || devQuitRequest) {
             encoder: new StreamingPcm16Encoder(provider === "openai" ? 24_000 : 16_000),
             text: "",
             state: "listening",
-            failureShown: false,
           };
           liveCaptures.set(captureId, liveCapture);
         } catch (error) {
@@ -534,12 +551,14 @@ if (!gotLock || devQuitRequest) {
       overlayController.recording();
       return true;
     },
-    onFinish: () => {
+    onFinish: (completion) => {
       const captureId = activeAudioCaptureId;
       activeAudioCaptureId = null;
       if (captureId === null) return;
       const activePipeline = pipeline;
-      const target = captureForegroundTarget();
+      const target = completion === "commit"
+        ? captureForegroundTarget()
+        : Promise.resolve(null);
       const overlayRevision = overlayController.transcribing();
       const liveCapture = liveCaptures.get(captureId);
       if (liveCapture !== undefined) {
@@ -556,7 +575,12 @@ if (!gotLock || devQuitRequest) {
           pending.resolve(null);
           showFeedback("Audio finalization timed out", "error");
         }, 5_000);
-        pendingAudioFinalizations.set(captureId, { resolve: resolveAudio, timer });
+        pendingAudioFinalizations.set(captureId, {
+          resolve: resolveAudio,
+          timer,
+          streamed: liveCapture !== undefined,
+          liveFailed: false,
+        });
         const pending = Promise.all([audio, target]).then<PendingDictation | null>(
           async ([captured, capturedTarget]) => {
             if (captured === null) {
@@ -596,8 +620,11 @@ if (!gotLock || devQuitRequest) {
             }
             return {
               input,
-              target: capturedTarget ?? { window: "0", executable: null },
+              target: capturedTarget ?? (completion === "commit"
+                ? { window: "0", generation: "-1" }
+                : null),
               overlayRevision,
+              completion,
             };
           },
         );
@@ -616,18 +643,14 @@ if (!gotLock || devQuitRequest) {
       playCue("stop");
       setTrayRecording(false);
     },
-    onDiscard: (reason) => {
+    onDiscard: () => {
       const captureId = activeAudioCaptureId;
       activeAudioCaptureId = null;
       if (captureId !== null) abandonLiveCapture(captureId);
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       playCue("cancel");
       setTrayRecording(false);
-      if (reason === "short-tap") {
-        showFeedback("Too short — hold the key while you speak", "warning");
-      } else {
-        overlayController.hide();
-      }
+      overlayController.hide();
     },
     onLock: () => {
       playCue("lock");
@@ -1083,39 +1106,13 @@ if (!gotLock || devQuitRequest) {
     );
     const runner = new DictationJobRunner({
       transcriber: transcriberClient,
-      async prepareText(transcript, snapshot, contextSource) {
+      async prepareText(transcript, snapshot) {
         return await prepareText(transcript, snapshot, {
-          acquireContext: async () => {
-            if (contextSource === "isolated") {
-              return { before: null, after: null };
-            }
-            return await insertionMemory.acquire({
-              getCaretContext: async (before, after) => (
-                await windowsHost.getCaretContext(before, after)
-              ),
-              getForegroundWindow: async () => (await windowsHost.getForeground()).window,
-            });
-          },
-          getAppIdentity: async () => {
-            const foreground = await windowsHost.getForeground();
-            return {
-              executable: foreground.executable,
-              title: foreground.title,
-            };
-          },
           cleanup: async (request) => await cleanupClient!.cleanup(request),
         });
       },
-      restoreTarget: async (target) => {
-        if (target === null || target.window === "" || target.window === "0") return true;
-        const foreground = await windowsHost.getForeground();
-        return foreground.window === target.window
-          || await windowsHost.focusWindow(target.window);
-      },
-      getForegroundWindow: async () => (await windowsHost.getForeground()).window,
       paster,
       history,
-      insertionMemory,
       turnBuffer,
       feedback: {
         message: showFeedback,
@@ -1125,8 +1122,13 @@ if (!gotLock || devQuitRequest) {
     pipeline = new DictationPipelineQueue(
       () => config,
       {
-        dictate: async (input, target, snapshot, overlayRevision) => {
+        dictate: async (input, target, snapshot, overlayRevision, completion) => {
           try {
+            if (input.type === "transcript") {
+              const capture = liveCaptures.get(input.previewId);
+              if (capture !== undefined) capture.state = "processing";
+              publishTurnDraft();
+            }
             const feedback = {
               message: showFeedback,
               dismiss: () => {
@@ -1134,25 +1136,20 @@ if (!gotLock || devQuitRequest) {
               },
             };
             if (input.type === "audio") {
-              await runner.run(input.wav, target, snapshot, feedback);
+              await runner.run(input.wav, target, snapshot, completion, feedback);
             } else {
-              await runner.runTranscript(input.text, target, snapshot, feedback);
+              await runner.runTranscript(input.text, target, snapshot, completion, feedback);
             }
           } finally {
             if (input.type === "transcript") {
               liveCaptures.delete(input.previewId);
             }
-            if (input.type === "transcript" || isStackDictationMode(snapshot.dictation_mode)) {
-              publishTurnDraft();
-            }
+            publishTurnDraft();
           }
         },
         repaste: async (text, snapshot) => {
-          const generation = insertionMemory.captureGeneration();
           await paster.paste(text, Boolean(snapshot.restore_clipboard));
-          history.registerSuccess(text, null);
-          const foreground = await windowsHost.getForeground();
-          insertionMemory.registerPaste(foreground.window, text, generation);
+          history.registerSuccess(text);
           overlayController.confirm();
         },
         commit: async (snapshot) => {
@@ -1289,7 +1286,6 @@ if (!gotLock || devQuitRequest) {
       const previousCommit = config.commit_hotkey;
       const previousScratch = config.scratch_hotkey;
       const previousDiscard = config.discard_hotkey;
-      const previousMode = config.dictation_mode;
       const previousProvider = config.provider;
       const previousLiveTranscription = config.live_transcription;
       if (isRecord(value) && value.startWithWindows !== undefined) {
@@ -1303,19 +1299,8 @@ if (!gotLock || devQuitRequest) {
       }
       const next = applySettingsPatch(config, value);
       await store.save(next);
-      if (previousMode !== next.dictation_mode && pipeline !== null) {
-        await pipeline.enqueueTransition(() => {
-          config = next;
-          if (previousMode === "stack" && next.dictation_mode === "instant") {
-            turnBuffer.clear();
-            publishTurnDraft();
-          }
-        });
-      } else {
-        config = next;
-      }
-      if ((previousMode !== config.dictation_mode
-        || previousProvider !== config.provider
+      config = next;
+      if ((previousProvider !== config.provider
         || previousLiveTranscription !== config.live_transcription)
         && gestures.state !== GestureState.idle) {
         gestures.cancel();
@@ -1507,7 +1492,6 @@ if (!gotLock || devQuitRequest) {
       id: entry.id,
       ok: true,
       text: entry.text,
-      raw: entry.raw,
       error: null,
       timestamp: entry.timestamp,
       retryable: false,
@@ -1515,7 +1499,6 @@ if (!gotLock || devQuitRequest) {
       id: entry.id,
       ok: false,
       text: "",
-      raw: null,
       error: entry.error,
       timestamp: entry.timestamp,
       retryable: entry.wav !== undefined,
@@ -1594,8 +1577,6 @@ if (!gotLock || devQuitRequest) {
     if (provider === "local") await localCleanup?.ensureReady(model);
     const cleaned = await client.cleanup({
       transcript: "testing one two three",
-      context: null,
-      app: "",
       corrections: {},
       apiKey: providerKey(config, provider),
       provider,
@@ -1712,13 +1693,16 @@ if (!gotLock || devQuitRequest) {
       clearTimeout(pending.timer);
       const wav = toByteArray(payload.wav);
       const durationMs = typeof payload.durationMs === "number" ? payload.durationMs : 0;
-      const streamed = liveCaptures.has(requestId);
-      if ((!streamed && (wav === null || wav.byteLength <= 44)) || durationMs < 300) {
+      if (pending.liveFailed) {
         pending.resolve(null);
-        showFeedback("Too short — hold the key while you speak", "warning");
         return;
       }
-      pending.resolve({ wav: streamed ? null : wav, durationMs });
+      if ((!pending.streamed && (wav === null || wav.byteLength <= 44)) || durationMs < 250) {
+        pending.resolve(null);
+        showFeedback("Recording too short — speak a little longer", "warning");
+        return;
+      }
+      pending.resolve({ wav: pending.streamed ? null : wav });
     } else if (payload.type === "error") {
       const requestId = typeof payload.requestId === "number" ? payload.requestId : -1;
       const pending = pendingAudioFinalizations.get(requestId);
@@ -1779,24 +1763,43 @@ if (!gotLock || devQuitRequest) {
       const commit = commitShortcut.update(event);
       const scratch = scratchShortcut.update(event);
       const discard = discardShortcut.update(event);
-      pttActionRouter.update(event, ptt, [repaste, commit, scratch, discard], gestures);
+      const keepOpen = keepOpenShortcut.update(event);
+      if (keepOpen.pressed) {
+        keepOpenArmedForRecording = gestures.state !== GestureState.idle;
+        if (keepOpenArmedForRecording) {
+          repasteShortcut.reset();
+          commitShortcut.reset();
+          scratchShortcut.reset();
+          discardShortcut.reset();
+        }
+      }
+      const deferPttCompletion = ptt.completed && keepOpenArmedForRecording;
+      if (deferPttCompletion) pttCompletionDeferred = true;
+      pttActionRouter.update(
+        event,
+        deferPttCompletion ? { ...ptt, completed: false } : ptt,
+        keepOpenArmedForRecording ? [] : [repaste, commit, scratch, discard],
+        gestures,
+      );
+      if (keepOpen.completed
+        && keepOpenArmedForRecording
+        && gestures.state !== GestureState.idle) {
+        gestures.finishOpenTurn();
+        pttCompletionDeferred = false;
+      }
+      if (keepOpen.keyBelongsToShortcut && event.eventType === "up") {
+        if (!keepOpen.completed && pttCompletionDeferred) gestures.release();
+        keepOpenArmedForRecording = false;
+        pttCompletionDeferred = false;
+      }
       // Wait until the physical re-paste chord is fully released. Sending
       // Ctrl+V while its Ctrl/Alt keys are still held turns the injected paste
       // back into the re-paste chord in the target application.
-      if (repaste.completed) repasteLast();
-      if (commit.completed) commitOpenTurn();
-      if (scratch.completed) scratchLastFragment();
-      if (discard.completed) discardOpenTurn();
-      if (event.eventType === "down"
-        && !ptt.keyBelongsToShortcut
-        && !repaste.keyBelongsToShortcut
-        && !commit.keyBelongsToShortcut
-        && !scratch.keyBelongsToShortcut
-        && !discard.keyBelongsToShortcut) {
-        insertionMemory.invalidate();
-      }
+      if (!keepOpenArmedForRecording && repaste.completed) repasteLast();
+      if (!keepOpenArmedForRecording && commit.completed) commitOpenTurn();
+      if (!keepOpenArmedForRecording && scratch.completed) scratchLastFragment();
+      if (!keepOpenArmedForRecording && discard.completed) discardOpenTurn();
     });
-    windowsHost.onMouse(() => insertionMemory.invalidate());
     await windowsHost.start();
     await initializePipeline();
     if (turnDraftNativeE2e) {
@@ -1899,10 +1902,6 @@ function authorizeSettingsSender(
   }
 }
 
-function isCloudProvider(value: unknown): value is CloudProviderId {
-  return value === "xai" || value === "openai" || value === "openrouter";
-}
-
 function openAiCredentials(config: UndertoneConfig): OpenAiSubscriptionCredentials | null {
   return config.openai_oauth_access_token.length > 0
     && config.openai_oauth_refresh_token.length > 0
@@ -1944,8 +1943,15 @@ function toFloat32Array(value: unknown): Float32Array | null {
 
 function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
-    && config.dictation_mode === "stack"
     && (config.provider === "openai" || config.provider === "xai");
+}
+
+function actionShortcut(shortcut: string): string {
+  try {
+    return actionShortcutsOverlap(shortcut, KEEP_OPEN_SHORTCUT) ? "" : shortcut;
+  } catch {
+    return shortcut;
+  }
 }
 
 function liveVocabulary(config: UndertoneConfig): unknown[] {

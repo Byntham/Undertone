@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 3;
+    private const int ProtocolVersion = 6;
     private const int WhKeyboardLl = 13;
     private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
@@ -30,14 +30,16 @@ internal static class Program
         new BlockingCollection<string>(new ConcurrentQueue<string>());
     private static readonly HookProc KeyboardProc = OnKeyboard;
     private static readonly HookProc MouseProc = OnMouse;
+    private static readonly object InputGate = new object();
 
     private static volatile bool _captureInput;
     private static volatile bool _suppressKeyboard;
     private static uint _mainThreadId;
     private static IntPtr _keyboardHook;
     private static IntPtr _mouseHook;
-    private static CaretReader _caret;
+    private static FocusReader _focusReader;
     private static ProcessSupervisor _supervisor;
+    private static long _inputGeneration;
 
     public static int Main()
     {
@@ -47,7 +49,7 @@ internal static class Program
 
         try
         {
-            _caret = new CaretReader();
+            _focusReader = new FocusReader();
             _supervisor = new ProcessSupervisor();
             _keyboardHook = InstallHook(WhKeyboardLl, KeyboardProc);
             _mouseHook = InstallHook(WhMouseLl, MouseProc);
@@ -84,8 +86,8 @@ internal static class Program
                 UnhookWindowsHookEx(_mouseHook);
             if (_supervisor != null)
                 _supervisor.Dispose();
-            if (_caret != null)
-                _caret.Dispose();
+            if (_focusReader != null)
+                _focusReader.Dispose();
             Output.CompleteAdding();
             writer.Join(1000);
         }
@@ -162,34 +164,14 @@ internal static class Program
             }
             else if (type == "getForeground")
             {
-                var foreground = Desktop.GetForeground();
+                string generation;
+                var foreground = CaptureForeground(out generation);
                 Respond(requestId, "foreground", new Dictionary<string, object>
                 {
                     { "window", foreground.Window },
-                    { "executable", foreground.Executable },
-                    { "title", foreground.Title }
-                });
-            }
-            else if (type == "focusWindow")
-            {
-                long window;
-                var focused = long.TryParse(StringValue(command, "window"), out window)
-                    && Desktop.FocusWindow(new IntPtr(window));
-                Respond(requestId, "focusResult", new Dictionary<string, object>
-                {
-                    { "focused", focused }
-                });
-            }
-            else if (type == "getCaretContext")
-            {
-                var before = BoundedInt(command, "before", 300, 0, 5000);
-                var after = BoundedInt(command, "after", 300, 0, 5000);
-                var context = _caret.Query(before, after, 150);
-                Respond(requestId, "caretContext", new Dictionary<string, object>
-                {
-                    { "available", context != null },
-                    { "before", context == null ? null : context.Before },
-                    { "after", context == null ? null : context.After }
+                    { "focus", foreground.Focus },
+                    { "focusIdentity", foreground.FocusIdentity },
+                    { "generation", generation }
                 });
             }
             else if (type == "sendPaste")
@@ -197,6 +179,26 @@ internal static class Program
                 Respond(requestId, "pasteResult", new Dictionary<string, object>
                 {
                     { "sent", Desktop.SendPaste() }
+                });
+            }
+            else if (type == "guardedPaste")
+            {
+                bool focusMatched;
+                bool sent = false;
+                lock (InputGate)
+                {
+                    var focusIdentity = _focusReader.QueryIdentity(150);
+                    var foreground = Desktop.GetForeground(focusIdentity);
+                    focusMatched = FocusMatches(command, foreground)
+                        && StringValue(command, "generation")
+                            == Interlocked.Read(ref _inputGeneration).ToString();
+                    if (focusMatched)
+                        sent = Desktop.SendPaste();
+                }
+                Respond(requestId, "guardedPasteResult", new Dictionary<string, object>
+                {
+                    { "focusMatched", focusMatched },
+                    { "sent", sent }
                 });
             }
             else if (type == "protectSecret")
@@ -293,6 +295,40 @@ internal static class Program
         Emit(response);
     }
 
+    private static ForegroundInfo CaptureForeground(out string generation)
+    {
+        ForegroundInfo foreground = null;
+        for (var attempt = 0; attempt < 2; attempt += 1)
+        {
+            var before = Interlocked.Read(ref _inputGeneration);
+            var focusIdentity = _focusReader.QueryIdentity(150);
+            foreground = Desktop.GetForeground(focusIdentity);
+            var after = Interlocked.Read(ref _inputGeneration);
+            if (before == after)
+            {
+                generation = after.ToString();
+                return foreground;
+            }
+        }
+        generation = Interlocked.Read(ref _inputGeneration).ToString();
+        return Desktop.GetForeground(null);
+    }
+
+    private static bool FocusMatches(
+        Dictionary<string, object> expected,
+        ForegroundInfo actual)
+    {
+        if (StringValue(expected, "window") != actual.Window)
+            return false;
+        var focus = StringValue(expected, "focus");
+        if (focus.Length > 0 && focus != "0" && focus != actual.Focus)
+            return false;
+        var identity = StringValue(expected, "focusIdentity");
+        return identity.Length > 0
+            ? identity == actual.FocusIdentity
+            : string.IsNullOrEmpty(actual.FocusIdentity);
+    }
+
     private static string StringValue(Dictionary<string, object> values, string key)
     {
         object value;
@@ -366,6 +402,11 @@ internal static class Program
             {
                 var data = (KeyboardData)Marshal.PtrToStructure(
                     lParam, typeof(KeyboardData));
+                if (eventType == "down" && (data.Flags & LlkhfInjected) == 0)
+                {
+                    lock (InputGate)
+                        Interlocked.Increment(ref _inputGeneration);
+                }
                 Emit(new Dictionary<string, object>
                 {
                     { "protocol", ProtocolVersion },
@@ -400,6 +441,8 @@ internal static class Program
 
             if (button != null)
             {
+                lock (InputGate)
+                    Interlocked.Increment(ref _inputGeneration);
                 Emit(new Dictionary<string, object>
                 {
                     { "protocol", ProtocolVersion },

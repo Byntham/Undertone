@@ -52,7 +52,12 @@ describe("dictation pipeline queue", () => {
     };
     const queue = new DictationPipelineQueue(() => normalizeConfig(undefined), handlers);
     await Promise.all([
-      queue.enqueueDictation(Uint8Array.of(1), { window: "42", executable: "editor.exe" }),
+      queue.enqueuePendingDictation(Promise.resolve({
+        input: { type: "audio", wav: Uint8Array.of(1) },
+        target: { window: "42" },
+        overlayRevision: undefined,
+        completion: "commit",
+      })),
       queue.enqueueRetry(Uint8Array.of(2)),
       queue.enqueueRepaste("again"),
       queue.enqueueCommit(),
@@ -93,44 +98,19 @@ describe("dictation pipeline queue", () => {
     expect(languages).toEqual(["en", "fr"]);
   });
 
-  it("applies a transition between earlier and later dictation jobs", async () => {
-    const config = normalizeConfig({ dictation_mode: "stack" });
-    let releaseFirst: (() => void) | undefined;
-    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const modes: string[] = [];
-    const handlers: PipelineHandlers = {
-      async dictate(_wav, _target, snapshot) {
-        modes.push(snapshot.dictation_mode);
-        if (modes.length === 1) await firstGate;
-      },
-      async repaste() {},
-      async commit() {},
-      async discard() {},
-      async scratch() {},
-    };
-    const queue = new DictationPipelineQueue(() => config, handlers);
-    const first = queue.enqueueRetry(Uint8Array.of(1));
-    const transition = queue.enqueueTransition(() => {
-      config.dictation_mode = "instant";
-    });
-    const second = queue.enqueueRetry(Uint8Array.of(2));
-    await tick();
-    releaseFirst!();
-    await Promise.all([first, transition, second]);
-    expect(modes).toEqual(["stack", "instant"]);
-  });
-
   it("reserves queue order while a recording finishes", async () => {
     const events: string[] = [];
     let finishRecording!: (value: {
       input: { type: "audio"; wav: Uint8Array };
-      target: { window: string; executable: string | null };
+      target: { window: string };
       overlayRevision: number | undefined;
+      completion: "commit";
     }) => void;
     const recording = new Promise<{
       input: { type: "audio"; wav: Uint8Array };
-      target: { window: string; executable: string | null };
+      target: { window: string };
       overlayRevision: number | undefined;
+      completion: "commit";
     }>((resolve) => { finishRecording = resolve; });
     const queue = new DictationPipelineQueue(
       () => normalizeConfig(undefined),
@@ -149,8 +129,9 @@ describe("dictation pipeline queue", () => {
     expect(events).toEqual([]);
     finishRecording({
       input: { type: "audio", wav: Uint8Array.of(1) },
-      target: { window: "42", executable: "editor.exe" },
+      target: { window: "42" },
       overlayRevision: undefined,
+      completion: "commit",
     });
     await Promise.all([dictate, scratch, commit]);
     expect(events).toEqual(["dictate", "scratch", "commit"]);
@@ -185,9 +166,9 @@ describe("session history", () => {
   it("returns newest-first copies and bounds total entries", () => {
     let now = 1;
     const history = new SessionHistory(2, 3, () => now++);
-    history.registerSuccess("one", null);
-    history.registerSuccess("two", "raw two");
-    history.registerSuccess("three", null);
+    history.registerSuccess("one");
+    history.registerSuccess("two");
+    history.registerSuccess("three");
     const snapshot = history.snapshot();
     expect(snapshot.map((entry) => entry.ok ? entry.text : entry.error))
       .toEqual(["three", "two"]);
@@ -210,7 +191,7 @@ describe("session history", () => {
   it("finds the latest successful text across intervening failures", () => {
     const history = new SessionHistory();
     expect(history.latestSuccessText()).toBeNull();
-    history.registerSuccess("paste me", null);
+    history.registerSuccess("paste me");
     history.registerFailure("network", Uint8Array.of(1));
     expect(history.latestSuccessText()).toBe("paste me");
   });

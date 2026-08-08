@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_STT_MODELS,
   Transcriber,
   TranscriptionError,
   type LocalSttRuntime,
 } from "../src/core/transcriber";
+import { DEFAULT_STT_MODELS } from "../src/shared/models";
 import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http";
 
 const WAV = Uint8Array.from([0x52, 0x49, 0x46, 0x46, ...new Array<number>(64).fill(0)]);

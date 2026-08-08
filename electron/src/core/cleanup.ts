@@ -2,6 +2,7 @@ import { isRecord } from "./config";
 import { SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
 import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
+import { DEFAULT_CLEANUP_MODELS } from "../shared/models";
 
 export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
   xai: "https://api.x.ai/v1/chat/completions",
@@ -9,18 +10,10 @@ export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
 };
 
-export const DEFAULT_CLEANUP_MODELS: Readonly<Record<string, string>> = {
-  xai: "grok-4.3",
-  openai: "gpt-5.6-luna",
-  "openai-subscription": "gpt-5.6-luna",
-  openrouter: "openai/gpt-5.6-luna",
-  local: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-};
-
 const JSON_SCHEMA_RESPONSE_FORMAT = {
   type: "json_schema",
   json_schema: {
-    name: "insertion",
+    name: "cleanup",
     strict: true,
     schema: {
       type: "object",
@@ -52,8 +45,6 @@ export interface SubscriptionCleanupRuntime {
 
 export interface CleanupOptions {
   transcript: string;
-  context: string | null;
-  app: string;
   corrections: Readonly<Record<string, string>>;
   apiKey: string;
   model?: string;
@@ -76,10 +67,8 @@ export class CleanupClient {
   async cleanup(options: CleanupOptions): Promise<string | null> {
     const provider = options.provider ?? "xai";
     const model = options.model ?? "";
-    const effectiveModel = model || DEFAULT_CLEANUP_MODELS[provider] || "";
+    const effectiveModel = model || defaultCleanupModel(provider);
     const user = JSON.stringify({
-      text_before_cursor: options.context,
-      app: options.app,
       dictionary: options.corrections ?? {},
       transcript: options.transcript,
     });
@@ -195,6 +184,12 @@ export class CleanupClient {
   }
 }
 
+function defaultCleanupModel(provider: string): string {
+  return Object.prototype.hasOwnProperty.call(DEFAULT_CLEANUP_MODELS, provider)
+    ? DEFAULT_CLEANUP_MODELS[provider as keyof typeof DEFAULT_CLEANUP_MODELS]
+    : "";
+}
+
 class CleanupFailure extends Error {}
 
 function validateCleanupContent(content: string, options: CleanupOptions): string | null {
@@ -206,11 +201,10 @@ function validateCleanupContent(content: string, options: CleanupOptions): strin
   if (rawText.length === 0) {
     return failure(options, "Cleanup provider returned empty text.");
   }
-  const withoutEcho = dropEchoedContext(rawText, options.context);
-  if (withoutEcho === null || !plausibleLength(withoutEcho, options.transcript)) {
+  if (!plausibleLength(rawText, options.transcript)) {
     return failure(options, "Cleanup response failed the safety checks.");
   }
-  return withoutEcho;
+  return rawText;
 }
 
 function failure(options: CleanupOptions, message: string): null {
@@ -251,24 +245,6 @@ function rejectsResponseFormat(response: { status: number; body: string }): bool
     || detail.includes("structured output");
 }
 
-export function dropEchoedContext(text: string, context: string | null): string | null {
-  if (context === null || context.length === 0) return text;
-  const tail = Array.from(context.trimEnd());
-  const reply = Array.from(text);
-  const lowerReply = text.toLowerCase();
-  for (let count = tail.length; count >= 4; count -= 1) {
-    const suffix = tail.slice(-count).join("");
-    if (!lowerReply.startsWith(suffix.toLowerCase())) continue;
-    const startsClean = count === tail.length || !isWord(tail[tail.length - count - 1]!);
-    const endsClean = count === reply.length || !isWord(reply[count]!);
-    if (startsClean && endsClean) {
-      const remaining = reply.slice(count).join("").trimStart();
-      return remaining.length > 0 ? remaining : null;
-    }
-  }
-  return text;
-}
-
 export function plausibleLength(cleaned: string, transcript: string): boolean {
   return Array.from(cleaned).length <= Array.from(transcript).length * 1.5 + 30;
 }
@@ -278,8 +254,4 @@ function responseContent(payload: unknown): string | null {
   const choice = payload.choices[0];
   if (!isRecord(choice) || !isRecord(choice.message)) return null;
   return typeof choice.message.content === "string" ? choice.message.content : null;
-}
-
-function isWord(character: string): boolean {
-  return /[\p{L}\p{M}\p{N}_]/u.test(character);
 }

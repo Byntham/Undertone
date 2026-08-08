@@ -5,6 +5,14 @@ export interface ClipboardAdapter {
 
 export interface PasteSender {
   sendPaste(): Promise<boolean>;
+  sendGuardedPaste?(target: PasteTarget): Promise<boolean>;
+}
+
+export interface PasteTarget {
+  window: string;
+  focus?: string;
+  focusIdentity?: string | null;
+  generation?: string;
 }
 
 type Scheduler = (callback: () => Promise<void>, delayMs: number) => void;
@@ -19,8 +27,12 @@ export class ClipboardPaster {
     private readonly schedule: Scheduler = scheduleLater,
   ) {}
 
-  async paste(text: string, restoreClipboard = true): Promise<void> {
-    if (text.length === 0) return;
+  async paste(
+    text: string,
+    restoreClipboard = true,
+    target?: PasteTarget,
+  ): Promise<boolean> {
+    if (text.length === 0) return true;
     const generation = ++this.generation;
     let previous: string | null;
     try {
@@ -30,10 +42,21 @@ export class ClipboardPaster {
     }
     this.clipboard.writeText(text);
     await this.wait(150);
-    if (!await this.sender.sendPaste()) {
+    const sent = target === undefined
+      ? await this.sender.sendPaste()
+      : this.sender.sendGuardedPaste === undefined
+        ? false
+        : await this.sender.sendGuardedPaste(target);
+    if (target === undefined && !sent) {
       throw new Error("Windows did not accept the paste keystroke");
     }
-    if (!restoreClipboard || previous === null || previous.length === 0) return;
+    if (!sent) {
+      if (previous !== null && this.clipboard.readText() === text) {
+        this.clipboard.writeText(previous);
+      }
+      return false;
+    }
+    if (!restoreClipboard || previous === null || previous.length === 0) return true;
     this.schedule(async () => {
       if (generation !== this.generation) return;
       try {
@@ -43,6 +66,7 @@ export class ClipboardPaster {
         // Clipboard restoration is best effort after the paste has succeeded.
       }
     }, 500);
+    return true;
   }
 
   copyFallback(text: string): void {

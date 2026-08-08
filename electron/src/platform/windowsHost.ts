@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 6;
 const HOST_NAME = "Undertone.WinHost.exe";
 
 interface HostReady {
@@ -38,18 +38,14 @@ interface HostResponse extends Record<string, unknown> {
 
 interface ForegroundInfo {
   window: string;
-  executable: string | null;
-  title: string | null;
+  focus: string;
+  focusIdentity: string | null;
+  generation: string;
 }
 
 export interface SupervisedProcessStatus {
   running: boolean;
   exitCode: number | null;
-}
-
-export interface CaretContext {
-  before: string;
-  after: string | null;
 }
 
 interface PendingRequest {
@@ -146,38 +142,17 @@ export class WindowsHost {
   async getForeground(): Promise<ForegroundInfo> {
     const response = await this.request("getForeground", "foreground");
     if (typeof response.window !== "string"
-      || !isNullableString(response.executable)
-      || !isNullableString(response.title)) {
+      || typeof response.focus !== "string"
+      || !isNullableString(response.focusIdentity)
+      || typeof response.generation !== "string") {
       throw new Error("Windows host returned an invalid foreground window");
     }
     return {
       window: response.window,
-      executable: response.executable,
-      title: response.title,
+      focus: response.focus,
+      focusIdentity: response.focusIdentity,
+      generation: response.generation,
     };
-  }
-
-  async focusWindow(window: string): Promise<boolean> {
-    const response = await this.request("focusWindow", "focusResult", { window });
-    if (typeof response.focused !== "boolean") {
-      throw new Error("Windows host returned an invalid focus result");
-    }
-    return response.focused;
-  }
-
-  async getCaretContext(before = 300, after = 300): Promise<CaretContext | null> {
-    const response = await this.request("getCaretContext", "caretContext", {
-      before,
-      after,
-    });
-    if (typeof response.available !== "boolean") {
-      throw new Error("Windows host returned an invalid caret context");
-    }
-    if (!response.available) return null;
-    if (typeof response.before !== "string" || !isNullableString(response.after)) {
-      throw new Error("Windows host returned an invalid caret context");
-    }
-    return { before: response.before, after: response.after };
   }
 
   async sendPaste(): Promise<boolean> {
@@ -186,6 +161,21 @@ export class WindowsHost {
       throw new Error("Windows host returned an invalid paste result");
     }
     return response.sent;
+  }
+
+  async sendGuardedPaste(target: {
+    window: string;
+    focus?: string;
+    focusIdentity?: string | null;
+    generation?: string;
+  }): Promise<boolean> {
+    const response = await this.request("guardedPaste", "guardedPasteResult", target);
+    if (typeof response.sent !== "boolean" || typeof response.focusMatched !== "boolean") {
+      throw new Error("Windows host returned an invalid guarded paste result");
+    }
+    if (!response.focusMatched) return false;
+    if (!response.sent) throw new Error("Windows did not accept the paste keystroke");
+    return true;
   }
 
   async protectSecret(value: string): Promise<string> {

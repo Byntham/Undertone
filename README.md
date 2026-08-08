@@ -1,7 +1,7 @@
 # Undertone
 
-Push-to-talk dictation. Speak in fragments, stack them into one turn, and commit
-when you're ready—or paste instantly on each release.
+Push-to-talk dictation with live or batch transcription, automatic paste, and
+an open turn for composing multiple fragments.
 
 ## Install
 
@@ -17,25 +17,28 @@ on this PC and are DPAPI-encrypted on disk.
 
 ## Use
 
-Default mode is **stack**: each push-to-talk release adds a fragment to an open
-turn. Nothing is pasted until you **commit**.
+Hold the dictate shortcut and release it to transcribe, clean up, and paste.
+Tap it once for hands-free recording, then tap it again to finish and paste.
+Press **Left Alt** while recording to stop without pasting and append the result
+to the open turn instead.
 
 | Action | Default shortcut |
 |--------|------------------|
-| Dictate (hold) | Left Ctrl+Left Windows |
-| Commit turn | Left Ctrl+Left Alt |
+| Dictate (hold or tap) | Left Ctrl+Left Windows |
+| Keep recording in open turn | Left Alt while recording |
+| Commit open turn | Left Ctrl+Left Alt |
 | Scratch last fragment | Left Ctrl+Left Alt+Backspace |
-| Discard turn | Ctrl+Alt+Shift+Backspace |
+| Discard open turn | Ctrl+Alt+Shift+Backspace |
 | Re-paste last commit | Left Alt+V |
 | Cancel recording | Esc |
 
-Double-tap the dictate shortcut to lock hands-free recording; tap once more to
-stop. Switch to **instant** mode in Settings if you want paste-on-release.
+A held release or second toggle tap captures the current paste target. If focus
+changes before injection, Undertone keeps the turn open for manual commit.
 Use the tray menu for Settings, pause, or quit.
 
 ## Settings
 
-- **General** — shortcuts, mic, language, formatting, sounds, updates
+- **General** — shortcuts, mic, language, sounds, updates
 - **Speech & AI** — STT and cleanup providers, keys, local models
 - **Dictionary** — vocabulary and corrections
 - **History** — session-only copy, re-paste, and retry

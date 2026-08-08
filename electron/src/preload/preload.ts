@@ -5,7 +5,6 @@ import type {
   LocalEngineAction,
   LocalEngineKind,
   HistoryAction,
-  CloudProviderId,
   OpenAiSubscriptionAction,
   ProviderTestKind,
   SettingsApi,

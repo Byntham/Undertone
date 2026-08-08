@@ -1,14 +1,7 @@
-import { isRecord, type ProviderId } from "./config";
+import { isRecord } from "./config";
 import type { HttpClient, HttpRequest, HttpResponse } from "../platform/http";
-
-type TranscriptionProviderId = Exclude<ProviderId, "openai-subscription">;
-
-export const DEFAULT_STT_MODELS: Readonly<Record<TranscriptionProviderId, string>> = {
-  xai: "",
-  openai: "gpt-transcribe",
-  openrouter: "openai/gpt-transcribe",
-  local: "ggml-large-v3-turbo.bin",
-};
+import { DEFAULT_STT_MODELS } from "../shared/models";
+import type { TranscriptionProviderId } from "../shared/settings";
 
 const STT_TIMEOUT_MS = 120_000;
 

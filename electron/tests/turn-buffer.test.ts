@@ -13,7 +13,7 @@ describe("turn buffer", () => {
     expect(buffer.peekText()).toBe("Hello world");
     expect(buffer.rawText()).toBe("hello world");
     expect(buffer.rawText("again")).toBe("hello world again");
-    expect(buffer.fragmentCount()).toBe(2);
+    expect(buffer.snapshot()?.fragmentCount).toBe(2);
   });
 
   it("clears only when there was content", () => {
@@ -32,7 +32,6 @@ describe("turn buffer", () => {
     expect(buffer.snapshot()).toEqual({
       text: "One two",
       fragmentCount: 2,
-      charCount: 7,
     });
   });
 
@@ -42,17 +41,13 @@ describe("turn buffer", () => {
     buffer.append("two", "One two", "live-full");
     buffer.append("three", "One, two, and three", "live-full");
     expect(buffer.scratchLast()).toEqual({
-      removed: "One, two, and three",
       fragmentCount: 2,
-      charCount: 7,
       text: "One two",
     });
     expect(buffer.peekText()).toBe("One two");
     expect(buffer.scratchLast()?.fragmentCount).toBe(1);
     expect(buffer.scratchLast()).toEqual({
-      removed: "One",
       fragmentCount: 0,
-      charCount: 0,
       text: "",
     });
     expect(buffer.scratchLast()).toBeNull();

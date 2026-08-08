@@ -23,6 +23,8 @@ export interface PttGestureSink {
   cancel(): unknown;
 }
 
+export const KEEP_OPEN_SHORTCUT = "left alt";
+
 const NAMED_KEYS: Readonly<Record<string, readonly number[]>> = {
   ctrl: [0x11, 0xa2, 0xa3],
   "left ctrl": [0xa2],
@@ -160,6 +162,7 @@ export class ActionShortcutBinding {
     shortcut = "",
     private readonly completeOn: "trigger" | "release" = "trigger",
     allowEmpty = false,
+    private readonly allowExtraModifiers = false,
   ) {
     this.set(shortcut, allowEmpty);
   }
@@ -171,6 +174,10 @@ export class ActionShortcutBinding {
     this.parts = parts;
     this.modifiers = parts.filter((part) => part.modifier);
     this.trigger = parts.find((part) => !part.modifier) ?? null;
+    this.reset();
+  }
+
+  reset(): void {
     this.down.clear();
     this.armed = false;
     this.blockedUntilRelease = false;
@@ -202,7 +209,7 @@ export class ActionShortcutBinding {
     const released = event.eventType === "up"
       && this.armed
       && !this.hasShortcutKeyDown()
-      && ![...this.down].some(isModifierVirtualKey);
+      && (this.allowExtraModifiers || ![...this.down].some(isModifierVirtualKey));
     const completed = this.completeOn === "trigger" ? pressed : released;
     if (released) this.armed = false;
     if (this.blockedUntilRelease && !this.hasShortcutKeyDown()) {
@@ -224,6 +231,7 @@ export class ActionShortcutBinding {
     if (!this.modifiers.every((part) => intersects(part.virtualKeys, this.down))) {
       return false;
     }
+    if (this.allowExtraModifiers) return true;
     return [...this.down].every((virtualKey) => (
       !isModifierVirtualKey(virtualKey)
       || this.modifiers.some((part) => part.virtualKeys.has(virtualKey))
@@ -309,7 +317,7 @@ export class PttActionRouter {
       gestures.cancel();
     }
     if (ptt.pressed && !this.suppressPtt) gestures.press();
-    if (ptt.released && !this.suppressPtt) gestures.release();
+    if (ptt.completed && !this.suppressPtt) gestures.release();
     if (this.down.size === 0) this.suppressPtt = false;
   }
 

@@ -1,14 +1,14 @@
 import { normalizeConfig, type UndertoneConfig } from "./config";
+import type { DictationCompletion } from "./gestures";
+import type { PasteTarget } from "./clipboardPaster";
 
-export interface DictationTarget {
-  window: string;
-  executable: string | null;
-}
+export type DictationTarget = PasteTarget;
 
 export interface PendingDictation {
   input: DictationInput;
-  target: DictationTarget;
+  target: DictationTarget | null;
   overlayRevision: number | undefined;
+  completion: DictationCompletion;
 }
 
 export type DictationInput =
@@ -21,6 +21,7 @@ export interface PipelineHandlers {
     target: DictationTarget | null,
     config: UndertoneConfig,
     overlayRevision: number | undefined,
+    completion: DictationCompletion,
   ): Promise<void>;
   repaste(text: string, config: UndertoneConfig): Promise<void>;
   commit(config: UndertoneConfig): Promise<void>;
@@ -37,8 +38,7 @@ type PipelineJob =
   | { type: "repaste"; text: string }
   | { type: "commit" }
   | { type: "discard" }
-  | { type: "scratch" }
-  | { type: "transition"; apply: () => void };
+  | { type: "scratch" };
 
 interface QueuedJob {
   job: PipelineJob;
@@ -54,18 +54,6 @@ export class DictationPipelineQueue {
     private readonly configSource: () => UndertoneConfig,
     private readonly handlers: PipelineHandlers,
   ) {}
-
-  enqueueDictation(
-    wav: Uint8Array,
-    target: DictationTarget,
-    overlayRevision?: number,
-  ): Promise<void> {
-    return this.enqueuePendingDictation(Promise.resolve({
-      input: { type: "audio", wav: wav.slice() },
-      target: { ...target },
-      overlayRevision,
-    }));
-  }
 
   /** Reserve queue order while the audio renderer finishes the recording. */
   enqueuePendingDictation(pending: Promise<PendingDictation | null>): Promise<void> {
@@ -92,11 +80,6 @@ export class DictationPipelineQueue {
     return this.enqueue({ type: "scratch" });
   }
 
-  /** Apply a synchronous state transition after all earlier jobs finish. */
-  enqueueTransition(apply: () => void): Promise<void> {
-    return this.enqueue({ type: "transition", apply });
-  }
-
   private async enqueue(job: PipelineJob): Promise<void> {
     return await new Promise<void>((resolve, reject) => {
       this.queue.push({ job, resolve, reject });
@@ -111,36 +94,34 @@ export class DictationPipelineQueue {
       while (this.queue.length > 0) {
         const queued = this.queue.shift()!;
         try {
-          if (queued.job.type === "transition") {
-            queued.job.apply();
-          } else {
-            const config = normalizeConfig(this.configSource());
-            if (queued.job.type === "dictate") {
-              const pending = await queued.job.pending;
-              if (pending !== null) {
-                await this.handlers.dictate(
-                  cloneInput(pending.input),
-                  { ...pending.target },
-                  config,
-                  pending.overlayRevision,
-                );
-              }
-            } else if (queued.job.type === "retry") {
+          const config = normalizeConfig(this.configSource());
+          if (queued.job.type === "dictate") {
+            const pending = await queued.job.pending;
+            if (pending !== null) {
               await this.handlers.dictate(
-                { type: "audio", wav: queued.job.wav },
-                null,
+                cloneInput(pending.input),
+                pending.target === null ? null : { ...pending.target },
                 config,
-                undefined,
+                pending.overlayRevision,
+                pending.completion,
               );
-            } else if (queued.job.type === "repaste") {
-              await this.handlers.repaste(queued.job.text, config);
-            } else if (queued.job.type === "commit") {
-              await this.handlers.commit(config);
-            } else if (queued.job.type === "discard") {
-              await this.handlers.discard();
-            } else {
-              await this.handlers.scratch();
             }
+          } else if (queued.job.type === "retry") {
+            await this.handlers.dictate(
+              { type: "audio", wav: queued.job.wav },
+              null,
+              config,
+              undefined,
+              "open-turn",
+            );
+          } else if (queued.job.type === "repaste") {
+            await this.handlers.repaste(queued.job.text, config);
+          } else if (queued.job.type === "commit") {
+            await this.handlers.commit(config);
+          } else if (queued.job.type === "discard") {
+            await this.handlers.discard();
+          } else {
+            await this.handlers.scratch();
           }
           queued.resolve();
         } catch (error) {
@@ -164,7 +145,6 @@ export interface SuccessHistoryEntry {
   id: number;
   ok: true;
   text: string;
-  raw: string | null;
   timestamp: number;
 }
 
@@ -188,12 +168,11 @@ export class SessionHistory {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  registerSuccess(text: string, raw: string | null): SuccessHistoryEntry {
+  registerSuccess(text: string): SuccessHistoryEntry {
     const entry: SuccessHistoryEntry = {
       id: this.nextId++,
       ok: true,
       text,
-      raw,
       timestamp: this.now(),
     };
     this.append(entry);
