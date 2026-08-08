@@ -33,6 +33,7 @@ export class ClipboardPaster {
     target?: PasteTarget,
   ): Promise<boolean> {
     if (text.length === 0) return true;
+    const pastedText = trailingSpace(text);
     const generation = ++this.generation;
     let previous: string | null;
     try {
@@ -40,7 +41,7 @@ export class ClipboardPaster {
     } catch {
       previous = null;
     }
-    this.clipboard.writeText(text);
+    this.clipboard.writeText(pastedText);
     await this.wait(150);
     const sent = target === undefined
       ? await this.sender.sendPaste()
@@ -51,7 +52,7 @@ export class ClipboardPaster {
       throw new Error("Windows did not accept the paste keystroke");
     }
     if (!sent) {
-      if (previous !== null && this.clipboard.readText() === text) {
+      if (previous !== null && this.clipboard.readText() === pastedText) {
         this.clipboard.writeText(previous);
       }
       return false;
@@ -60,7 +61,7 @@ export class ClipboardPaster {
     this.schedule(async () => {
       if (generation !== this.generation) return;
       try {
-        if (this.clipboard.readText() !== text) return;
+        if (this.clipboard.readText() !== pastedText) return;
         this.clipboard.writeText(previous);
       } catch {
         // Clipboard restoration is best effort after the paste has succeeded.
@@ -73,6 +74,10 @@ export class ClipboardPaster {
     this.generation += 1;
     this.clipboard.writeText(text);
   }
+}
+
+function trailingSpace(text: string): string {
+  return /\s$/u.test(text) ? text : `${text} `;
 }
 
 async function delay(delayMs: number): Promise<void> {
