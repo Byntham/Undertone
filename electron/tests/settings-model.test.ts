@@ -8,7 +8,6 @@ describe("settings model", () => {
     const snapshot = settingsSnapshot(normalizeConfig({ api_key: "secret" }), "1.3.0", true);
     expect(snapshot).toEqual({
       language: "en",
-      smartFormatting: true,
       aiCleanup: true,
       restoreClipboard: true,
       soundCues: true,
@@ -19,8 +18,8 @@ describe("settings model", () => {
       scratchHotkey: "left ctrl+left alt+backspace",
       discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
-      dictationMode: "stack",
-      stackCleanupStrategy: "live-full",
+      liveTranscription: false,
+      openTurnCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
       appVersion: "1.3.0",
@@ -87,6 +86,15 @@ describe("settings model", () => {
     expect(snapshot.cleanupModel).toBe("custom-cleanup");
   });
 
+  it("reports the model used by live transcription", () => {
+    const openAi = normalizeConfig({ provider: "openai", live_transcription: true });
+    expect(settingsSnapshot(openAi, "1.8.1", true).sttModel)
+      .toBe("gpt-live-transcribe");
+
+    const xai = normalizeConfig({ provider: "xai", live_transcription: true });
+    expect(settingsSnapshot(xai, "1.8.1", true).sttModel).toBe("");
+  });
+
   it("allows subscription cleanup without exposing it as transcription", () => {
     const config = applySettingsPatch(normalizeConfig({
       openai_oauth_access_token: "access",
@@ -141,7 +149,6 @@ describe("settings model", () => {
     const config = normalizeConfig(undefined);
     const next = applySettingsPatch(config, {
       language: "fr",
-      smartFormatting: false,
       aiCleanup: false,
       restoreClipboard: false,
       inputDevice: "USB Podcast Mic",
@@ -152,11 +159,11 @@ describe("settings model", () => {
       sttVocabHints: false,
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
-      stackCleanupStrategy: "commit-full",
+      openTurnCleanupStrategy: "commit-full",
+      liveTranscription: true,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
-    expect(next.smart_formatting).toBe(false);
     expect(next.ai_cleanup).toBe(false);
     expect(next.restore_clipboard).toBe(false);
     expect(next.input_device).toBe("USB Podcast Mic");
@@ -169,6 +176,7 @@ describe("settings model", () => {
     expect(next.cleanup_reasoning_effort).toBe("none");
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
+    expect(next.live_transcription).toBe(true);
     expect(config.language).toBe("en");
   });
 
@@ -191,10 +199,16 @@ describe("settings model", () => {
     const config = normalizeConfig(undefined);
     expect(() => applySettingsPatch(config, {
       hotkey: "left ctrl",
-    })).toThrow(/Push-to-talk overlaps/u);
+    })).toThrow(/Dictate shortcut overlaps/u);
     expect(() => applySettingsPatch(config, {
       commitHotkey: "left ctrl+left windows+enter",
-    })).toThrow(/Push-to-talk overlaps/u);
+    })).toThrow(/Dictate shortcut overlaps/u);
+    expect(() => applySettingsPatch(config, {
+      hotkey: "left ctrl+left alt",
+    })).toThrow(/cannot include Left Alt/u);
+    expect(() => applySettingsPatch(config, {
+      commitHotkey: "left alt",
+    })).toThrow(/reserved/u);
     expect(() => applySettingsPatch(config, {
       scratchHotkey: "left ctrl+left alt+backspace",
       discardHotkey: "left ctrl+left alt+left shift+backspace",
@@ -225,7 +239,7 @@ describe("settings model", () => {
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { onboarded: true }))
       .toThrow(/Unsupported settings field/u);
-    expect(() => applySettingsPatch(config, { smartFormatting: "yes" }))
+    expect(() => applySettingsPatch(config, { liveTranscription: "yes" }))
       .toThrow(/must be boolean/u);
     expect(() => applySettingsPatch(config, { language: "../bad" }))
       .toThrow(/Invalid transcription language/u);
@@ -247,7 +261,7 @@ describe("settings model", () => {
       .toThrow(/one non-modifier/u);
     expect(() => applySettingsPatch(config, { commitHotkey: "ctrl+k+s" }))
       .toThrow(/at most one/u);
-    expect(() => applySettingsPatch(config, { stackCleanupStrategy: "sometimes" }))
+    expect(() => applySettingsPatch(config, { openTurnCleanupStrategy: "sometimes" }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
       .toThrow(/invalid/u);

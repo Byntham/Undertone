@@ -1,38 +1,41 @@
 export const GestureState = {
   idle: "idle",
   held: "held",
-  tapWait: "tap_wait",
   locked: "locked",
+  stopping: "stopping",
 } as const;
 
 export type GestureState = (typeof GestureState)[keyof typeof GestureState];
+export type DictationCompletion = "commit" | "open-turn";
+
+export const DEFAULT_TAP_MS = 300;
 
 export interface GestureCallbacks {
   onStart: () => boolean;
-  onFinish: () => void;
-  onDiscard: (reason: "cancel" | "short-tap") => void;
+  onFinish: (completion: DictationCompletion) => void;
+  onDiscard: () => void;
   onLock?: () => void;
 }
 
 export interface GestureTiming {
-  shortTapMs?: number;
-  doubleTapMs?: number;
+  tapMs?: number;
 }
 
+/**
+ * Starts recording on the first key-down. A quick release latches recording;
+ * a held release finishes and commits. Either form can be diverted into the
+ * open turn at any time through finishOpenTurn().
+ */
 export class TapStateMachine {
   private currentState: GestureState = GestureState.idle;
   private pressTimeMs = 0;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-
-  private readonly shortTapMs: number;
-  private readonly doubleTapMs: number;
+  private readonly tapMs: number;
 
   constructor(
     private readonly callbacks: GestureCallbacks,
     timing: GestureTiming = {},
   ) {
-    this.shortTapMs = timing.shortTapMs ?? 300;
-    this.doubleTapMs = timing.doubleTapMs ?? 400;
+    this.tapMs = timing.tapMs ?? DEFAULT_TAP_MS;
   }
 
   get state(): GestureState {
@@ -45,52 +48,38 @@ export class TapStateMachine {
       this.currentState = this.callbacks.onStart()
         ? GestureState.held
         : GestureState.idle;
-    } else if (this.currentState === GestureState.tapWait) {
-      this.cancelTimer();
-      this.currentState = GestureState.locked;
-      this.callbacks.onLock?.();
     } else if (this.currentState === GestureState.locked) {
-      this.currentState = GestureState.idle;
-      this.callbacks.onFinish();
+      this.currentState = GestureState.stopping;
     }
   }
 
   release(): void {
-    if (this.currentState !== GestureState.held) {
+    if (this.currentState === GestureState.stopping) {
+      this.currentState = GestureState.idle;
+      this.callbacks.onFinish("commit");
       return;
     }
-    if (Date.now() - this.pressTimeMs < this.shortTapMs) {
-      this.currentState = GestureState.tapWait;
-      this.timer = setTimeout(() => this.expireTap(), this.doubleTapMs);
-    } else {
-      this.currentState = GestureState.idle;
-      this.callbacks.onFinish();
+    if (this.currentState !== GestureState.held) return;
+    if (Date.now() - this.pressTimeMs < this.tapMs) {
+      this.currentState = GestureState.locked;
+      this.callbacks.onLock?.();
+      return;
     }
+    this.currentState = GestureState.idle;
+    this.callbacks.onFinish("commit");
   }
 
-  cancel(): boolean {
-    if (this.currentState === GestureState.idle) {
-      return false;
-    }
-    this.cancelTimer();
+  finishOpenTurn(): boolean {
+    if (this.currentState === GestureState.idle) return false;
     this.currentState = GestureState.idle;
-    this.callbacks.onDiscard("cancel");
+    this.callbacks.onFinish("open-turn");
     return true;
   }
 
-  private expireTap(): void {
-    this.timer = undefined;
-    if (this.currentState !== GestureState.tapWait) {
-      return;
-    }
+  cancel(): boolean {
+    if (this.currentState === GestureState.idle) return false;
     this.currentState = GestureState.idle;
-    this.callbacks.onDiscard("short-tap");
-  }
-
-  private cancelTimer(): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
+    this.callbacks.onDiscard();
+    return true;
   }
 }

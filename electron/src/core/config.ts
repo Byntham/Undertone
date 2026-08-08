@@ -1,6 +1,5 @@
 export type ProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
-export type DictationMode = "stack" | "instant";
-export type StackCleanupStrategy = "live-full" | "commit-full";
+export type OpenTurnCleanupStrategy = "live-full" | "commit-full";
 export type CleanupReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type CleanupServiceTier = "default" | "priority";
 export type ConfigRecord = Record<string, unknown>;
@@ -19,7 +18,6 @@ export interface UndertoneConfig extends ConfigRecord {
   input_device: string;
   provider: ProviderId;
   stt_models: Record<string, string>;
-  smart_formatting: boolean;
   ai_cleanup: boolean;
   cleanup_provider: ProviderId;
   cleanup_models: Record<string, string>;
@@ -31,8 +29,9 @@ export interface UndertoneConfig extends ConfigRecord {
   commit_hotkey: string;
   scratch_hotkey: string;
   discard_hotkey: string;
-  dictation_mode: DictationMode;
-  stack_cleanup_strategy: StackCleanupStrategy;
+  live_transcription: boolean;
+  // Keep the persisted key for compatibility with existing config files.
+  stack_cleanup_strategy: OpenTurnCleanupStrategy;
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
@@ -54,7 +53,6 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   input_device: "",
   provider: "local",
   stt_models: {},
-  smart_formatting: true,
   ai_cleanup: true,
   cleanup_provider: "local",
   cleanup_models: {},
@@ -66,7 +64,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   commit_hotkey: "left ctrl+left alt",
   scratch_hotkey: "left ctrl+left alt+backspace",
   discard_hotkey: "ctrl+alt+shift+backspace",
-  dictation_mode: "stack",
+  live_transcription: false,
   stack_cleanup_strategy: "live-full",
   local_loaded: false,
   local_idle_minutes: 0,
@@ -104,8 +102,8 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   if (!isCleanupProvider(config.cleanup_provider)) {
     config.cleanup_provider = DEFAULT_CONFIG.cleanup_provider;
   }
-  if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
-    config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
+  if (typeof config.live_transcription !== "boolean") {
+    config.live_transcription = DEFAULT_CONFIG.live_transcription;
   }
   if (config.stack_cleanup_strategy !== "live-full"
     && config.stack_cleanup_strategy !== "commit-full") {

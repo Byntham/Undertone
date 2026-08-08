@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { encodePcm16Wav, joinFloat32, resampleLinear } from "../src/core/audio";
+import {
+  encodePcm16Wav,
+  joinFloat32,
+  resampleLinear,
+  StreamingPcm16Encoder,
+} from "../src/core/audio";
 
 describe("audio conversion", () => {
   it("joins capture blocks in order", () => {
@@ -41,5 +46,31 @@ describe("audio conversion", () => {
   it("rejects invalid sample rates", () => {
     expect(() => resampleLinear(new Float32Array([1]), 0, 16_000)).toThrow();
     expect(() => encodePcm16Wav(new Float32Array([1]), 16_000.5)).toThrow();
+  });
+
+  it("resamples successive live chunks without gaps at chunk boundaries", () => {
+    const encoder = new StreamingPcm16Encoder(16_000);
+    const source = Float32Array.from(
+      { length: 4_800 },
+      (_, index) => Math.sin(index / 20) * 0.5,
+    );
+    const chunks = [
+      encoder.append(source.slice(0, 1_537), 48_000),
+      encoder.append(source.slice(1_537, 3_101), 48_000),
+      encoder.append(source.slice(3_101), 48_000),
+      encoder.finish(),
+    ];
+    const live = Uint8Array.from(chunks.flatMap((chunk) => Array.from(chunk)));
+    const expected = new Uint8Array(encodePcm16Wav(
+      resampleLinear(source, 48_000, 16_000),
+      16_000,
+    )).slice(44);
+    expect(live).toEqual(expected);
+  });
+
+  it("rejects a sample-rate change during live capture", () => {
+    const encoder = new StreamingPcm16Encoder(24_000);
+    encoder.append(new Float32Array([0, 1]), 48_000);
+    expect(() => encoder.append(new Float32Array([0]), 44_100)).toThrow(/changed/u);
   });
 });

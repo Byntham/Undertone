@@ -177,8 +177,6 @@ describe("local runtime", () => {
         const cleaner = new CleanupClient(http, cleanup);
         expect(await cleaner.cleanup({
           transcript: "um hello there",
-          context: "",
-          app: "Undertone local E2E",
           corrections: {},
           apiKey: "",
           provider: "local",

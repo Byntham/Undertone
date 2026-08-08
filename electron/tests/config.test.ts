@@ -38,6 +38,7 @@ describe("configuration", () => {
     expect(second.provider).toBe("local");
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
+    expect(second.live_transcription).toBe(false);
     expect(second.cleanup_reasoning_effort).toBe("none");
     expect(second.cleanup_service_tier).toBe("priority");
     expect(second.hotkey).toBe("left ctrl+left windows");
@@ -57,6 +58,11 @@ describe("configuration", () => {
       stack_cleanup_strategy: "live-delta-commit-full",
     }).stack_cleanup_strategy)
       .toBe("live-full");
+  });
+
+  it("repairs a malformed live-transcription flag", () => {
+    expect(normalizeConfig({ live_transcription: "false" }).live_transcription).toBe(false);
+    expect(normalizeConfig({ live_transcription: true }).live_transcription).toBe(true);
   });
 
   it("repairs invalid Luna request settings and migrates fast to priority", () => {

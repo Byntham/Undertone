@@ -24,7 +24,7 @@ describe("clipboard paster", () => {
     );
     await paster.paste("dictated text");
     expect(waits).toEqual([150]);
-    expect(clipboard.value).toBe("dictated text");
+    expect(clipboard.value).toBe("dictated text ");
     await scheduled[0]!();
     expect(clipboard.value).toBe("previous");
   });
@@ -41,9 +41,9 @@ describe("clipboard paster", () => {
     await paster.paste("first");
     await paster.paste("second");
     await scheduled[0]!();
-    expect(clipboard.value).toBe("second");
+    expect(clipboard.value).toBe("second ");
     await scheduled[1]!();
-    expect(clipboard.value).toBe("first");
+    expect(clipboard.value).toBe("first ");
   });
 
   it("preserves a user clipboard change made before restoration", async () => {
@@ -84,7 +84,49 @@ describe("clipboard paster", () => {
       async () => undefined,
     );
     await expect(paster.paste("dictated text")).rejects.toThrow(/paste keystroke/u);
-    expect(clipboard.value).toBe("dictated text");
+    expect(clipboard.value).toBe("dictated text ");
+  });
+
+  it("restores the clipboard and skips injection when the target guard fails", async () => {
+    const clipboard = new MemoryClipboard("previous");
+    let sent = false;
+    const target = {
+      window: "42",
+      focus: "420",
+      focusIdentity: "uia:1",
+      generation: "7",
+    };
+    const paster = new ClipboardPaster(
+      clipboard,
+      {
+        async sendPaste() { sent = true; return true; },
+        async sendGuardedPaste(actual) {
+          expect(actual).toEqual(target);
+          return false;
+        },
+      },
+      async () => undefined,
+    );
+    await expect(paster.paste("dictated text", true, target)).resolves.toBe(false);
+    expect(sent).toBe(false);
+    expect(clipboard.value).toBe("previous");
+  });
+
+  it("preserves a user clipboard change when guarded paste is cancelled", async () => {
+    const clipboard = new MemoryClipboard("previous");
+    const paster = new ClipboardPaster(
+      clipboard,
+      {
+        async sendPaste() { return true; },
+        async sendGuardedPaste() {
+          clipboard.value = "user copied this";
+          return false;
+        },
+      },
+      async () => undefined,
+    );
+    await expect(paster.paste("dictated text", true, { window: "42" })).resolves.toBe(false);
+    expect(clipboard.value).toBe("user copied this");
   });
 
   it("does nothing for empty text", async () => {
@@ -96,5 +138,16 @@ describe("clipboard paster", () => {
     await paster.paste("");
     expect(sent).toBe(false);
     expect(clipboard.value).toBe("previous");
+  });
+
+  it("does not add another space when pasted text already ends in whitespace", async () => {
+    const clipboard = new MemoryClipboard("previous");
+    const paster = new ClipboardPaster(
+      clipboard,
+      { async sendPaste() { return true; } },
+      async () => undefined,
+    );
+    await paster.paste("dictated text\n", false);
+    expect(clipboard.value).toBe("dictated text\n");
   });
 });

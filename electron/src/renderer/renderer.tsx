@@ -19,6 +19,11 @@ import type {
   SystemAction,
   TranscriptionProviderId,
 } from "../shared/settings";
+import {
+  DEFAULT_CLEANUP_MODELS,
+  DEFAULT_STT_MODELS,
+  LIVE_STT_MODELS,
+} from "../shared/models";
 import "./style.css";
 
 type Section = "general" | "speechAi" | "dictionary" | "history";
@@ -213,33 +218,36 @@ function General({
   return <section>
     <header className="pageHeader"><h1>General</h1></header>
 
-    <h2>Shortcuts</h2>
+    <h2>Dictation controls</h2>
     <div className="card shortcutGrid">
       {settings.shortcutWarning !== null
         && <p className="shortcutWarning" role="status">{settings.shortcutWarning}</p>}
       <ShortcutItem
         primary
-        title="Push to talk"
+        title="Dictate and auto-commit"
+        description="Hold and release to paste, or tap once to start and tap again to paste."
         field="hotkey"
         value={settings.hotkey}
         capturing={capturing}
         capture={captureShortcut}
       />
-      <ShortcutItem
-        title="Re-paste last dictation"
-        field="repasteHotkey"
-        value={settings.repasteHotkey}
-        capturing={capturing}
-        capture={captureShortcut}
+      <FixedShortcutItem
+        title="Keep in open turn"
+        description="Press while recording to stop without pasting."
+        value="left alt"
       />
       <ShortcutItem
         title="Commit open turn"
-        description="Paste the full stacked turn"
+        description="Paste everything previously kept in the open turn."
         field="commitHotkey"
         value={settings.commitHotkey}
         capturing={capturing}
         capture={captureShortcut}
       />
+    </div>
+
+    <h2>Other shortcuts</h2>
+    <div className="card shortcutGrid">
       <ShortcutItem
         title="Remove last fragment"
         field="scratchHotkey"
@@ -254,32 +262,27 @@ function General({
         capturing={capturing}
         capture={captureShortcut}
       />
+      <ShortcutItem
+        wide
+        title="Re-paste last dictation"
+        field="repasteHotkey"
+        value={settings.repasteHotkey}
+        capturing={capturing}
+        capture={captureShortcut}
+      />
     </div>
 
     <div className="settingsColumns">
       <div>
         <h2>Dictation</h2>
         <div className="card">
-          <SettingRow title="Dictation mode" description="Stack a turn or paste each utterance instantly.">
-            <select
-              aria-label="Dictation mode"
-              value={settings.dictationMode}
-              onChange={(event) => {
-                void update({ dictationMode: event.target.value === "instant" ? "instant" : "stack" });
-              }}
-            >
-              <option value="stack">Stack</option>
-              <option value="instant">Instant</option>
-            </select>
-          </SettingRow>
-          <SettingRow title="Cleanup timing">
+          <SettingRow title="Open-turn cleanup" description="Choose when AI cleanup runs while building an open turn.">
             <select
               aria-label="Cleanup timing"
-              value={settings.stackCleanupStrategy}
-              disabled={settings.dictationMode !== "stack"}
+              value={settings.openTurnCleanupStrategy}
               onChange={(event) => {
                 void update({
-                  stackCleanupStrategy: event.target.value === "commit-full"
+                  openTurnCleanupStrategy: event.target.value === "commit-full"
                     ? "commit-full"
                     : "live-full",
                 });
@@ -289,17 +292,21 @@ function General({
               <option value="commit-full">When committing</option>
             </select>
           </SettingRow>
+          <SettingRow
+            title="Live text preview"
+            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. OpenAI and xAI only."
+          >
+            <Toggle
+              label="Show live text preview"
+              checked={settings.liveTranscription}
+              disabled={settings.provider !== "openai" && settings.provider !== "xai"}
+              onChange={(liveTranscription) => { void update({ liveTranscription }); }}
+            />
+          </SettingRow>
         </div>
 
         <h2>Output</h2>
         <div className="card">
-          <SettingRow title="Fix spacing & capitalization">
-            <Toggle
-              label="Fix spacing and capitalization"
-              checked={settings.smartFormatting}
-              onChange={(smartFormatting) => { void update({ smartFormatting }); }}
-            />
-          </SettingRow>
           <SettingRow title="Restore clipboard" description="Put previous clipboard text back after pasting.">
             <Toggle
               label="Restore clipboard"
@@ -368,6 +375,7 @@ function General({
 
 function ShortcutItem({
   primary = false,
+  wide = false,
   title,
   description,
   field,
@@ -376,6 +384,7 @@ function ShortcutItem({
   capture,
 }: {
   primary?: boolean;
+  wide?: boolean;
   title: string;
   description?: string;
   field: ShortcutSetting;
@@ -383,7 +392,7 @@ function ShortcutItem({
   capturing: ShortcutSetting | null;
   capture: (field: ShortcutSetting) => Promise<void>;
 }): React.JSX.Element {
-  return <div className="shortcutItem" data-primary={primary}>
+  return <div className="shortcutItem" data-primary={primary} data-wide={wide}>
     <div>
       <h3>{title}</h3>
       {description !== undefined && <p>{description}</p>}
@@ -394,6 +403,26 @@ function ShortcutItem({
       capturing={capturing}
       capture={capture}
     />
+  </div>;
+}
+
+function FixedShortcutItem({
+  title,
+  description,
+  value,
+}: {
+  title: string;
+  description: string;
+  value: string;
+}): React.JSX.Element {
+  return <div className="shortcutItem">
+    <div>
+      <h3>{title}</h3>
+      <p>{description}</p>
+    </div>
+    <span className="keycaps">{shortcutParts(value).map((part) => (
+      <span className="keycap" key={part}>{part}</span>
+    ))}</span>
   </div>;
 }
 
@@ -558,7 +587,6 @@ function History({
         <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
         <div>
           <p>{entry.ok ? entry.text : entry.error}</p>
-          {entry.raw !== null && <small>Heard: {entry.raw}</small>}
         </div>
         <div className="historyActions">
           {entry.ok && <button type="button" className="smallButton" onClick={() => { void action(entry.id, "copy"); }}>Copy</button>}
@@ -638,7 +666,7 @@ function SpeechAi({
               <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
                 {testing === "stt" ? "Testing…" : "Test"}
               </button>
-              <small className="modelSummary">Model · {modelLabel("stt", settings.sttModel)}</small>
+              <small className="modelSummary">Model · {settings.sttModel || "Provider managed"}</small>
               {testResults.stt && <small role="status">{testResults.stt}</small>}
             </div>
           </SettingRow>
@@ -676,7 +704,7 @@ function SpeechAi({
               <button type="button" className="smallButton" disabled={testing !== null || !settings.aiCleanup} onClick={() => { void test("cleanup"); }}>
                 {testing === "cleanup" ? "Testing…" : "Test"}
               </button>
-              <small className="modelSummary">Model · {modelLabel("cleanup", settings.cleanupModel)}</small>
+              <small className="modelSummary">Model · {settings.cleanupModel || "Provider managed"}</small>
               {testResults.cleanup && <small role="status">{testResults.cleanup}</small>}
             </div>
           </SettingRow>
@@ -933,22 +961,6 @@ function KeyCard({
   </form>;
 }
 
-function modelLabel(kind: "stt" | "cleanup", model: string): string {
-  if (model.length === 0) return kind === "stt" ? "xAI managed" : "Provider managed";
-  const names: Readonly<Record<string, string>> = {
-    "gpt-transcribe": "GPT Transcribe",
-    "openai/gpt-transcribe": "GPT Transcribe",
-    "gpt-4o-transcribe": "GPT-4o Transcribe",
-    "openai/gpt-4o-transcribe": "GPT-4o Transcribe",
-    "gpt-5.6-luna": "GPT-5.6 Luna",
-    "openai/gpt-5.6-luna": "GPT-5.6 Luna",
-    "grok-4.3": "Grok 4.3",
-    "ggml-large-v3-turbo.bin": "Whisper Large V3 Turbo",
-    "Qwen3-4B-Instruct-2507-Q4_K_M.gguf": "Qwen3 4B Instruct",
-  };
-  return names[model] ?? model;
-}
-
 function AppUpdates({ appVersion }: { appVersion: string }): React.JSX.Element {
   const [updateStatus, setUpdateStatus] = useState<AppUpdateSnapshot | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -1030,10 +1042,12 @@ function SettingRow({
 function Toggle({
   label,
   checked,
+  disabled = false,
   onChange,
 }: {
   label: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }): React.JSX.Element {
   return <button
@@ -1043,6 +1057,7 @@ function Toggle({
     aria-label={label}
     aria-checked={checked}
     data-checked={checked}
+    disabled={disabled}
     onClick={() => onChange(!checked)}
   ><span /></button>;
 }
@@ -1093,17 +1108,11 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-function previewModel(kind: "stt" | "cleanup", provider: SettingsProviderId): string {
-  if (kind === "stt") {
-    if (provider === "xai") return "";
-    if (provider === "openai") return "gpt-transcribe";
-    if (provider === "openrouter") return "openai/gpt-transcribe";
-    return "ggml-large-v3-turbo.bin";
+function previewSttModel(provider: TranscriptionProviderId, live: boolean): string {
+  if (live && (provider === "openai" || provider === "xai")) {
+    return LIVE_STT_MODELS[provider] ?? "";
   }
-  if (provider === "xai") return "grok-4.3";
-  if (provider === "openrouter") return "openai/gpt-5.6-luna";
-  if (provider === "local") return "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
-  return "gpt-5.6-luna";
+  return DEFAULT_STT_MODELS[provider];
 }
 
 function settingsApiForRenderer(): Window["undertoneSettings"] {
@@ -1116,7 +1125,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
   }
   let preview: SettingsSnapshot = {
     language: "en",
-    smartFormatting: true,
     aiCleanup: true,
     restoreClipboard: true,
     soundCues: true,
@@ -1127,8 +1135,8 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     scratchHotkey: "left ctrl+left alt+backspace",
     discardHotkey: "ctrl+alt+shift+backspace",
     shortcutWarning: null,
-    dictationMode: "stack",
-    stackCleanupStrategy: "live-full",
+    liveTranscription: false,
+    openTurnCleanupStrategy: "live-full",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.8.1",
@@ -1187,12 +1195,21 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
           },
         };
       }
-      if (patch.provider !== undefined && patch.provider !== preview.provider) {
-        preview = { ...preview, sttModel: previewModel("stt", patch.provider) };
+      if (patch.provider !== undefined || patch.liveTranscription !== undefined) {
+        preview = {
+          ...preview,
+          sttModel: previewSttModel(
+            patch.provider ?? preview.provider,
+            patch.liveTranscription ?? preview.liveTranscription,
+          ),
+        };
       }
       if (patch.cleanupProvider !== undefined
         && patch.cleanupProvider !== preview.cleanupProvider) {
-        preview = { ...preview, cleanupModel: previewModel("cleanup", patch.cleanupProvider) };
+        preview = {
+          ...preview,
+          cleanupModel: DEFAULT_CLEANUP_MODELS[patch.cleanupProvider],
+        };
       }
       const { providerKey: _providerKey, ...plain } = patch;
       preview = { ...preview, ...plain };
@@ -1251,8 +1268,8 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     },
     async history() {
       return [
-        { id: 2, ok: true, text: "Undertone is ready.", raw: null, error: null, timestamp: Date.now(), retryable: false },
-        { id: 1, ok: false, text: "", raw: null, error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
+        { id: 2, ok: true, text: "Undertone is ready.", error: null, timestamp: Date.now(), retryable: false },
+        { id: 1, ok: false, text: "", error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
       ];
     },
     async historyAction() {},

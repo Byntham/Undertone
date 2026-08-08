@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   CLEANUP_API_URLS,
   CleanupClient,
-  DEFAULT_CLEANUP_MODELS,
-  dropEchoedContext,
   plausibleLength,
   type LocalCleanupRuntime,
   type SubscriptionCleanupRuntime,
 } from "../src/core/cleanup";
 import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
+import { DEFAULT_CLEANUP_MODELS } from "../src/shared/models";
 import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http";
 
 class FakeHttp implements HttpClient {
@@ -34,8 +33,6 @@ class FakeLocal implements LocalCleanupRuntime {
 
 const baseOptions = {
   transcript: "some words",
-  context: null,
-  app: "",
   corrections: {},
   apiKey: "k",
 };
@@ -69,7 +66,7 @@ describe("cleanup providers", () => {
 
   it("uses the production prompt and structured response schema", async () => {
     expect(SYSTEM_PROMPT.startsWith("COPYEDIT ONLY.")).toBe(true);
-    expect(SYSTEM_PROMPT).toContain("text_before_cursor");
+    expect(SYSTEM_PROMPT).not.toContain("text_before_cursor");
     expect(SYSTEM_PROMPT).toContain("Final audit:");
     expect(SYSTEM_PROMPT).not.toContain("\r");
 
@@ -80,7 +77,9 @@ describe("cleanup providers", () => {
       const call = http.calls.at(-1)!;
       expect(call.url).toBe(url);
       const body = jsonBody(call.request);
-      expect(body.model).toBe(DEFAULT_CLEANUP_MODELS[provider]);
+      expect(body.model).toBe(
+        DEFAULT_CLEANUP_MODELS[provider as keyof typeof DEFAULT_CLEANUP_MODELS],
+      );
       expect(body).not.toHaveProperty("temperature");
       expect((body.response_format as Record<string, unknown>).type).toBe("json_schema");
       const messages = body.messages as Array<Record<string, unknown>>;
@@ -268,28 +267,20 @@ describe("cleanup providers", () => {
     expect(responseFormat(http.calls[2]!.request)).toBe("json_schema");
   });
 
-  it("sends context as quoted data and rejects echoes or implausible expansion", async () => {
+  it("sends only turn data and rejects implausible expansion", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     await client.cleanup({
       ...baseOptions,
       transcript: "hello",
-      context: "I already said ",
-      app: "slack.exe (Chat)",
       corrections: { "under tone": "Undertone" },
       provider: "xai",
     });
     const messages = jsonBody(http.calls[0]!.request).messages as Array<Record<string, unknown>>;
     expect(JSON.parse(messages[1]!.content as string)).toEqual({
-      text_before_cursor: "I already said ",
-      app: "slack.exe (Chat)",
       dictionary: { "under tone": "Undertone" },
       transcript: "hello",
     });
-
-    expect(dropEchoedContext("I already said hello.", "I already said ")).toBe("hello.");
-    expect(dropEchoedContext("table works", "notable")).toBe("table works");
-    expect(dropEchoedContext("I already said", "I already said ")).toBeNull();
     expect(plausibleLength("A short cleaned reply.", "some words")).toBe(true);
     expect(plausibleLength("x".repeat(100), "tiny")).toBe(false);
 

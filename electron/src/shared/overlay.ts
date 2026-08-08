@@ -15,9 +15,10 @@ export interface OverlayState {
   tone: OverlayTone;
 }
 
-/** Live open-turn draft shown while stack mode has fragments. */
+/** Live open-turn draft shown while recording or composing fragments. */
 export interface TurnDraftView {
   text: string;
   fragmentCount: number;
   charCount: number;
+  liveState: "listening" | "finalizing" | null;
 }

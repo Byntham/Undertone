@@ -92,7 +92,7 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       text: {
         format: {
           type: "json_schema",
-          name: "insertion",
+          name: "cleanup",
           strict: true,
           schema: {
             type: "object",

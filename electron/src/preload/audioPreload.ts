@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 export type AudioCommand =
-  | { type: "start"; deviceName?: string }
+  | { type: "start"; captureId: number; deviceName?: string; stream: boolean }
   | { type: "meter"; deviceName?: string; requestId: number }
   | { type: "stop"; requestId: number }
   | { type: "cancel" }
@@ -10,7 +10,8 @@ export type AudioEvent =
   | { type: "ready"; devices: string[] }
   | { type: "devices"; devices: string[] }
   | { type: "level"; rms: number }
-  | { type: "stopped"; requestId: number; wav: ArrayBuffer; durationMs: number }
+  | { type: "chunk"; captureId: number; samples: ArrayBuffer; sampleRate: number }
+  | { type: "stopped"; requestId: number; wav?: ArrayBuffer; durationMs: number }
   | { type: "meter"; requestId: number; peak?: number; error?: string }
   | { type: "error"; requestId?: number; message: string };
 
