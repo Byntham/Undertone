@@ -20,6 +20,7 @@ describe("settings model", () => {
       discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
       dictationMode: "stack",
+      liveTranscription: false,
       stackCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
@@ -153,6 +154,7 @@ describe("settings model", () => {
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
       stackCleanupStrategy: "commit-full",
+      liveTranscription: true,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -169,6 +171,7 @@ describe("settings model", () => {
     expect(next.cleanup_reasoning_effort).toBe("none");
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
+    expect(next.live_transcription).toBe(true);
     expect(config.language).toBe("en");
   });
 
@@ -226,6 +229,8 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { onboarded: true }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { smartFormatting: "yes" }))
+      .toThrow(/must be boolean/u);
+    expect(() => applySettingsPatch(config, { liveTranscription: "yes" }))
       .toThrow(/must be boolean/u);
     expect(() => applySettingsPatch(config, { language: "../bad" }))
       .toThrow(/Invalid transcription language/u);

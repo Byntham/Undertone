@@ -289,6 +289,18 @@ function General({
               <option value="commit-full">When committing</option>
             </select>
           </SettingRow>
+          <SettingRow
+            title="Live transcription"
+            description="Show provisional words in the open turn while speaking. OpenAI and xAI only."
+          >
+            <Toggle
+              label="Use live transcription"
+              checked={settings.liveTranscription}
+              disabled={settings.dictationMode !== "stack"
+                || (settings.provider !== "openai" && settings.provider !== "xai")}
+              onChange={(liveTranscription) => { void update({ liveTranscription }); }}
+            />
+          </SettingRow>
         </div>
 
         <h2>Output</h2>
@@ -1030,10 +1042,12 @@ function SettingRow({
 function Toggle({
   label,
   checked,
+  disabled = false,
   onChange,
 }: {
   label: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }): React.JSX.Element {
   return <button
@@ -1043,6 +1057,7 @@ function Toggle({
     aria-label={label}
     aria-checked={checked}
     data-checked={checked}
+    disabled={disabled}
     onClick={() => onChange(!checked)}
   ><span /></button>;
 }
@@ -1128,6 +1143,7 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     discardHotkey: "ctrl+alt+shift+backspace",
     shortcutWarning: null,
     dictationMode: "stack",
+    liveTranscription: false,
     stackCleanupStrategy: "live-full",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],

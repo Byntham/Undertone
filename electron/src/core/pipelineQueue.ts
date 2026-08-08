@@ -6,14 +6,18 @@ export interface DictationTarget {
 }
 
 export interface PendingDictation {
-  wav: Uint8Array;
+  input: DictationInput;
   target: DictationTarget;
   overlayRevision: number | undefined;
 }
 
+export type DictationInput =
+  | { type: "audio"; wav: Uint8Array }
+  | { type: "transcript"; text: string; previewId: number };
+
 export interface PipelineHandlers {
   dictate(
-    wav: Uint8Array,
+    input: DictationInput,
     target: DictationTarget | null,
     config: UndertoneConfig,
     overlayRevision: number | undefined,
@@ -57,7 +61,7 @@ export class DictationPipelineQueue {
     overlayRevision?: number,
   ): Promise<void> {
     return this.enqueuePendingDictation(Promise.resolve({
-      wav: wav.slice(),
+      input: { type: "audio", wav: wav.slice() },
       target: { ...target },
       overlayRevision,
     }));
@@ -115,14 +119,19 @@ export class DictationPipelineQueue {
               const pending = await queued.job.pending;
               if (pending !== null) {
                 await this.handlers.dictate(
-                  pending.wav.slice(),
+                  cloneInput(pending.input),
                   { ...pending.target },
                   config,
                   pending.overlayRevision,
                 );
               }
             } else if (queued.job.type === "retry") {
-              await this.handlers.dictate(queued.job.wav, null, config, undefined);
+              await this.handlers.dictate(
+                { type: "audio", wav: queued.job.wav },
+                null,
+                config,
+                undefined,
+              );
             } else if (queued.job.type === "repaste") {
               await this.handlers.repaste(queued.job.text, config);
             } else if (queued.job.type === "commit") {
@@ -143,6 +152,12 @@ export class DictationPipelineQueue {
       if (this.queue.length > 0) void this.drain();
     }
   }
+}
+
+function cloneInput(input: DictationInput): DictationInput {
+  return input.type === "audio"
+    ? { type: "audio", wav: input.wav.slice() }
+    : { ...input };
 }
 
 export interface SuccessHistoryEntry {

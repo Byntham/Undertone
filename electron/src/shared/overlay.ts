@@ -20,4 +20,5 @@ export interface TurnDraftView {
   text: string;
   fragmentCount: number;
   charCount: number;
+  liveState: "listening" | "finalizing" | null;
 }

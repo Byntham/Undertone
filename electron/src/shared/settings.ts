@@ -62,6 +62,7 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   dictationMode: DictationModeSetting;
+  liveTranscription: boolean;
   stackCleanupStrategy: StackCleanupStrategySetting;
   inputDevice: string;
   microphones: string[];
@@ -104,6 +105,7 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   dictationMode?: DictationModeSetting;
+  liveTranscription?: boolean;
   stackCleanupStrategy?: StackCleanupStrategySetting;
   inputDevice?: string;
   provider?: TranscriptionProviderId;

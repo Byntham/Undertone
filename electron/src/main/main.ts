@@ -18,7 +18,7 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CleanupClient } from "../core/cleanup";
-import { encodePcm16Wav } from "../core/audio";
+import { encodePcm16Wav, StreamingPcm16Encoder } from "../core/audio";
 import { ClipboardPaster } from "../core/clipboardPaster";
 import {
   DEFAULT_CONFIG,
@@ -29,11 +29,16 @@ import {
 } from "../core/config";
 import { DictationJobRunner } from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
+import {
+  LiveTranscriber,
+  type LiveTranscriptionSession,
+} from "../core/liveTranscriber";
 import { OverlayController } from "../core/overlayController";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
   DictationPipelineQueue,
   SessionHistory,
+  type DictationInput,
   type DictationTarget,
   type PendingDictation,
 } from "../core/pipelineQueue";
@@ -90,6 +95,21 @@ const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIE
 const devBranch = electronPreview ? process.env.UNDERTONE_DEV_BRANCH?.trim() : undefined;
 const devQuitRequest = electronPreview && process.argv.includes(DEV_QUIT_ARGUMENT);
 const isolatedProfile = electronPreview || packagedSmoke;
+
+interface CapturedAudio {
+  wav: Uint8Array | null;
+  durationMs: number;
+}
+
+interface LiveCapture {
+  provider: "openai" | "xai";
+  session: LiveTranscriptionSession;
+  encoder: StreamingPcm16Encoder;
+  text: string;
+  state: "listening" | "finalizing";
+  failureShown: boolean;
+}
+
 if (packagedSmoke) {
   const profilePath = process.env.UNDERTONE_PACKAGE_SMOKE_PROFILE;
   if (profilePath === undefined || !isWithin(profilePath, app.getPath("temp"))) {
@@ -151,10 +171,11 @@ if (!gotLock || devQuitRequest) {
   let shutdownComplete = false;
   let shutdownPromise: Promise<void> | null = null;
   const pendingAudioFinalizations = new Map<number, {
-    resolve: (wav: Uint8Array | null) => void;
+    resolve: (capture: CapturedAudio | null) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
   let nextAudioFinalizationId = 1;
+  let activeAudioCaptureId: number | null = null;
   let shortcutCapture: {
     collector: ShortcutCapture;
     completed: boolean;
@@ -163,6 +184,8 @@ if (!gotLock || devQuitRequest) {
   const insertionMemory = new InsertionMemory();
   const history = new SessionHistory();
   const turnBuffer = new TurnBuffer();
+  const liveTranscriber = new LiveTranscriber();
+  const liveCaptures = new Map<number, LiveCapture>();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
@@ -267,10 +290,18 @@ if (!gotLock || devQuitRequest) {
     const draftWindow = turnDraftWindow;
     if (draftWindow === null || draftWindow.isDestroyed()) return;
     const snapshot = turnBuffer.snapshot();
-    const draft: TurnDraftView | null = snapshot === null ? null : {
-      text: snapshot.text,
-      fragmentCount: snapshot.fragmentCount,
-      charCount: snapshot.charCount,
+    const provisional = [...liveCaptures.values()]
+      .filter((capture) => capture.text.trim().length > 0);
+    const text = [snapshot?.text ?? "", ...provisional.map((capture) => capture.text)]
+      .map((part) => part.trim()).filter(Boolean).join(" ");
+    const liveState = [...liveCaptures.values()].some(({ state }) => state === "listening")
+      ? "listening"
+      : liveCaptures.size > 0 ? "finalizing" : null;
+    const draft: TurnDraftView | null = text.length === 0 ? null : {
+      text,
+      fragmentCount: (snapshot?.fragmentCount ?? 0) + provisional.length,
+      charCount: text.length,
+      liveState,
     };
     if (draft === null) {
       if (draftWindow.isVisible()) draftWindow.hide();
@@ -423,6 +454,28 @@ if (!gotLock || devQuitRequest) {
     });
   };
 
+  const abandonLiveCapture = (captureId: number): void => {
+    const capture = liveCaptures.get(captureId);
+    if (capture === undefined) return;
+    liveCaptures.delete(captureId);
+    capture.session.cancel();
+    publishTurnDraft();
+  };
+
+  const failLiveCapture = (captureId: number, error: Error): void => {
+    const capture = liveCaptures.get(captureId);
+    if (capture === undefined) return;
+    const shouldCancelRecording = activeAudioCaptureId === captureId;
+    liveCaptures.delete(captureId);
+    console.warn(`Live ${capture.provider} transcription failed: ${error.message}`);
+    publishTurnDraft();
+    if (shouldCancelRecording) gestures.cancel();
+    if (!capture.failureShown) {
+      capture.failureShown = true;
+      showFeedback(`Live transcription failed: ${error.message}`, "error");
+    }
+  };
+
   const gestures = new TapStateMachine({
     onStart: () => {
       if (microphoneTest !== null) {
@@ -433,10 +486,48 @@ if (!gotLock || devQuitRequest) {
         showFeedback("Audio service is not ready", "error");
         return false;
       }
+      const captureId = nextAudioFinalizationId++;
+      const streamLive = liveTranscriptionEnabled(config);
+      if (streamLive) {
+        try {
+          const provider = config.provider === "openai" ? "openai" : "xai";
+          const liveCapture: LiveCapture = {
+            provider,
+            session: liveTranscriber.start({
+              provider,
+              apiKey: providerKey(config, provider),
+              language: config.language,
+              vocabulary: provider === "xai" ? liveVocabulary(config) : [],
+            }, {
+              partial: (text) => {
+                const active = liveCaptures.get(captureId);
+                if (active === undefined) return;
+                active.text = text;
+                publishTurnDraft();
+              },
+              failed: (error) => failLiveCapture(captureId, error),
+            }),
+            encoder: new StreamingPcm16Encoder(provider === "openai" ? 24_000 : 16_000),
+            text: "",
+            state: "listening",
+            failureShown: false,
+          };
+          liveCaptures.set(captureId, liveCapture);
+        } catch (error) {
+          showFeedback(
+            `Live transcription failed: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+          return false;
+        }
+      }
+      activeAudioCaptureId = captureId;
       anchorOverlayToCursor();
       audioWindow.webContents.send("audio:command", {
         type: "start",
+        captureId,
         deviceName: config.input_device,
+        stream: streamLive,
       });
       playCue("start");
       setTrayRecording(true);
@@ -444,42 +535,91 @@ if (!gotLock || devQuitRequest) {
       return true;
     },
     onFinish: () => {
+      const captureId = activeAudioCaptureId;
+      activeAudioCaptureId = null;
+      if (captureId === null) return;
       const activePipeline = pipeline;
-      const requestId = nextAudioFinalizationId++;
       const target = captureForegroundTarget();
       const overlayRevision = overlayController.transcribing();
+      const liveCapture = liveCaptures.get(captureId);
+      if (liveCapture !== undefined) {
+        liveCapture.state = "finalizing";
+        publishTurnDraft();
+      }
       if (activePipeline !== null) {
-        let resolveAudio!: (wav: Uint8Array | null) => void;
-        const audio = new Promise<Uint8Array | null>((resolve) => { resolveAudio = resolve; });
+        let resolveAudio!: (capture: CapturedAudio | null) => void;
+        const audio = new Promise<CapturedAudio | null>((resolve) => { resolveAudio = resolve; });
         const timer = setTimeout(() => {
-          const pending = pendingAudioFinalizations.get(requestId);
+          const pending = pendingAudioFinalizations.get(captureId);
           if (pending === undefined) return;
-          pendingAudioFinalizations.delete(requestId);
+          pendingAudioFinalizations.delete(captureId);
           pending.resolve(null);
           showFeedback("Audio finalization timed out", "error");
         }, 5_000);
-        pendingAudioFinalizations.set(requestId, { resolve: resolveAudio, timer });
+        pendingAudioFinalizations.set(captureId, { resolve: resolveAudio, timer });
         const pending = Promise.all([audio, target]).then<PendingDictation | null>(
-          ([wav, capturedTarget]) => wav === null ? null : {
-            wav,
-            target: capturedTarget ?? { window: "0", executable: null },
-            overlayRevision,
+          async ([captured, capturedTarget]) => {
+            if (captured === null) {
+              abandonLiveCapture(captureId);
+              return null;
+            }
+            const activeLive = liveCaptures.get(captureId);
+            let input: DictationInput;
+            if (activeLive !== undefined) {
+              try {
+                activeLive.session.append(activeLive.encoder.finish());
+                const text = await activeLive.session.finish();
+                if (text.length === 0) {
+                  abandonLiveCapture(captureId);
+                  showFeedback("No speech detected", "error");
+                  return null;
+                }
+                activeLive.text = text;
+                console.log(
+                  `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
+                );
+                publishTurnDraft();
+                input = { type: "transcript", text, previewId: captureId };
+              } catch (error) {
+                if (liveCaptures.has(captureId)) {
+                  failLiveCapture(
+                    captureId,
+                    error instanceof Error ? error : new Error(String(error)),
+                  );
+                }
+                return null;
+              }
+            } else if (captured.wav !== null) {
+              input = { type: "audio", wav: captured.wav };
+            } else {
+              return null;
+            }
+            return {
+              input,
+              target: capturedTarget ?? { window: "0", executable: null },
+              overlayRevision,
+            };
           },
         );
         void activePipeline.enqueuePendingDictation(pending).catch((error: unknown) => {
+          console.error("Dictation pipeline failed", error);
           showFeedback(
             error instanceof Error ? error.message : "The dictation pipeline failed",
             "error",
           );
         });
       } else {
+        abandonLiveCapture(captureId);
         showFeedback("Dictation service is not ready", "error");
       }
-      audioWindow?.webContents.send("audio:command", { type: "stop", requestId });
+      audioWindow?.webContents.send("audio:command", { type: "stop", requestId: captureId });
       playCue("stop");
       setTrayRecording(false);
     },
     onDiscard: (reason) => {
+      const captureId = activeAudioCaptureId;
+      activeAudioCaptureId = null;
+      if (captureId !== null) abandonLiveCapture(captureId);
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       playCue("cancel");
       setTrayRecording(false);
@@ -985,14 +1125,27 @@ if (!gotLock || devQuitRequest) {
     pipeline = new DictationPipelineQueue(
       () => config,
       {
-        dictate: async (wav, target, snapshot, overlayRevision) => {
-          await runner.run(wav, target, snapshot, {
-            message: showFeedback,
-            dismiss: () => {
-              overlayController.confirm("Text pasted", 1_000, overlayRevision);
-            },
-          });
-          if (isStackDictationMode(snapshot.dictation_mode)) publishTurnDraft();
+        dictate: async (input, target, snapshot, overlayRevision) => {
+          try {
+            const feedback = {
+              message: showFeedback,
+              dismiss: () => {
+                overlayController.confirm("Text pasted", 1_000, overlayRevision);
+              },
+            };
+            if (input.type === "audio") {
+              await runner.run(input.wav, target, snapshot, feedback);
+            } else {
+              await runner.runTranscript(input.text, target, snapshot, feedback);
+            }
+          } finally {
+            if (input.type === "transcript") {
+              liveCaptures.delete(input.previewId);
+            }
+            if (input.type === "transcript" || isStackDictationMode(snapshot.dictation_mode)) {
+              publishTurnDraft();
+            }
+          }
         },
         repaste: async (text, snapshot) => {
           const generation = insertionMemory.captureGeneration();
@@ -1048,6 +1201,8 @@ if (!gotLock || devQuitRequest) {
       pending.resolve(null);
     }
     pendingAudioFinalizations.clear();
+    for (const capture of liveCaptures.values()) capture.session.cancel();
+    liveCaptures.clear();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -1135,6 +1290,8 @@ if (!gotLock || devQuitRequest) {
       const previousScratch = config.scratch_hotkey;
       const previousDiscard = config.discard_hotkey;
       const previousMode = config.dictation_mode;
+      const previousProvider = config.provider;
+      const previousLiveTranscription = config.live_transcription;
       if (isRecord(value) && value.startWithWindows !== undefined) {
         if (typeof value.startWithWindows !== "boolean") {
           throw new Error("startWithWindows must be boolean");
@@ -1156,6 +1313,12 @@ if (!gotLock || devQuitRequest) {
         });
       } else {
         config = next;
+      }
+      if ((previousMode !== config.dictation_mode
+        || previousProvider !== config.provider
+        || previousLiveTranscription !== config.live_transcription)
+        && gestures.state !== GestureState.idle) {
+        gestures.cancel();
       }
       if (config.hotkey !== previousHotkey
         || config.repaste_hotkey !== previousRepaste
@@ -1515,6 +1678,20 @@ if (!gotLock || devQuitRequest) {
       if (typeof payload.rms === "number" && Number.isFinite(payload.rms)) {
         sendOverlayLevel(Math.max(0, Math.min(1, payload.rms)));
       }
+    } else if (payload.type === "chunk") {
+      const captureId = typeof payload.captureId === "number" ? payload.captureId : -1;
+      const live = liveCaptures.get(captureId);
+      const samples = toFloat32Array(payload.samples);
+      const sampleRate = typeof payload.sampleRate === "number" ? payload.sampleRate : 0;
+      if (live === undefined || samples === null) return;
+      try {
+        live.session.append(live.encoder.append(samples, sampleRate));
+      } catch (error) {
+        failLiveCapture(
+          captureId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     } else if (payload.type === "meter") {
       const activeTest = microphoneTest;
       if (activeTest === null || payload.requestId !== activeTest.requestId) return;
@@ -1535,12 +1712,13 @@ if (!gotLock || devQuitRequest) {
       clearTimeout(pending.timer);
       const wav = toByteArray(payload.wav);
       const durationMs = typeof payload.durationMs === "number" ? payload.durationMs : 0;
-      if (wav === null || wav.byteLength <= 44 || durationMs < 300) {
+      const streamed = liveCaptures.has(requestId);
+      if ((!streamed && (wav === null || wav.byteLength <= 44)) || durationMs < 300) {
         pending.resolve(null);
         showFeedback("Too short — hold the key while you speak", "warning");
         return;
       }
-      pending.resolve(wav);
+      pending.resolve({ wav: streamed ? null : wav, durationMs });
     } else if (payload.type === "error") {
       const requestId = typeof payload.requestId === "number" ? payload.requestId : -1;
       const pending = pendingAudioFinalizations.get(requestId);
@@ -1750,6 +1928,35 @@ function toByteArray(value: unknown): Uint8Array | null {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
   }
   return null;
+}
+
+function toFloat32Array(value: unknown): Float32Array | null {
+  if (value instanceof ArrayBuffer
+    && value.byteLength % Float32Array.BYTES_PER_ELEMENT === 0) {
+    return new Float32Array(value.slice(0));
+  }
+  if (ArrayBuffer.isView(value) && value.byteLength % Float32Array.BYTES_PER_ELEMENT === 0) {
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+    return new Float32Array(bytes.buffer);
+  }
+  return null;
+}
+
+function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
+  return config.live_transcription
+    && config.dictation_mode === "stack"
+    && (config.provider === "openai" || config.provider === "xai");
+}
+
+function liveVocabulary(config: UndertoneConfig): unknown[] {
+  if (!config.stt_vocab_hints) return [];
+  const values: unknown[] = Array.isArray(config.vocabulary) ? [...config.vocabulary] : [];
+  if (isRecord(config.corrections)) {
+    for (const correction of Object.values(config.corrections)) {
+      if (typeof correction === "string" && !values.includes(correction)) values.push(correction);
+    }
+  }
+  return values;
 }
 
 function stringArray(value: unknown): string[] {

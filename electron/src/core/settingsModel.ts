@@ -37,6 +37,7 @@ const PATCH_FIELDS = new Set([
   "scratchHotkey",
   "discardHotkey",
   "dictationMode",
+  "liveTranscription",
   "stackCleanupStrategy",
   "inputDevice",
   "provider",
@@ -91,6 +92,7 @@ export function settingsSnapshot(
     discardHotkey: config.discard_hotkey,
     shortcutWarning: shortcutWarning(config),
     dictationMode: config.dictation_mode === "instant" ? "instant" : "stack",
+    liveTranscription: config.live_transcription,
     stackCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
     microphones: [...microphones],
@@ -201,6 +203,9 @@ export function applySettingsPatch(
       throw new Error("dictationMode must be stack or instant");
     }
     next.dictation_mode = value.dictationMode;
+  }
+  if (value.liveTranscription !== undefined) {
+    next.live_transcription = booleanField(value.liveTranscription, "liveTranscription");
   }
   if (value.stackCleanupStrategy !== undefined) {
     if (value.stackCleanupStrategy !== "live-full"

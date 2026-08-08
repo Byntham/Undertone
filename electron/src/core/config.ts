@@ -32,6 +32,7 @@ export interface UndertoneConfig extends ConfigRecord {
   scratch_hotkey: string;
   discard_hotkey: string;
   dictation_mode: DictationMode;
+  live_transcription: boolean;
   stack_cleanup_strategy: StackCleanupStrategy;
   local_loaded: boolean;
   local_idle_minutes: number;
@@ -67,6 +68,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   scratch_hotkey: "left ctrl+left alt+backspace",
   discard_hotkey: "ctrl+alt+shift+backspace",
   dictation_mode: "stack",
+  live_transcription: false,
   stack_cleanup_strategy: "live-full",
   local_loaded: false,
   local_idle_minutes: 0,
@@ -106,6 +108,9 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   }
   if (config.dictation_mode !== "stack" && config.dictation_mode !== "instant") {
     config.dictation_mode = DEFAULT_CONFIG.dictation_mode;
+  }
+  if (typeof config.live_transcription !== "boolean") {
+    config.live_transcription = DEFAULT_CONFIG.live_transcription;
   }
   if (config.stack_cleanup_strategy !== "live-full"
     && config.stack_cleanup_strategy !== "commit-full") {

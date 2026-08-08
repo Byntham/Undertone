@@ -6,7 +6,7 @@ import {
 } from "./config";
 import { InsertionMemory } from "./textPreparation";
 import type { TextPreparationResult } from "./textPreparation";
-import { applyCorrections } from "./textproc";
+import { applyCorrections, finalize } from "./textproc";
 import { SessionHistory, type DictationTarget } from "./pipelineQueue";
 import { isStackDictationMode, type TurnBuffer } from "./turnBuffer";
 
@@ -74,6 +74,15 @@ export class DictationJobRunner {
       feedback.message(message, "error");
       return;
     }
+    await this.runTranscript(transcript, target, config, feedback);
+  }
+
+  async runTranscript(
+    transcript: string,
+    target: DictationTarget | null,
+    config: UndertoneConfig,
+    feedback: DictationFeedback = this.dependencies.feedback,
+  ): Promise<void> {
     if (transcript.length === 0) {
       feedback.message("No speech detected", "error");
       return;
@@ -82,7 +91,21 @@ export class DictationJobRunner {
     const corrections = isStringMap(config.corrections) ? config.corrections : {};
     const raw = applyCorrections(transcript, corrections);
     if (isStackDictationMode(config.dictation_mode)) {
-      const stacked = await this.appendToTurn(transcript, config);
+      let stacked: Awaited<ReturnType<DictationJobRunner["appendToTurn"]>>;
+      try {
+        stacked = await this.appendToTurn(transcript, config);
+      } catch {
+        const cleanupStrategy = this.dependencies.turnBuffer.activeCleanupStrategy()
+          ?? config.stack_cleanup_strategy;
+        const rawTurn = this.dependencies.turnBuffer.rawText(transcript) ?? transcript;
+        const text = finalize(rawTurn, null, corrections, {
+          smart: Boolean(config.smart_formatting),
+        });
+        stacked = {
+          ...this.dependencies.turnBuffer.append(transcript, text, cleanupStrategy),
+          cleanupFailed: true,
+        };
+      }
       if (stacked.cleanupFailed) {
         feedback.message("AI cleanup failed — used basic formatting", "warning");
       } else {

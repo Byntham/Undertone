@@ -13,12 +13,15 @@ declare global {
 }
 
 interface CaptureSession {
+  captureId: number;
+  streamLive: boolean;
   context: AudioContext;
   stream: MediaStream;
   source: MediaStreamAudioSourceNode;
   worklet: AudioWorkletNode;
   sink: GainNode;
   chunks: Float32Array[];
+  streamChunks: Float32Array[];
   startedAt: number;
 }
 
@@ -27,7 +30,9 @@ let operations = Promise.resolve();
 
 window.undertoneAudio.onCommand((command) => {
   operations = operations.then(async () => {
-    if (command.type === "start") await startCapture(command.deviceName ?? "");
+    if (command.type === "start") {
+      await startCapture(command.deviceName ?? "", command.captureId, command.stream);
+    }
     else if (command.type === "meter") {
       try {
         const peak = await measureMicrophone(command.deviceName ?? "");
@@ -75,7 +80,11 @@ async function playCue(name: "start" | "stop" | "lock" | "cancel"): Promise<void
 void reportDevices("ready");
 navigator.mediaDevices.addEventListener("devicechange", () => { void reportDevices("devices"); });
 
-async function startCapture(deviceName: string): Promise<void> {
+async function startCapture(
+  deviceName: string,
+  captureId: number,
+  streamLive: boolean,
+): Promise<void> {
   if (session !== null) return;
   const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
   const selected = devices.find((device) => (
@@ -98,12 +107,24 @@ async function startCapture(deviceName: string): Promise<void> {
   const sink = context.createGain();
   sink.gain.value = 0;
   const chunks: Float32Array[] = [];
+  const streamChunks: Float32Array[] = [];
+  let streamSampleCount = 0;
   let levelSquareSum = 0;
   let levelSampleCount = 0;
   const levelWindowSamples = Math.max(1, Math.round(context.sampleRate / 20));
   worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
     const chunk = event.data;
-    chunks.push(chunk);
+    if (streamLive) {
+      streamChunks.push(chunk);
+      streamSampleCount += chunk.length;
+      if (streamSampleCount >= context.sampleRate / 10) {
+        emitLiveChunk(captureId, streamChunks, context.sampleRate);
+        streamChunks.length = 0;
+        streamSampleCount = 0;
+      }
+    } else {
+      chunks.push(chunk);
+    }
     for (const sample of chunk) levelSquareSum += sample * sample;
     levelSampleCount += chunk.length;
     if (levelSampleCount >= levelWindowSamples) {
@@ -117,7 +138,18 @@ async function startCapture(deviceName: string): Promise<void> {
   };
   source.connect(worklet).connect(sink).connect(context.destination);
   await context.resume();
-  session = { context, stream, source, worklet, sink, chunks, startedAt: performance.now() };
+  session = {
+    captureId,
+    streamLive,
+    context,
+    stream,
+    source,
+    worklet,
+    sink,
+    chunks,
+    streamChunks,
+    startedAt: performance.now(),
+  };
   await reportDevices("devices");
 }
 
@@ -175,9 +207,31 @@ async function stopCapture(discard: boolean, requestId?: number): Promise<void> 
 
   if (discard) return;
   const durationMs = Math.round(performance.now() - active.startedAt);
+  if (active.streamLive) {
+    emitLiveChunk(active.captureId, active.streamChunks, active.context.sampleRate);
+    if (requestId !== undefined) {
+      window.undertoneAudio.emit({ type: "stopped", requestId, durationMs });
+    }
+    return;
+  }
   const sourceSamples = joinFloat32(active.chunks);
   const samples = resampleLinear(sourceSamples, active.context.sampleRate, 16_000);
   const wav = encodePcm16Wav(samples, 16_000);
   if (requestId === undefined) return;
   window.undertoneAudio.emit({ type: "stopped", requestId, wav, durationMs });
+}
+
+function emitLiveChunk(
+  captureId: number,
+  chunks: readonly Float32Array[],
+  sampleRate: number,
+): void {
+  if (chunks.length === 0) return;
+  const samples = joinFloat32(chunks);
+  window.undertoneAudio.emit({
+    type: "chunk",
+    captureId,
+    samples: samples.buffer as ArrayBuffer,
+    sampleRate,
+  });
 }

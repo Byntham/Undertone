@@ -67,6 +67,37 @@ describe("dictation job runner", () => {
     expect(state.dismissed).toBe(0);
   });
 
+  it("accepts a completed live transcript without invoking batch transcription", async () => {
+    const { dependencies, state } = harness();
+    dependencies.transcriber.transcribe = async () => {
+      throw new Error("batch transcription must not run");
+    };
+    await new DictationJobRunner(dependencies).runTranscript(
+      "live words.",
+      null,
+      normalizeConfig({ dictation_mode: "stack" }),
+    );
+    expect(dependencies.turnBuffer.rawText()).toBe("live words.");
+    expect(state.preparations).toEqual([
+      { text: "live words.", aiCleanup: true, context: "isolated" },
+    ]);
+    expect(dependencies.history.snapshot()).toEqual([]);
+  });
+
+  it("keeps a live fragment when stack post-processing throws", async () => {
+    const { dependencies, state } = harness();
+    dependencies.prepareText = async () => {
+      throw new Error("cleanup path failed");
+    };
+    await new DictationJobRunner(dependencies).runTranscript(
+      "do not lose this",
+      null,
+      normalizeConfig({ dictation_mode: "stack" }),
+    );
+    expect(dependencies.turnBuffer.peekText()).toBe("do not lose this");
+    expect(state.messages.at(-1)?.kind).toBe("warning");
+  });
+
   it("uses a deterministic live preview and cleans the whole turn on commit", async () => {
     const { dependencies, state } = harness();
     const runner = new DictationJobRunner(dependencies);

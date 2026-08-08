@@ -13,10 +13,11 @@ describe("dictation pipeline queue", () => {
     let active = 0;
     let maximumActive = 0;
     const handlers: PipelineHandlers = {
-      async dictate(wav, target) {
+      async dictate(input, target) {
         active += 1;
         maximumActive = Math.max(maximumActive, active);
-        events.push(`${target === null ? "retry" : "dictate"}:${wav[0]}`);
+        const value = input.type === "audio" ? input.wav[0] : input.text;
+        events.push(`${target === null ? "retry" : "dictate"}:${value}`);
         await tick();
         active -= 1;
       },
@@ -122,12 +123,12 @@ describe("dictation pipeline queue", () => {
   it("reserves queue order while a recording finishes", async () => {
     const events: string[] = [];
     let finishRecording!: (value: {
-      wav: Uint8Array;
+      input: { type: "audio"; wav: Uint8Array };
       target: { window: string; executable: string | null };
       overlayRevision: number | undefined;
     }) => void;
     const recording = new Promise<{
-      wav: Uint8Array;
+      input: { type: "audio"; wav: Uint8Array };
       target: { window: string; executable: string | null };
       overlayRevision: number | undefined;
     }>((resolve) => { finishRecording = resolve; });
@@ -147,7 +148,7 @@ describe("dictation pipeline queue", () => {
     await tick();
     expect(events).toEqual([]);
     finishRecording({
-      wav: Uint8Array.of(1),
+      input: { type: "audio", wav: Uint8Array.of(1) },
       target: { window: "42", executable: "editor.exe" },
       overlayRevision: undefined,
     });

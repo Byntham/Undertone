@@ -35,9 +35,12 @@ discard.addEventListener("click", () => { window.undertoneTurnDraft?.discard(); 
 snap.addEventListener("click", () => { window.undertoneTurnDraft?.snap(); });
 
 window.undertoneTurnDraft?.onView((view) => {
-  draftMeta.textContent = view.fragmentCount === 1
+  const count = view.fragmentCount === 1
     ? "Open turn · 1 fragment"
     : `Open turn · ${view.fragmentCount} fragments`;
+  draftMeta.textContent = view.liveState === "listening"
+    ? `${count} · Live`
+    : view.liveState === "finalizing" ? `${count} · Finalizing` : count;
   draftText.textContent = view.text;
   fitTextViewport();
 });

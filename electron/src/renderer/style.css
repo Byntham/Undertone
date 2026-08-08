@@ -242,6 +242,7 @@ input::placeholder { color: var(--faint); }
 }
 .toggle[data-checked="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb), .3); }
 .toggle[data-checked="true"] span { left: 21px; background: var(--accent); }
+.toggle:disabled { opacity: .45; cursor: default; }
 
 .smallButton {
   flex: 0 0 auto;
