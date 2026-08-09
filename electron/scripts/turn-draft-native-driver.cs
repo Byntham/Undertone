@@ -90,6 +90,20 @@ internal static class TurnDraftNativeDriver
             Console.Error.WriteLine("FAIL window-not-visible");
             return 1;
         }
+        Rect initial = WaitForStableBounds(window, 1000);
+        double initialScale = GetDpiForWindow(window) / 96.0;
+        if (initial.Width < (int)Math.Round(300 * initialScale)
+            || initial.Height < (int)Math.Round(68 * initialScale))
+        {
+            Console.Error.WriteLine(
+                "FAIL initial-text-bounds bounds={0},{1},{2},{3} scale={4}",
+                initial.Left,
+                initial.Top,
+                initial.Width,
+                initial.Height,
+                initialScale);
+            return 1;
+        }
 
         for (int cycle = 1; cycle <= cycles; cycle++)
         {
@@ -100,8 +114,7 @@ internal static class TurnDraftNativeDriver
             if (!RequireHit(window, headerX, headerY, cycle, "drag")) return 1;
             if (!RequireHitTest(window, headerX, headerY, HitCaption, cycle, "drag")) return 1;
             Drag(headerX, headerY, headerX + 30, headerY + 18);
-            Thread.Sleep(100);
-            Rect moved = Bounds(window);
+            Rect moved = WaitForStableBounds(window, 1000);
             if (moved.Left == before.Left && moved.Top == before.Top)
             {
                 return Fail(cycle, "drag", before, moved);
@@ -113,8 +126,7 @@ internal static class TurnDraftNativeDriver
             if (!RequireHit(window, snapX, snapY, cycle, "snap")) return 1;
             if (!RequireHitTest(window, snapX, snapY, HitClient, cycle, "snap")) return 1;
             Click(snapX, snapY);
-            Thread.Sleep(100);
-            Rect snapped = Bounds(window);
+            Rect snapped = WaitForStableBounds(window, 1000);
             if (snapped.Left == moved.Left && snapped.Top == moved.Top)
             {
                 return Fail(cycle, "snap", moved, snapped);
@@ -138,8 +150,7 @@ internal static class TurnDraftNativeDriver
             int edgeX = resizeBefore.Right - 2;
             int edgeY = resizeBefore.Top + resizeBefore.Height / 2;
             Drag(edgeX, edgeY, edgeX + 24, edgeY);
-            Thread.Sleep(100);
-            Rect resized = Bounds(window);
+            Rect resized = WaitForStableBounds(window, 1000);
             if (resized.Width <= resizeBefore.Width)
             {
                 return Fail(cycle, "resize", resizeBefore, resized);
@@ -148,8 +159,7 @@ internal static class TurnDraftNativeDriver
             int restoreEdgeX = resized.Right - 2;
             int restoreEdgeY = resized.Top + resized.Height / 2;
             Drag(restoreEdgeX, restoreEdgeY, restoreEdgeX - 24, restoreEdgeY);
-            Thread.Sleep(100);
-            Rect restored = Bounds(window);
+            Rect restored = WaitForStableBounds(window, 1000);
             if (restored.Width >= resized.Width)
             {
                 return Fail(cycle, "resize-restore", resized, restored);
@@ -158,8 +168,7 @@ internal static class TurnDraftNativeDriver
             int bottomX = restored.Left + restored.Width / 2;
             int bottomY = restored.Bottom - 2;
             Drag(bottomX, bottomY, bottomX, bottomY + 24);
-            Thread.Sleep(100);
-            Rect taller = Bounds(window);
+            Rect taller = WaitForStableBounds(window, 1000);
             if (taller.Height <= restored.Height)
             {
                 return Fail(cycle, "resize-height", restored, taller);
@@ -168,8 +177,7 @@ internal static class TurnDraftNativeDriver
             int restoreBottomX = taller.Left + taller.Width / 2;
             int restoreBottomY = taller.Bottom - 2;
             Drag(restoreBottomX, restoreBottomY, restoreBottomX, restoreBottomY - 24);
-            Thread.Sleep(100);
-            Rect heightRestored = Bounds(window);
+            Rect heightRestored = WaitForStableBounds(window, 1000);
             if (heightRestored.Height >= taller.Height)
             {
                 return Fail(cycle, "resize-height-restore", taller, heightRestored);
@@ -233,6 +241,25 @@ internal static class TurnDraftNativeDriver
             waited += 10;
         }
         return false;
+    }
+
+    private static Rect WaitForStableBounds(IntPtr window, int timeoutMs)
+    {
+        Rect previous = Bounds(window);
+        int stableSamples = 0;
+        for (int waited = 0; waited <= timeoutMs; waited += 20)
+        {
+            Thread.Sleep(20);
+            Rect current = Bounds(window);
+            bool unchanged = current.Left == previous.Left
+                && current.Top == previous.Top
+                && current.Right == previous.Right
+                && current.Bottom == previous.Bottom;
+            stableSamples = unchanged ? stableSamples + 1 : 0;
+            if (stableSamples >= 3) return current;
+            previous = current;
+        }
+        return previous;
     }
 
     private static bool RequireHit(IntPtr expected, int x, int y, int cycle, string action)

@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Undertone preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body,
+    #stage {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body { background: #111722; }
+
+    #stage {
+      position: relative;
+      isolation: isolate;
+      background:
+        radial-gradient(900px 500px at 76% 18%, rgba(65, 83, 115, .18), transparent 70%),
+        linear-gradient(145deg, #121923 0%, #0d121a 100%);
+      transition: background-color 240ms ease, filter 240ms ease;
+    }
+
+    #stage::before,
+    #stage::after {
+      position: absolute;
+      z-index: -1;
+      content: "";
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 240ms ease;
+    }
+
+    #stage.light {
+      background:
+        radial-gradient(800px 460px at 72% 12%, rgba(255, 255, 255, .9), transparent 72%),
+        linear-gradient(145deg, #e8ecf1, #cfd7e1);
+    }
+
+    #stage.busy {
+      background:
+        radial-gradient(700px 440px at 70% 10%, rgba(51, 72, 106, .34), transparent 70%),
+        linear-gradient(145deg, #101721, #090e15);
+    }
+
+    #stage.busy::before {
+      inset: 8% 9% 28% 8%;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 14px;
+      opacity: 1;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.055) 0 16%, transparent 16% 100%),
+        linear-gradient(rgba(255,255,255,.045) 0 42px, transparent 42px),
+        repeating-linear-gradient(0deg, transparent 0 26px, rgba(255,255,255,.025) 26px 27px),
+        #121b27;
+      box-shadow: 0 25px 80px rgba(0,0,0,.28);
+    }
+
+    #stage.busy::after {
+      right: 5%;
+      bottom: 19%;
+      width: 25%;
+      height: 36%;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      opacity: 1;
+      background:
+        repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 24px),
+        linear-gradient(145deg, #182333, #101722);
+      box-shadow: 0 20px 65px rgba(0,0,0,.3);
+    }
+
+    .island {
+      position: absolute;
+      left: 50%;
+      bottom: 88px;
+      width: 54px;
+      height: 36px;
+      translate: -50% 0;
+      overflow: hidden;
+      color: rgba(248, 250, 255, .96);
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 999px;
+      outline: 1px solid rgba(0,0,0,.24);
+      outline-offset: -2px;
+      background:
+        radial-gradient(120% 90% at 50% 115%, rgba(105, 113, 255, .24), transparent 58%),
+        linear-gradient(155deg, rgba(34, 40, 52, .97), rgba(12, 16, 24, .98));
+      box-shadow:
+        0 16px 42px rgba(0,0,0,.42),
+        inset 0 1px 0 rgba(255,255,255,.13),
+        inset 0 -1px 0 rgba(0,0,0,.32);
+      backdrop-filter: blur(24px) saturate(135%);
+      -webkit-backdrop-filter: blur(24px) saturate(135%);
+      transform-origin: 50% 100%;
+      transition:
+        width 540ms cubic-bezier(.2,.84,.2,1),
+        height 540ms cubic-bezier(.2,.84,.2,1),
+        border-radius 480ms cubic-bezier(.2,.84,.2,1),
+        box-shadow 220ms ease,
+        border-color 220ms ease,
+        transform 240ms cubic-bezier(.2,.8,.2,1),
+        opacity 180ms ease;
+      -webkit-app-region: drag;
+    }
+
+    .island::before {
+      position: absolute;
+      inset: 0;
+      content: "";
+      pointer-events: none;
+      background:
+        radial-gradient(58px 22px at 50% 100%, rgba(134, 143, 255, .2), transparent 72%),
+        linear-gradient(105deg, transparent 18%, rgba(255,255,255,.055) 43%, transparent 63%);
+      opacity: .88;
+    }
+
+    .island::after {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      width: 54px;
+      height: 19px;
+      translate: -50% 0;
+      content: "";
+      pointer-events: none;
+      border-radius: 13px 13px 0 0;
+      background: radial-gradient(85% 100% at 50% 100%, rgba(112, 122, 255, .17), transparent 75%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
+      opacity: 0;
+      transition: opacity 260ms ease 180ms;
+    }
+
+    .island.settled {
+      width: min(540px, calc(100% - 32px));
+      height: 96px;
+      border-radius: 22px 22px 18px 18px;
+    }
+
+    .island.settled::after { opacity: 1; }
+
+    .island.settled:hover {
+      border-color: rgba(255,255,255,.23);
+      box-shadow:
+        0 19px 48px rgba(0,0,0,.48),
+        inset 0 1px 0 rgba(255,255,255,.16),
+        inset 0 -1px 0 rgba(0,0,0,.32);
+    }
+
+    .drag-mark {
+      position: absolute;
+      z-index: 4;
+      top: 7px;
+      left: 50%;
+      width: 26px;
+      height: 3px;
+      translate: -50% 0;
+      border-radius: 99px;
+      background: rgba(255,255,255,.17);
+      opacity: 0;
+      transition: opacity 260ms ease 180ms;
+    }
+
+    .settled .drag-mark { opacity: .72; }
+
+    .signal {
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: 7px;
+      display: flex;
+      width: 32px;
+      height: 22px;
+      translate: -50% 0;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      transition: bottom 420ms cubic-bezier(.2,.84,.2,1), opacity 200ms ease;
+    }
+
+    .signal i {
+      display: block;
+      width: 2px;
+      height: 4px;
+      border-radius: 3px;
+      background: #aeb5ff;
+      box-shadow: 0 0 7px rgba(126, 137, 255, .46);
+      transform-origin: center;
+    }
+
+    .recording .signal i { animation: voice 630ms ease-in-out infinite alternate; }
+    .recording .signal i:nth-child(2) { animation-delay: -420ms; }
+    .recording .signal i:nth-child(3) { animation-delay: -170ms; }
+    .recording .signal i:nth-child(4) { animation-delay: -510ms; }
+    .recording .signal i:nth-child(5) { animation-delay: -290ms; }
+
+    @keyframes voice {
+      0% { height: 4px; opacity: .58; }
+      45% { height: 17px; opacity: 1; }
+      100% { height: 8px; opacity: .78; }
+    }
+
+    .transcribing .signal i {
+      height: 4px;
+      animation: process 820ms ease-in-out infinite;
+    }
+    .transcribing .signal i:nth-child(2) { animation-delay: 90ms; }
+    .transcribing .signal i:nth-child(3) { animation-delay: 180ms; }
+    .transcribing .signal i:nth-child(4) { animation-delay: 270ms; }
+    .transcribing .signal i:nth-child(5) { animation-delay: 360ms; }
+
+    @keyframes process {
+      0%, 70%, 100% { translate: 0 0; opacity: .38; }
+      35% { translate: 0 -4px; opacity: 1; }
+    }
+
+    .settled .signal {
+      bottom: -1px;
+      height: 15px;
+      opacity: .55;
+    }
+
+    .settled .signal i {
+      height: 2px;
+      animation: none;
+      background: rgba(180,186,255,.72);
+      box-shadow: none;
+    }
+    .settled .signal i:nth-child(3) { height: 3px; }
+
+    .transcript {
+      position: absolute;
+      z-index: 2;
+      inset: 22px 58px 20px 20px;
+      margin: 0;
+      overflow: hidden;
+      color: rgba(249, 250, 253, .96);
+      font-size: 14px;
+      font-weight: 430;
+      line-height: 1.43;
+      letter-spacing: -.006em;
+      opacity: 0;
+      transform: translateY(9px);
+      transition: opacity 220ms ease 170ms, transform 360ms cubic-bezier(.2,.8,.2,1) 120ms;
+    }
+
+    .settled .transcript {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .controls {
+      position: absolute;
+      z-index: 6;
+      top: 50%;
+      right: 12px;
+      display: flex;
+      translate: 4px -50%;
+      flex-direction: column;
+      gap: 5px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 150ms ease, translate 180ms ease;
+      -webkit-app-region: no-drag;
+    }
+
+    .settled:hover .controls {
+      translate: 0 -50%;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .controls button {
+      display: grid;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      place-items: center;
+      color: rgba(235,238,246,.73);
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 9px;
+      background: rgba(255,255,255,.055);
+      cursor: pointer;
+    }
+
+    .controls button:hover {
+      color: #fff;
+      border-color: rgba(255,255,255,.17);
+      background: rgba(255,255,255,.11);
+    }
+
+    .controls button:last-child:hover {
+      color: #ffb5bb;
+      background: rgba(255,86,101,.13);
+    }
+
+    .controls svg { width: 13px; height: 13px; }
+
+    .island.discarding {
+      transform: scale(.965);
+      opacity: .34;
+    }
+
+    .island.snapped { transform: translateY(-2px); }
+
+    @media (max-width: 420px) {
+      .transcript { right: 52px; font-size: 13px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+        transition-delay: 0ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main id="stage" class="dark">
+    <section id="island" class="island settled first" aria-live="polite">
+      <span class="drag-mark" aria-hidden="true"></span>
+      <span class="signal" aria-hidden="true">
+        <i></i><i></i><i></i><i></i><i></i>
+      </span>
+      <p id="transcript" class="transcript">This is what the turn window looks like right now.</p>
+      <div id="controls" class="controls">
+        <button id="snap" type="button" tabindex="-1" aria-label="Snap turn window">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M5.2 2.5h5.6M6 2.5l.5 4-2 2h7l-2-2 .5-4M8 8.5v5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button id="discard" type="button" tabindex="-1" aria-label="Discard open turn">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 5.2h7m-5.8 0 .45 7h3.7l.45-7M6.5 3.4h3M7 7.2v3m2-3v3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const stage = document.getElementById("stage");
+      const island = document.getElementById("island");
+      const transcriptNode = document.getElementById("transcript");
+      const controls = document.getElementById("controls");
+      const snap = document.getElementById("snap");
+      const discard = document.getElementById("discard");
+      const phases = new Set(["recording", "transcribing", "first", "append"]);
+      const scenes = new Set(["dark", "light", "busy"]);
+      const copy = {
+        first: "This is what the turn window looks like right now.",
+        append: "This is what the turn window looks like right now. The voice indicator and open turn now feel like one continuous surface."
+      };
+      let phase = "first";
+      let scene = "dark";
+      let replayTimers = [];
+      let replaying = false;
+
+      function cancelReplay() {
+        replayTimers.forEach(clearTimeout);
+        replayTimers = [];
+        replaying = false;
+      }
+
+      function applyPhase(nextPhase, cancel = true) {
+        if (!phases.has(nextPhase)) return;
+        if (cancel) cancelReplay();
+        phase = nextPhase;
+        island.classList.remove("recording", "transcribing", "first", "append", "settled", "discarding", "snapped");
+        island.classList.add(nextPhase);
+        if (nextPhase === "first" || nextPhase === "append") {
+          island.classList.add("settled");
+          transcriptNode.textContent = copy[nextPhase];
+        } else {
+          transcriptNode.textContent = "";
+        }
+      }
+
+      function setPhase(nextPhase) { applyPhase(nextPhase, true); }
+
+      function setScene(nextScene) {
+        if (!scenes.has(nextScene)) return;
+        scene = nextScene;
+        stage.classList.remove("dark", "light", "busy");
+        stage.classList.add(nextScene);
+      }
+
+      function replay() {
+        cancelReplay();
+        replaying = true;
+        applyPhase("recording", false);
+        replayTimers.push(setTimeout(() => applyPhase("transcribing", false), 1400));
+        replayTimers.push(setTimeout(() => applyPhase("first", false), 2250));
+        replayTimers.push(setTimeout(() => {
+          applyPhase("append", false);
+          replayTimers = [];
+          replaying = false;
+        }, 3600));
+      }
+
+      function inspect() {
+        const settled = phase === "first" || phase === "append";
+        const targetWidth = settled ? Math.min(540, Math.max(0, stage.clientWidth - 32)) : 54;
+        return {
+          concept: "Rising Island",
+          phase,
+          scene,
+          islandWidth: targetWidth,
+          islandHeight: settled ? 96 : 36,
+          controlsOpacity: Number.parseFloat(getComputedStyle(controls).opacity),
+          transcript: transcriptNode.textContent,
+          replaying
+        };
+      }
+
+      snap.addEventListener("click", () => {
+        island.classList.add("snapped");
+        setTimeout(() => island.classList.remove("snapped"), 260);
+      });
+
+      discard.addEventListener("click", () => {
+        island.classList.add("discarding");
+        setTimeout(() => island.classList.remove("discarding"), 420);
+      });
+
+      const params = new URLSearchParams(location.search);
+      setScene(scenes.has(params.get("scene")) ? params.get("scene") : "dark");
+      applyPhase(phases.has(params.get("phase")) ? params.get("phase") : "first", false);
+
+      window.undertonePreview = { setPhase, setScene, replay, inspect };
+    });
+  </script>
+</body>
+</html>

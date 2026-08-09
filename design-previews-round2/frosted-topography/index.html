@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Undertone — Frosted Topography</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+        --accent: 146 213 238;
+        --warm: 231 187 157;
+      }
+
+      * { box-sizing: border-box; }
+
+      html,
+      body {
+        width: 100%;
+        min-width: 320px;
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        overflow-x: hidden;
+        background: #090b0f;
+        color: #f3f6f8;
+      }
+
+      button { font: inherit; }
+
+      .page {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 42px;
+      }
+
+      .intro {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 18px;
+      }
+
+      .intro-copy { max-width: 600px; }
+
+      .eyebrow {
+        margin: 0 0 7px;
+        color: rgb(var(--accent) / 0.82);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(27px, 4vw, 40px);
+        font-weight: 620;
+        letter-spacing: -0.035em;
+      }
+
+      .lede {
+        max-width: 570px;
+        margin: 8px 0 0;
+        color: rgb(225 232 237 / 0.64);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .size-note {
+        flex: 0 0 auto;
+        padding-bottom: 3px;
+        color: rgb(218 227 232 / 0.45);
+        font: 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+
+      .demo {
+        overflow: hidden;
+        border: 1px solid rgb(255 255 255 / 0.09);
+        border-radius: 22px;
+        background: #10141a;
+        box-shadow: 0 28px 90px rgb(0 0 0 / 0.38);
+      }
+
+      .toolbar {
+        position: relative;
+        z-index: 40;
+        display: flex;
+        min-height: 58px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 9px 11px 9px 17px;
+        border-bottom: 1px solid rgb(255 255 255 / 0.07);
+        background: rgb(19 23 29 / 0.98);
+      }
+
+      .toolbar-label {
+        color: rgb(231 237 241 / 0.63);
+        font-size: 12px;
+      }
+
+      .preview-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid rgb(255 255 255 / 0.07);
+        border-radius: 12px;
+        background: rgb(0 0 0 / 0.16);
+      }
+
+      .preview-button {
+        min-height: 30px;
+        padding: 0 11px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: rgb(224 231 236 / 0.58);
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .preview-button:hover,
+      .preview-button:focus-visible {
+        color: #f5f8fa;
+        background: rgb(255 255 255 / 0.06);
+      }
+
+      .preview-button[aria-pressed="true"] {
+        color: rgb(238 248 251 / 0.95);
+        background: rgb(var(--accent) / 0.14);
+        box-shadow: inset 0 0 0 1px rgb(var(--accent) / 0.11);
+      }
+
+      .desktop {
+        position: relative;
+        min-height: 570px;
+        overflow: hidden;
+        isolation: isolate;
+        background:
+          radial-gradient(ellipse at 18% 7%, rgb(88 117 143 / 0.28), transparent 42%),
+          radial-gradient(ellipse at 88% 86%, rgb(100 64 99 / 0.18), transparent 44%),
+          linear-gradient(137deg, #24313d 0%, #151b24 43%, #19171e 100%);
+      }
+
+      .desktop::before {
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        content: "";
+        background:
+          linear-gradient(115deg, transparent 0 41%, rgb(255 255 255 / 0.025) 41.1% 41.2%, transparent 41.3%),
+          radial-gradient(circle at 68% 25%, rgb(206 220 230 / 0.07), transparent 28%);
+      }
+
+      .work-window {
+        position: absolute;
+        overflow: hidden;
+        border: 1px solid rgb(255 255 255 / 0.09);
+        border-radius: 12px;
+        background: rgb(13 18 24 / 0.66);
+        box-shadow: 0 25px 60px rgb(1 4 9 / 0.26);
+        backdrop-filter: blur(14px);
+      }
+
+      .work-window.primary {
+        top: 44px;
+        left: 6%;
+        width: 61%;
+        height: 365px;
+      }
+
+      .work-window.secondary {
+        top: 76px;
+        right: -4%;
+        width: 34%;
+        height: 270px;
+        opacity: 0.82;
+      }
+
+      .work-titlebar {
+        display: flex;
+        height: 37px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 13px;
+        border-bottom: 1px solid rgb(255 255 255 / 0.055);
+        background: rgb(255 255 255 / 0.022);
+      }
+
+      .work-titlebar i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: rgb(255 255 255 / 0.14);
+      }
+
+      .work-titlebar::after {
+        width: 88px;
+        height: 5px;
+        margin-left: 7px;
+        content: "";
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.08);
+      }
+
+      .work-body {
+        display: grid;
+        grid-template-columns: 116px 1fr;
+        height: calc(100% - 37px);
+      }
+
+      .work-sidebar {
+        padding: 22px 17px;
+        border-right: 1px solid rgb(255 255 255 / 0.05);
+        background: rgb(2 7 12 / 0.12);
+      }
+
+      .work-sidebar i,
+      .secondary-lines i {
+        display: block;
+        height: 6px;
+        margin-bottom: 15px;
+        border-radius: 99px;
+        background: rgb(225 235 242 / 0.075);
+      }
+
+      .work-sidebar i:nth-child(2) { width: 78%; }
+      .work-sidebar i:nth-child(3) { width: 90%; }
+      .work-sidebar i:nth-child(4) { width: 64%; }
+
+      .document {
+        padding: 36px 8% 30px;
+      }
+
+      .document h2 {
+        width: 45%;
+        height: 13px;
+        margin: 0 0 30px;
+        border-radius: 99px;
+        background: rgb(234 241 246 / 0.13);
+      }
+
+      .document p {
+        height: 7px;
+        margin: 0 0 13px;
+        border-radius: 99px;
+        background: rgb(231 239 244 / 0.075);
+      }
+
+      .document p:nth-child(3) { width: 92%; }
+      .document p:nth-child(4) { width: 79%; }
+      .document p:nth-child(5) { width: 87%; }
+      .document p:nth-child(6) { width: 61%; }
+
+      .secondary-lines { padding: 28px 24px; }
+      .secondary-lines i:nth-child(1) { width: 66%; height: 11px; margin-bottom: 25px; }
+      .secondary-lines i:nth-child(2) { width: 92%; }
+      .secondary-lines i:nth-child(3) { width: 77%; }
+      .secondary-lines i:nth-child(4) { width: 84%; }
+
+      .transition-stage {
+        position: absolute;
+        inset: 0 0 38px;
+        z-index: 15;
+        pointer-events: none;
+      }
+
+      .origin {
+        position: absolute;
+        top: 305px;
+        left: calc(50% - 270px);
+        width: 540px;
+        height: 96px;
+        min-width: 320px;
+        min-height: 96px;
+        pointer-events: auto;
+        transform-origin: 26px 48px;
+      }
+
+      .draft {
+        position: absolute;
+        inset: 0;
+        min-width: 320px;
+        min-height: 96px;
+        border: 1px solid rgb(255 255 255 / 0.15);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 7% 50%, rgb(var(--accent) / 0.16), transparent 25%),
+          linear-gradient(130deg, rgb(55 65 72 / 0.68), rgb(18 24 29 / 0.86) 46%, rgb(23 25 31 / 0.87));
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.14),
+          inset 0 -1px 0 rgb(0 0 0 / 0.22),
+          0 19px 54px rgb(2 5 9 / 0.38),
+          0 3px 10px rgb(2 5 9 / 0.2);
+        opacity: 1;
+        overflow: hidden;
+        backdrop-filter: blur(28px) saturate(1.32);
+        transition:
+          opacity 220ms ease,
+          clip-path 620ms cubic-bezier(0.2, 0.75, 0.2, 1),
+          transform 620ms cubic-bezier(0.2, 0.75, 0.2, 1),
+          border-radius 620ms cubic-bezier(0.2, 0.75, 0.2, 1);
+        clip-path: inset(0 0 0 0 round 18px);
+      }
+
+      .origin.listening .draft,
+      .origin.transcribing .draft {
+        clip-path: inset(25px calc(100% - 71px) 25px 19px round 999px);
+        transform: translateX(-19px);
+        border-radius: 999px;
+      }
+
+      .origin.listening .draft { opacity: 0.78; }
+      .origin.dismissed .draft { opacity: 0; transform: translateY(8px) scale(0.98); }
+
+      .glass-shine {
+        position: absolute;
+        inset: 1px;
+        z-index: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        background:
+          linear-gradient(108deg, rgb(255 255 255 / 0.08), transparent 27% 73%, rgb(255 255 255 / 0.025)),
+          radial-gradient(ellipse at 45% -20%, rgb(255 255 255 / 0.12), transparent 58%);
+        mix-blend-mode: screen;
+      }
+
+      .topography {
+        position: absolute;
+        inset: -22px -4px -22px -18px;
+        z-index: 0;
+        width: calc(100% + 22px);
+        height: calc(100% + 44px);
+        pointer-events: none;
+        opacity: 0.51;
+        transition: opacity 300ms ease 260ms;
+      }
+
+      .origin.listening .topography,
+      .origin.transcribing .topography { opacity: 0; transition-delay: 0ms; }
+
+      .topography path {
+        fill: none;
+        stroke: rgb(200 233 241 / 0.3);
+        stroke-width: 0.75;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .topography path:nth-child(2n) { stroke: rgb(255 255 255 / 0.13); }
+      .topography path:nth-child(3n) { stroke: rgb(var(--warm) / 0.12); }
+
+      .voice-orb {
+        position: absolute;
+        top: 25px;
+        left: 19px;
+        z-index: 6;
+        display: grid;
+        width: 52px;
+        height: 46px;
+        place-items: center;
+        border: 1px solid rgb(255 255 255 / 0.14);
+        border-radius: 999px;
+        background:
+          radial-gradient(circle at 35% 26%, rgb(255 255 255 / 0.19), transparent 38%),
+          linear-gradient(145deg, rgb(87 119 128 / 0.78), rgb(20 34 40 / 0.88));
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.14),
+          0 0 var(--orb-glow, 18px) rgb(var(--accent) / var(--orb-alpha, 0.14)),
+          0 7px 18px rgb(0 0 0 / 0.24);
+        transition:
+          left 620ms cubic-bezier(0.2, 0.75, 0.2, 1),
+          width 620ms cubic-bezier(0.2, 0.75, 0.2, 1),
+          background 300ms ease,
+          border-color 300ms ease,
+          opacity 180ms ease;
+      }
+
+      .origin.open .voice-orb {
+        left: 9px;
+        width: 38px;
+        border-color: rgb(255 255 255 / 0.08);
+        background: rgb(8 16 20 / 0.18);
+        box-shadow: none;
+        opacity: 0.74;
+      }
+
+      .voice-bars {
+        display: flex;
+        height: 24px;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .voice-bars i {
+        width: 2px;
+        height: var(--bar-height, 8px);
+        min-height: 4px;
+        max-height: 22px;
+        border-radius: 99px;
+        background: linear-gradient(to bottom, #c7f2fb, #73bbce);
+        box-shadow: 0 0 6px rgb(var(--accent) / 0.28);
+        transition: height 75ms linear, opacity 280ms ease;
+      }
+
+      .origin.open .voice-bars i {
+        height: var(--frozen-height);
+        opacity: 0.65;
+        transition-duration: 480ms;
+      }
+
+      .voice-bars i:nth-child(1) { --frozen-height: 7px; }
+      .voice-bars i:nth-child(2) { --frozen-height: 15px; }
+      .voice-bars i:nth-child(3) { --frozen-height: 21px; }
+      .voice-bars i:nth-child(4) { --frozen-height: 11px; }
+      .voice-bars i:nth-child(5) { --frozen-height: 17px; }
+      .voice-bars i:nth-child(6) { --frozen-height: 8px; }
+
+      .pulse-rings {
+        position: absolute;
+        inset: -24px;
+        z-index: -1;
+        border: 1px solid rgb(var(--accent) / 0.25);
+        border-radius: 50%;
+        opacity: 0;
+        animation: ripple 1.7s ease-out infinite;
+      }
+
+      .pulse-rings::after {
+        position: absolute;
+        inset: 11px;
+        content: "";
+        border: 1px solid rgb(var(--accent) / 0.22);
+        border-radius: inherit;
+      }
+
+      .origin.listening .pulse-rings { opacity: 1; }
+
+      .transcript {
+        position: absolute;
+        inset: 0 56px 0 52px;
+        z-index: 2;
+        margin: 0;
+        padding: 17px 14px;
+        overflow: auto;
+        color: rgb(246 249 250 / 0.96);
+        font-size: 14px;
+        font-weight: 430;
+        line-height: 20px;
+        letter-spacing: -0.006em;
+        opacity: 1;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        scrollbar-color: rgb(219 237 241 / 0.2) transparent;
+        scrollbar-width: thin;
+        transition: opacity 180ms ease 370ms, transform 300ms ease 300ms;
+      }
+
+      .transcript::-webkit-scrollbar { width: 5px; }
+      .transcript::-webkit-scrollbar-track { background: transparent; }
+      .transcript::-webkit-scrollbar-thumb {
+        border-radius: 99px;
+        background: rgb(219 237 241 / 0.2);
+      }
+
+      .origin.listening .transcript,
+      .origin.transcribing .transcript {
+        opacity: 0;
+        transform: translateX(-12px);
+        transition-delay: 0ms;
+      }
+
+      .actions {
+        position: absolute;
+        top: 9px;
+        right: 9px;
+        z-index: 8;
+        display: flex;
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid rgb(255 255 255 / 0.07);
+        border-radius: 10px;
+        background: rgb(8 12 15 / 0.48);
+        box-shadow: 0 5px 15px rgb(0 0 0 / 0.18);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-3px);
+        transition: opacity 130ms ease, transform 130ms ease;
+        backdrop-filter: blur(12px);
+      }
+
+      .origin.open:hover .actions,
+      .origin.open:focus-within .actions,
+      .origin.actions-visible .actions {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+
+      .action {
+        display: grid;
+        width: 27px;
+        height: 27px;
+        padding: 0;
+        place-items: center;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: rgb(227 235 239 / 0.66);
+        cursor: pointer;
+      }
+
+      .action:hover,
+      .action:focus-visible {
+        color: #f8fafb;
+        background: rgb(255 255 255 / 0.08);
+      }
+
+      .action.discard:hover,
+      .action.discard:focus-visible {
+        color: #ffb2bb;
+        background: rgb(239 89 108 / 0.15);
+      }
+
+      .action svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.45;
+      }
+
+      .resize-handle {
+        position: absolute;
+        right: 1px;
+        bottom: 1px;
+        z-index: 9;
+        width: 18px;
+        height: 18px;
+        border: 0;
+        background: transparent;
+        cursor: nwse-resize;
+        opacity: 0;
+        touch-action: none;
+        transition: opacity 130ms ease;
+      }
+
+      .resize-handle::before,
+      .resize-handle::after {
+        position: absolute;
+        right: 5px;
+        bottom: 5px;
+        width: 7px;
+        height: 1px;
+        content: "";
+        background: rgb(233 241 244 / 0.55);
+        transform: rotate(-45deg);
+        transform-origin: right center;
+      }
+
+      .resize-handle::after { bottom: 9px; width: 3px; }
+
+      .origin.open:hover .resize-handle,
+      .origin.open:focus-within .resize-handle { opacity: 0.72; }
+
+      .status {
+        position: absolute;
+        top: 360px;
+        left: 50%;
+        z-index: 14;
+        color: rgb(231 239 242 / 0.55);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, 14px);
+        transition: opacity 180ms ease, transform 220ms ease;
+      }
+
+      .status.visible { opacity: 1; transform: translate(-50%, 18px); }
+
+      .toast {
+        position: absolute;
+        left: 50%;
+        bottom: 55px;
+        z-index: 30;
+        padding: 7px 11px;
+        border: 1px solid rgb(255 255 255 / 0.09);
+        border-radius: 9px;
+        background: rgb(12 16 20 / 0.82);
+        color: rgb(237 243 246 / 0.72);
+        font-size: 11px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, 5px);
+        transition: opacity 150ms ease, transform 150ms ease;
+        backdrop-filter: blur(16px);
+      }
+
+      .toast.visible { opacity: 1; transform: translate(-50%, 0); }
+
+      .taskbar {
+        position: absolute;
+        inset: auto 0 0;
+        z-index: 20;
+        height: 38px;
+        border-top: 1px solid rgb(255 255 255 / 0.07);
+        background: rgb(8 11 15 / 0.72);
+        backdrop-filter: blur(18px);
+      }
+
+      .task-icons {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        padding-top: 7px;
+      }
+
+      .task-icons i {
+        width: 23px;
+        height: 23px;
+        border-radius: 6px;
+        background: linear-gradient(145deg, rgb(195 215 224 / 0.24), rgb(104 132 148 / 0.22));
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+      }
+
+      .task-icons i:nth-child(2) { background: linear-gradient(145deg, rgb(199 181 220 / 0.28), rgb(112 91 141 / 0.25)); }
+      .task-icons i:nth-child(3) { background: linear-gradient(145deg, rgb(174 217 204 / 0.26), rgb(78 129 116 / 0.22)); }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        border-top: 1px solid rgb(255 255 255 / 0.07);
+        background: rgb(255 255 255 / 0.07);
+      }
+
+      .note {
+        min-height: 105px;
+        padding: 20px 22px;
+        background: #13171d;
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 7px;
+        color: rgb(242 246 248 / 0.9);
+        font-size: 12px;
+        font-weight: 620;
+      }
+
+      .note p {
+        margin: 0;
+        color: rgb(218 226 231 / 0.57);
+        font-size: 12px;
+        line-height: 1.48;
+      }
+
+      @keyframes ripple {
+        0% { opacity: 0; transform: scale(0.56); }
+        22% { opacity: 0.65; }
+        100% { opacity: 0; transform: scale(1.28); }
+      }
+
+      @media (max-width: 720px) {
+        .page { width: calc(100% - 16px); padding-top: 18px; }
+        .intro { align-items: flex-start; flex-direction: column; gap: 10px; }
+        .toolbar { align-items: flex-start; flex-direction: column; }
+        .work-window.primary { left: 3%; width: 80%; }
+        .work-window.secondary { display: none; }
+        .origin { left: 12px; width: calc(100% - 24px); }
+        .notes { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 360px) {
+        .page { width: 100%; }
+        .intro { padding-inline: 12px; }
+        .demo { border-right: 0; border-left: 0; border-radius: 0; }
+        .origin { left: 0; width: 100%; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="intro">
+        <div class="intro-copy">
+          <p class="eyebrow">Undertone · material study</p>
+          <h1>Frosted Topography</h1>
+          <p class="lede">The live voice point becomes the origin of a quiet, contoured glass surface. Its motion settles into the material when the transcript arrives.</p>
+        </div>
+        <span class="size-note">open state · 540 × 96</span>
+      </header>
+
+      <section class="demo" aria-label="Interactive Frosted Topography design preview">
+        <div class="toolbar">
+          <span class="toolbar-label">Preview the sequence or inspect a state</span>
+          <div class="preview-controls" aria-label="Preview states">
+            <button class="preview-button" id="replay" type="button">Replay transition</button>
+            <button class="preview-button" data-mode="listening" type="button">Voice indicator</button>
+            <button class="preview-button" data-mode="open" type="button" aria-pressed="true">Open turn</button>
+            <button class="preview-button" data-mode="long" type="button">Long / resized</button>
+            <button class="preview-button" data-mode="actions" type="button">Action hover</button>
+          </div>
+        </div>
+
+        <div class="desktop" id="desktop">
+          <section class="work-window primary" aria-hidden="true">
+            <div class="work-titlebar"><i></i><i></i><i></i></div>
+            <div class="work-body">
+              <aside class="work-sidebar"><i></i><i></i><i></i><i></i></aside>
+              <div class="document"><h2></h2><p></p><p></p><p></p><p></p><p></p></div>
+            </div>
+          </section>
+          <section class="work-window secondary" aria-hidden="true">
+            <div class="work-titlebar"><i></i><i></i><i></i></div>
+            <div class="secondary-lines"><i></i><i></i><i></i><i></i></div>
+          </section>
+
+          <div class="transition-stage">
+            <div class="origin open" id="origin">
+              <section class="draft" aria-label="Open turn draft">
+                <div class="glass-shine" aria-hidden="true"></div>
+                <svg class="topography" viewBox="0 0 560 140" preserveAspectRatio="none" aria-hidden="true">
+                  <path d="M20 70C38 43 64 34 86 49c21 15 24 44 8 62-17 20-51 22-72 4-28-24-24-69 4-94 30-27 79-23 107 8 23 25 28 61 15 91" />
+                  <path d="M28 70c13-20 33-27 50-16 16 10 20 31 9 45-12 16-37 18-53 5-21-17-21-49-1-69 23-23 61-23 85-1 23 21 31 57 19 86" />
+                  <path d="M35 70c9-13 22-17 33-10 11 7 13 21 5 31-8 10-25 11-35 2-13-11-13-32 0-45 16-16 42-15 58 1 18 17 24 45 14 70" />
+                  <path d="M43 70c4-7 12-9 18-5 6 4 7 12 3 17-5 6-14 6-20 2-7-6-7-17 0-24 8-8 23-8 32 1 10 10 13 27 8 42" />
+                  <path d="M97 14c38 8 56 31 88 31 38 0 47-31 84-31 37 0 51 33 88 33 38 0 51-34 88-34 36 0 49 30 91 33" />
+                  <path d="M118 28c29 10 41 29 70 29 34 0 46-28 78-28 34 0 47 29 81 29 35 0 49-30 83-30 34 0 48 27 101 29" />
+                  <path d="M134 44c23 8 32 24 57 24 29 0 42-24 72-24 31 0 45 25 77 25 33 0 48-26 80-26 31 0 46 22 107 24" />
+                  <path d="M143 62c18 6 27 18 49 18 27 0 41-20 70-20 30 0 46 21 77 21 32 0 49-22 80-22 30 0 47 18 112 20" />
+                  <path d="M142 83c19-5 29-16 51-16 28 0 42 19 70 19 30 0 45-20 77-20 32 0 48 21 79 21 30 0 47-17 111-19" />
+                  <path d="M133 103c23-7 33-21 58-21 30 0 42 23 72 23 31 0 44-24 76-24 33 0 48 25 80 25 31 0 45-21 108-23" />
+                  <path d="M115 121c29-9 42-27 72-27 34 0 46 27 79 27 34 0 47-29 81-29 35 0 49 30 83 30 34 0 48-26 101-28" />
+                </svg>
+
+                <div class="voice-orb" id="voiceOrb" aria-label="Reactive voice indicator">
+                  <span class="pulse-rings" aria-hidden="true"></span>
+                  <span class="voice-bars" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i><i></i><i></i>
+                  </span>
+                </div>
+
+                <div class="transcript" id="transcript" role="textbox" aria-readonly="true">This is what the turn window looks like right now. The voice has settled into the surface.</div>
+
+                <div class="actions" aria-label="Window actions">
+                  <button class="action" id="snap" type="button" aria-label="Move to default position">
+                    <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="4.5"></circle><path d="M9 1.8v2M9 14.2v2M1.8 9h2M14.2 9h2"></path></svg>
+                  </button>
+                  <button class="action discard" id="discard" type="button" aria-label="Discard open turn">
+                    <svg viewBox="0 0 18 18" aria-hidden="true"><path d="m5.2 5.2 7.6 7.6M12.8 5.2l-7.6 7.6"></path></svg>
+                  </button>
+                </div>
+
+                <button class="resize-handle" id="resizeHandle" type="button" aria-label="Resize open turn"></button>
+              </section>
+            </div>
+            <span class="status" id="status" role="status" aria-live="polite"></span>
+          </div>
+
+          <div class="toast" id="toast" role="status" aria-live="polite"></div>
+          <div class="taskbar" aria-hidden="true"><span class="task-icons"><i></i><i></i><i></i></span></div>
+        </div>
+
+        <div class="notes">
+          <div class="note"><strong>One continuous object</strong><p>The first recording appears as a small reactive point. The draft unfolds from that same origin instead of introducing a second floating element.</p></div>
+          <div class="note"><strong>Motion becomes material</strong><p>Live ripples stop when speech ends, leaving subtle contour lines suspended in the frosted surface behind the transcript.</p></div>
+          <div class="note"><strong>Quiet until needed</strong><p>No counters or status copy remain in the open state. Snap, discard, and resize reveal only on hover or keyboard focus.</p></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const desktop = document.querySelector("#desktop");
+        const origin = document.querySelector("#origin");
+        const voiceOrb = document.querySelector("#voiceOrb");
+        const transcript = document.querySelector("#transcript");
+        const status = document.querySelector("#status");
+        const toast = document.querySelector("#toast");
+        const resizeHandle = document.querySelector("#resizeHandle");
+        const modeButtons = [...document.querySelectorAll("[data-mode]")];
+        const shortText = "This is what the turn window looks like right now. The voice has settled into the surface.";
+        const longText = "This is what the turn window looks like right now. The live voice point becomes the origin of the open turn, then its movement settles into the frosted contour pattern behind the words. The transcript remains easy to scan while the window grows, scrolls, moves, and resizes. Controls stay out of sight until I deliberately hover over the surface.";
+        let sequenceTimers = [];
+        let toastTimer;
+        let drag;
+        let resizing;
+        let animationFrame;
+        let phase = 0;
+
+        const clearSequence = () => {
+          sequenceTimers.forEach(window.clearTimeout);
+          sequenceTimers = [];
+        };
+
+        const setPressed = (mode) => {
+          modeButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.mode === mode)));
+        };
+
+        const setDefaultPosition = () => {
+          const edgeGap = desktop.clientWidth <= 344 ? 0 : 24;
+          const available = desktop.clientWidth - edgeGap;
+          const width = Math.min(540, available);
+          const fittedWidth = Math.max(Math.min(320, available), width);
+          origin.style.width = `${fittedWidth}px`;
+          origin.style.height = "96px";
+          origin.style.left = `${Math.max(edgeGap / 2, Math.round((desktop.clientWidth - fittedWidth) / 2))}px`;
+          origin.style.top = "305px";
+        };
+
+        const showToast = (message) => {
+          window.clearTimeout(toastTimer);
+          toast.textContent = message;
+          toast.classList.add("visible");
+          toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 1500);
+        };
+
+        const startVoice = () => {
+          window.cancelAnimationFrame(animationFrame);
+          const update = () => {
+            phase += 0.11;
+            const speech = 0.22 + Math.abs(Math.sin(phase * 0.9)) * 0.46 + Math.abs(Math.sin(phase * 2.23)) * 0.25;
+            voiceOrb.style.setProperty("--orb-glow", `${15 + 14 * speech}px`);
+            voiceOrb.style.setProperty("--orb-alpha", (0.08 + 0.2 * speech).toFixed(2));
+            const ranges = [8, 15, 18, 12, 17, 9];
+            [...voiceOrb.querySelectorAll(".voice-bars i")].forEach((bar, index) => {
+              const value = Math.min(1, 0.1 + speech * (0.48 + Math.abs(Math.sin(phase * (1.4 + index * 0.07) + index)) * 0.78));
+              bar.style.setProperty("--bar-height", `${4 + value * ranges[index]}px`);
+            });
+            animationFrame = window.requestAnimationFrame(update);
+          };
+          update();
+        };
+
+        const stopVoice = () => {
+          window.cancelAnimationFrame(animationFrame);
+          voiceOrb.style.setProperty("--orb-glow", "15px");
+          voiceOrb.style.setProperty("--orb-alpha", "0.08");
+        };
+
+        const setMode = (mode) => {
+          clearSequence();
+          origin.className = "origin";
+          status.classList.remove("visible");
+          transcript.textContent = mode === "long" ? longText : shortText;
+          if (mode === "listening") {
+            origin.classList.add("listening");
+            status.textContent = "Listening";
+            status.classList.add("visible");
+            startVoice();
+          } else {
+            origin.classList.add("open");
+            stopVoice();
+            if (mode === "actions") origin.classList.add("actions-visible");
+            if (mode === "long") {
+              origin.style.height = "158px";
+              origin.style.top = "268px";
+            } else {
+              origin.style.height = "96px";
+              origin.style.top = "305px";
+            }
+          }
+          setPressed(mode);
+        };
+
+        const replay = () => {
+          clearSequence();
+          setDefaultPosition();
+          origin.className = "origin listening";
+          transcript.textContent = shortText;
+          status.textContent = "Listening";
+          status.classList.add("visible");
+          setPressed("listening");
+          startVoice();
+          sequenceTimers.push(window.setTimeout(() => {
+            origin.className = "origin transcribing";
+            status.textContent = "Transcribing";
+            stopVoice();
+          }, 1900));
+          sequenceTimers.push(window.setTimeout(() => {
+            origin.className = "origin open";
+            status.classList.remove("visible");
+            setPressed("open");
+          }, 2700));
+        };
+
+        document.querySelector("#replay").addEventListener("click", replay);
+        modeButtons.forEach((button) => button.addEventListener("click", () => {
+          if (button.dataset.mode !== "long") setDefaultPosition();
+          setMode(button.dataset.mode);
+        }));
+
+        document.querySelector("#snap").addEventListener("pointerdown", (event) => event.stopPropagation());
+        document.querySelector("#snap").addEventListener("click", () => {
+          setDefaultPosition();
+          showToast("Moved to default position");
+        });
+
+        document.querySelector("#discard").addEventListener("pointerdown", (event) => event.stopPropagation());
+        document.querySelector("#discard").addEventListener("click", () => {
+          origin.classList.add("dismissed");
+          showToast("Turn discarded · restoring preview");
+          window.setTimeout(() => {
+            setDefaultPosition();
+            setMode("open");
+          }, 1050);
+        });
+
+        origin.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || event.target.closest("button") || !origin.classList.contains("open")) return;
+          const bounds = origin.getBoundingClientRect();
+          const desktopBounds = desktop.getBoundingClientRect();
+          drag = {
+            startX: event.clientX,
+            startY: event.clientY,
+            left: bounds.left - desktopBounds.left,
+            top: bounds.top - desktopBounds.top,
+          };
+          origin.setPointerCapture(event.pointerId);
+        });
+
+        resizeHandle.addEventListener("pointerdown", (event) => {
+          if (!origin.classList.contains("open")) return;
+          event.stopPropagation();
+          resizing = {
+            startX: event.clientX,
+            startY: event.clientY,
+            width: origin.offsetWidth,
+            height: origin.offsetHeight,
+          };
+          resizeHandle.setPointerCapture(event.pointerId);
+        });
+
+        origin.addEventListener("pointermove", (event) => {
+          if (!drag) return;
+          const nextLeft = drag.left + event.clientX - drag.startX;
+          const nextTop = drag.top + event.clientY - drag.startY;
+          origin.style.left = `${Math.max(0, Math.min(desktop.clientWidth - origin.offsetWidth, nextLeft))}px`;
+          origin.style.top = `${Math.max(0, Math.min(desktop.clientHeight - 38 - origin.offsetHeight, nextTop))}px`;
+        });
+
+        origin.addEventListener("pointerup", () => { drag = undefined; });
+
+        resizeHandle.addEventListener("pointermove", (event) => {
+          if (!resizing) return;
+          const maxWidth = desktop.clientWidth - origin.offsetLeft;
+          const maxHeight = desktop.clientHeight - 38 - origin.offsetTop;
+          origin.style.width = `${Math.max(320, Math.min(maxWidth, resizing.width + event.clientX - resizing.startX))}px`;
+          origin.style.height = `${Math.max(96, Math.min(maxHeight, resizing.height + event.clientY - resizing.startY))}px`;
+        });
+
+        resizeHandle.addEventListener("pointerup", () => { resizing = undefined; });
+
+        window.addEventListener("resize", setDefaultPosition);
+        setDefaultPosition();
+        setMode("open");
+      })();
+    </script>
+  </body>
+</html>

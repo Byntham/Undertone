@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Classic Capsule</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body,
+      #stage {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        background: #11151c;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      #stage {
+        position: relative;
+        isolation: isolate;
+        background:
+          radial-gradient(circle at 68% 18%, rgb(81 103 133 / 0.16), transparent 31%),
+          linear-gradient(145deg, #202733 0%, #131820 53%, #0e1218 100%);
+        transition: background 220ms ease;
+      }
+
+      #stage::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background: linear-gradient(to bottom, transparent 58%, rgb(0 0 0 / 0.14));
+      }
+
+      #stage[data-scene="light"] {
+        background:
+          radial-gradient(circle at 67% 18%, rgb(255 255 255 / 0.88), transparent 29%),
+          linear-gradient(145deg, #e7eaf0 0%, #cfd5de 55%, #b9c2ce 100%);
+      }
+
+      #stage[data-scene="light"]::after {
+        background: linear-gradient(to bottom, transparent 60%, rgb(51 64 82 / 0.08));
+      }
+
+      .busyDesktop {
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 220ms ease;
+      }
+
+      #stage[data-scene="busy"] {
+        background:
+          radial-gradient(circle at 74% 10%, rgb(85 111 146 / 0.16), transparent 35%),
+          linear-gradient(145deg, #1e2530 0%, #11161d 100%);
+      }
+
+      #stage[data-scene="busy"] .busyDesktop {
+        opacity: 1;
+      }
+
+      .desktopWindow {
+        position: absolute;
+        overflow: hidden;
+        border: 1px solid rgb(255 255 255 / 0.08);
+        border-radius: 10px;
+        background: rgb(31 37 47 / 0.92);
+        box-shadow: 0 18px 60px rgb(0 0 0 / 0.28);
+      }
+
+      .desktopWindow::before {
+        content: "";
+        display: block;
+        height: 28px;
+        border-bottom: 1px solid rgb(255 255 255 / 0.06);
+        background:
+          radial-gradient(circle at 15px 14px, #667181 0 2px, transparent 2.5px),
+          radial-gradient(circle at 25px 14px, #667181 0 2px, transparent 2.5px),
+          radial-gradient(circle at 35px 14px, #667181 0 2px, transparent 2.5px),
+          rgb(24 29 37 / 0.9);
+      }
+
+      .desktopWindow::after {
+        content: "";
+        position: absolute;
+        inset: 48px 24px 24px;
+        opacity: 0.58;
+        background:
+          linear-gradient(#778292 0 0) 0 0 / 48% 6px no-repeat,
+          linear-gradient(#465161 0 0) 0 24px / 88% 5px no-repeat,
+          linear-gradient(#465161 0 0) 0 40px / 73% 5px no-repeat,
+          linear-gradient(#465161 0 0) 0 56px / 81% 5px no-repeat,
+          linear-gradient(#465161 0 0) 0 92px / 56% 5px no-repeat,
+          linear-gradient(#465161 0 0) 0 108px / 86% 5px no-repeat;
+        border-radius: 3px;
+      }
+
+      .desktopWindow.back {
+        width: min(44vw, 470px);
+        height: 60%;
+        left: 4%;
+        top: 8%;
+        transform: rotate(-1deg);
+      }
+
+      .desktopWindow.front {
+        width: min(48vw, 520px);
+        height: 57%;
+        right: 5%;
+        top: 17%;
+        transform: rotate(0.7deg);
+        background: rgb(36 42 53 / 0.95);
+      }
+
+      .taskbar {
+        position: absolute;
+        left: 50%;
+        bottom: 12px;
+        width: 210px;
+        height: 34px;
+        border: 1px solid rgb(255 255 255 / 0.09);
+        border-radius: 10px;
+        transform: translateX(-50%);
+        background:
+          radial-gradient(circle at 82px 50%, #7d8796 0 5px, transparent 5.5px),
+          radial-gradient(circle at 105px 50%, #7d8796 0 5px, transparent 5.5px),
+          radial-gradient(circle at 128px 50%, #7d8796 0 5px, transparent 5.5px),
+          rgb(25 30 38 / 0.78);
+        box-shadow: 0 8px 25px rgb(0 0 0 / 0.22);
+      }
+
+      .island {
+        --island-width: 54px;
+        --island-height: 36px;
+        position: absolute;
+        left: 50%;
+        bottom: 88px;
+        width: var(--island-width);
+        height: var(--island-height);
+        overflow: hidden;
+        color: #f5f6f8;
+        border: 1px solid rgb(255 255 255 / 0.095);
+        border-radius: calc(var(--island-height) / 2);
+        transform: translateX(-50%);
+        transform-origin: bottom center;
+        background:
+          radial-gradient(circle at 50% -80%, rgb(255 255 255 / 0.09), transparent 56%),
+          #070809;
+        box-shadow:
+          0 1px 0 rgb(255 255 255 / 0.035) inset,
+          0 14px 34px rgb(0 0 0 / 0.36),
+          0 3px 9px rgb(0 0 0 / 0.3);
+        transition:
+          width 580ms cubic-bezier(0.2, 1.15, 0.28, 1),
+          height 470ms cubic-bezier(0.22, 1, 0.36, 1),
+          border-radius 470ms cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 180ms ease,
+          transform 300ms cubic-bezier(0.22, 1, 0.36, 1),
+          box-shadow 220ms ease;
+      }
+
+      .island.phase-transcribing {
+        --island-width: 86px;
+        --island-height: 36px;
+      }
+
+      .island.phase-first,
+      .island.phase-append {
+        --island-width: min(540px, calc(100vw - 32px));
+        --island-height: 96px;
+        border-radius: 24px;
+        transition:
+          width 620ms cubic-bezier(0.16, 1.12, 0.3, 1),
+          height 500ms 85ms cubic-bezier(0.16, 1, 0.3, 1),
+          border-radius 500ms 65ms cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 180ms ease,
+          transform 300ms cubic-bezier(0.22, 1, 0.36, 1),
+          box-shadow 220ms ease;
+      }
+
+      .island.phase-first:hover,
+      .island.phase-append:hover {
+        box-shadow:
+          0 1px 0 rgb(255 255 255 / 0.045) inset,
+          0 18px 42px rgb(0 0 0 / 0.4),
+          0 4px 11px rgb(0 0 0 / 0.32);
+      }
+
+      .signal,
+      .processing {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        transition: opacity 150ms ease, transform 260ms ease;
+      }
+
+      .signal {
+        gap: 2px;
+        opacity: 0;
+        transform: scale(0.84);
+      }
+
+      .phase-recording .signal {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      .signalBar {
+        width: 3px;
+        height: 4px;
+        border-radius: 999px;
+        background: #b8d8ff;
+        box-shadow: 0 0 6px rgb(119 182 255 / 0.26);
+        transform-origin: center;
+        animation: voice 680ms ease-in-out infinite alternate;
+      }
+
+      .signalBar:nth-child(1) { animation-delay: -460ms; }
+      .signalBar:nth-child(2) { animation-delay: -210ms; }
+      .signalBar:nth-child(3) { animation-delay: -570ms; }
+      .signalBar:nth-child(4) { animation-delay: -90ms; }
+      .signalBar:nth-child(5) { animation-delay: -340ms; }
+
+      .processing {
+        gap: 5px;
+        opacity: 0;
+        transform: scale(0.82);
+      }
+
+      .phase-transcribing .processing {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      .processingDot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: #a9cfff;
+        animation: process 900ms ease-in-out infinite;
+      }
+
+      .processingDot:nth-child(2) { animation-delay: 120ms; }
+      .processingDot:nth-child(3) { animation-delay: 240ms; }
+
+      .transcript {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        margin: 0;
+        padding: 18px 27px;
+        opacity: 0;
+        color: rgb(244 246 249 / 0.96);
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 20px;
+        letter-spacing: -0.006em;
+        overflow-wrap: anywhere;
+        transform: translateY(6px);
+        transition: opacity 180ms ease, transform 360ms 190ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .phase-first .transcript,
+      .phase-append .transcript {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .dragAffordance {
+        position: absolute;
+        top: 7px;
+        left: 50%;
+        width: 24px;
+        height: 3px;
+        border-radius: 999px;
+        opacity: 0;
+        transform: translateX(-50%);
+        background: rgb(255 255 255 / 0.19);
+        cursor: move;
+        transition: opacity 170ms 260ms ease, background 170ms ease;
+      }
+
+      .phase-first .dragAffordance,
+      .phase-append .dragAffordance {
+        opacity: 1;
+      }
+
+      .phase-first:hover .dragAffordance,
+      .phase-append:hover .dragAffordance {
+        background: rgb(255 255 255 / 0.36);
+      }
+
+      .actions {
+        position: absolute;
+        right: 10px;
+        bottom: 9px;
+        display: flex;
+        gap: 4px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(3px);
+        transition: opacity 140ms ease, transform 180ms ease;
+      }
+
+      .phase-first:hover .actions,
+      .phase-append:hover .actions {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+
+      .action {
+        display: grid;
+        width: 25px;
+        height: 25px;
+        padding: 0;
+        place-items: center;
+        border: 0;
+        border-radius: 9px;
+        outline: none;
+        color: rgb(211 216 224 / 0.78);
+        background: rgb(255 255 255 / 0.065);
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease, transform 120ms ease;
+      }
+
+      .action svg {
+        width: 13px;
+        height: 13px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.55;
+      }
+
+      .action:hover,
+      .action:focus-visible {
+        color: #f1f4f8;
+        background: rgb(255 255 255 / 0.12);
+      }
+
+      .action:active {
+        transform: scale(0.92);
+      }
+
+      .action.discard:hover,
+      .action.discard:focus-visible {
+        color: #ffbdc5;
+        background: rgb(235 87 105 / 0.17);
+      }
+
+      .island.snapPulse {
+        animation: snapPulse 360ms ease-out;
+      }
+
+      .island.discarding {
+        opacity: 0;
+        transform: translateX(-50%) scale(0.96);
+      }
+
+      @keyframes voice {
+        0% { height: 4px; opacity: 0.55; }
+        52% { height: 17px; opacity: 1; }
+        100% { height: 8px; opacity: 0.76; }
+      }
+
+      @keyframes process {
+        0%, 62%, 100% { opacity: 0.32; transform: translateY(0); }
+        30% { opacity: 1; transform: translateY(-3px); }
+      }
+
+      @keyframes snapPulse {
+        0%, 100% { box-shadow: 0 14px 34px rgb(0 0 0 / 0.36); }
+        42% { box-shadow: 0 14px 34px rgb(0 0 0 / 0.36), 0 0 0 1px rgb(159 203 255 / 0.45); }
+      }
+
+      @media (max-width: 699px) {
+        .island.phase-first,
+        .island.phase-append {
+          --island-width: calc(100vw - 32px);
+        }
+
+        .transcript {
+          padding-inline: 23px;
+          font-size: 13.5px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #stage,
+        .busyDesktop,
+        .island,
+        .signal,
+        .processing,
+        .transcript,
+        .dragAffordance,
+        .actions,
+        .action {
+          transition: none;
+        }
+
+        .signalBar,
+        .processingDot,
+        .island.snapPulse {
+          animation: none;
+        }
+
+        .signalBar:nth-child(1),
+        .signalBar:nth-child(5) { height: 6px; }
+        .signalBar:nth-child(2),
+        .signalBar:nth-child(4) { height: 12px; }
+        .signalBar:nth-child(3) { height: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="stage" data-scene="dark">
+      <div class="busyDesktop" aria-hidden="true">
+        <div class="desktopWindow back"></div>
+        <div class="desktopWindow front"></div>
+        <div class="taskbar"></div>
+      </div>
+
+      <section id="island" class="island phase-first" aria-label="Open turn">
+        <div class="signal" aria-hidden="true">
+          <i class="signalBar"></i>
+          <i class="signalBar"></i>
+          <i class="signalBar"></i>
+          <i class="signalBar"></i>
+          <i class="signalBar"></i>
+        </div>
+        <div class="processing" aria-hidden="true">
+          <i class="processingDot"></i>
+          <i class="processingDot"></i>
+          <i class="processingDot"></i>
+        </div>
+        <p id="transcript" class="transcript">This is what the turn window looks like right now.</p>
+        <div class="dragAffordance" aria-hidden="true"></div>
+        <div id="actions" class="actions">
+          <button id="snap" class="action" type="button" tabindex="-1" aria-label="Move to default position">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="4.5"></circle>
+              <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"></path>
+            </svg>
+          </button>
+          <button id="discard" class="action discard" type="button" tabindex="-1" aria-label="Discard open turn">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m4 4 8 8M12 4l-8 8"></path>
+            </svg>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        const FIRST = "This is what the turn window looks like right now.";
+        const APPEND = "This is what the turn window looks like right now. The voice indicator and open turn now feel like one continuous surface.";
+        const PHASES = new Set(["recording", "transcribing", "first", "append"]);
+        const SCENES = new Set(["dark", "light", "busy"]);
+        const stage = document.querySelector("#stage");
+        const island = document.querySelector("#island");
+        const transcript = document.querySelector("#transcript");
+        const actions = document.querySelector("#actions");
+        const snap = document.querySelector("#snap");
+        const discard = document.querySelector("#discard");
+        const params = new URLSearchParams(window.location.search);
+        let phase = PHASES.has(params.get("phase")) ? params.get("phase") : "first";
+        let scene = SCENES.has(params.get("scene")) ? params.get("scene") : "dark";
+        let replayTimers = [];
+        let localTimer;
+
+        function clearReplay() {
+          replayTimers.forEach((timer) => window.clearTimeout(timer));
+          replayTimers = [];
+        }
+
+        function renderPhase() {
+          island.classList.remove("phase-recording", "phase-transcribing", "phase-first", "phase-append");
+          island.classList.add(`phase-${phase}`);
+          const settled = phase === "first" || phase === "append";
+          transcript.textContent = phase === "append" ? APPEND : phase === "first" ? FIRST : "";
+          island.setAttribute("aria-label", phase === "recording" ? "Recording" : phase === "transcribing" ? "Transcribing" : "Open turn");
+          transcript.setAttribute("aria-hidden", String(!settled));
+        }
+
+        function setPhase(nextPhase) {
+          clearReplay();
+          if (!PHASES.has(nextPhase)) return;
+          phase = nextPhase;
+          renderPhase();
+        }
+
+        function setScene(nextScene) {
+          if (!SCENES.has(nextScene)) return;
+          scene = nextScene;
+          stage.dataset.scene = scene;
+        }
+
+        function replay() {
+          clearReplay();
+          phase = "recording";
+          renderPhase();
+          const schedule = (nextPhase, delay) => {
+            const timer = window.setTimeout(() => {
+              phase = nextPhase;
+              renderPhase();
+              replayTimers = replayTimers.filter((item) => item !== timer);
+            }, delay);
+            replayTimers.push(timer);
+          };
+          schedule("transcribing", 1400);
+          schedule("first", 2250);
+          schedule("append", 3600);
+        }
+
+        function inspect() {
+          const box = island.getBoundingClientRect();
+          return {
+            concept: "Classic Capsule",
+            phase,
+            scene,
+            islandWidth: Math.round(box.width),
+            islandHeight: Math.round(box.height),
+            controlsOpacity: Number.parseFloat(getComputedStyle(actions).opacity),
+            transcript: transcript.textContent
+          };
+        }
+
+        snap.addEventListener("click", () => {
+          island.classList.remove("snapPulse");
+          void island.offsetWidth;
+          island.classList.add("snapPulse");
+          window.clearTimeout(localTimer);
+          localTimer = window.setTimeout(() => island.classList.remove("snapPulse"), 380);
+        });
+
+        discard.addEventListener("click", () => {
+          island.classList.add("discarding");
+          window.clearTimeout(localTimer);
+          localTimer = window.setTimeout(() => island.classList.remove("discarding"), 430);
+        });
+
+        window.undertonePreview = { setPhase, setScene, replay, inspect };
+        setScene(scene);
+        renderPhase();
+      });
+    </script>
+  </body>
+</html>

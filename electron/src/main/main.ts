@@ -85,6 +85,7 @@ import type {
   SystemAction,
 } from "../shared/settings";
 import type { OverlayState, OverlayTone, TurnDraftView } from "../shared/overlay";
+import { isIntegratedTurnWindowDesign } from "../shared/turnWindow";
 
 const DEV_QUIT_ARGUMENT = "--undertone-dev-quit";
 const OPEN_SETTINGS_ARGUMENT = "--undertone-open-settings";
@@ -97,6 +98,11 @@ const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIE
 const devBranch = electronPreview ? process.env.UNDERTONE_DEV_BRANCH?.trim() : undefined;
 const devQuitRequest = electronPreview && process.argv.includes(DEV_QUIT_ARGUMENT);
 const isolatedProfile = electronPreview || packagedSmoke;
+const TURN_DRAFT_COMPACT_SIZE = { width: 72, height: 44 } as const;
+const TURN_DRAFT_TEXT_SIZE = { width: 400, height: 68 } as const;
+const TURN_DRAFT_TEXT_MIN_WIDTH = 300;
+const TURN_DRAFT_AUTO_MAX_HEIGHT = 360;
+const TURN_DRAFT_AUTO_WORK_AREA_RATIO = 0.45;
 
 interface CapturedAudio {
   wav: Uint8Array | null;
@@ -207,6 +213,10 @@ if (!gotLock || devQuitRequest) {
   let pttCompletionDeferred = false;
   let overlayDisplayId: number | undefined;
   let turnDraftUserPositioned = false;
+  let turnDraftReady = false;
+  let turnDraftMode: "hidden" | "compact" | "text" = "hidden";
+  let turnDraftTurnActive = false;
+  let turnDraftUserHeightFloor: number = TURN_DRAFT_TEXT_SIZE.height;
   let normalTrayImage: Electron.NativeImage | null = null;
   let recordingTrayImage: Electron.NativeImage | null = null;
   let microphoneTest: {
@@ -275,6 +285,65 @@ if (!gotLock || devQuitRequest) {
     draftWindow.setPosition(x, y, false);
   };
 
+  const turnDraftAutoHeightLimit = (draftWindow: BrowserWindow): number => {
+    const { height } = screen.getDisplayMatching(draftWindow.getBounds()).workArea;
+    return Math.max(
+      TURN_DRAFT_TEXT_SIZE.height,
+      Math.floor(Math.min(TURN_DRAFT_AUTO_MAX_HEIGHT, height * TURN_DRAFT_AUTO_WORK_AREA_RATIO)),
+    );
+  };
+
+  const resizeTurnDraftAnchored = (
+    draftWindow: BrowserWindow,
+    width: number,
+    height: number,
+  ): void => {
+    const current = draftWindow.getBounds();
+    if (current.width === width && current.height === height) return;
+    const workArea = screen.getDisplayMatching(current).workArea;
+    const centerX = current.x + current.width / 2;
+    const bottom = current.y + current.height;
+    const x = Math.max(workArea.x, Math.min(
+      Math.round(centerX - width / 2),
+      workArea.x + workArea.width - width,
+    ));
+    const y = Math.max(workArea.y, Math.min(
+      bottom - height,
+      workArea.y + workArea.height - height,
+    ));
+    draftWindow.setBounds({ x, y, width, height }, false);
+  };
+
+  const setTurnDraftMode = (
+    draftWindow: BrowserWindow,
+    mode: "compact" | "text",
+  ): void => {
+    if (turnDraftMode === mode) return;
+    if (mode === "compact") {
+      draftWindow.setMinimumSize(
+        TURN_DRAFT_COMPACT_SIZE.width,
+        TURN_DRAFT_COMPACT_SIZE.height,
+      );
+      draftWindow.setResizable(false);
+      draftWindow.setIgnoreMouseEvents(true);
+      resizeTurnDraftAnchored(
+        draftWindow,
+        TURN_DRAFT_COMPACT_SIZE.width,
+        TURN_DRAFT_COMPACT_SIZE.height,
+      );
+    } else {
+      draftWindow.setResizable(true);
+      draftWindow.setIgnoreMouseEvents(false);
+      resizeTurnDraftAnchored(
+        draftWindow,
+        TURN_DRAFT_TEXT_SIZE.width,
+        Math.max(TURN_DRAFT_TEXT_SIZE.height, turnDraftUserHeightFloor),
+      );
+      draftWindow.setMinimumSize(TURN_DRAFT_TEXT_MIN_WIDTH, TURN_DRAFT_TEXT_SIZE.height);
+    }
+    turnDraftMode = mode;
+  };
+
   const presentTurnDraftWindow = (): void => {
     const draftWindow = turnDraftWindow;
     if (draftWindow === null || draftWindow.isDestroyed()) return;
@@ -282,22 +351,38 @@ if (!gotLock || devQuitRequest) {
     if (!draftWindow.isVisible()) draftWindow.showInactive();
   };
 
+  const isIntegratedOverlayActivity = (state: OverlayState["state"]): boolean => {
+    return state === "recording"
+      || state === "locked"
+      || state === "transcribing"
+      || state === "slow";
+  };
+
   const renderOverlay = (state: OverlayState): void => {
     const overlay = overlayWindow;
     if (overlay === null || overlay.isDestroyed()) return;
-    if (state.state === "hidden") {
+    publishTurnDraft();
+    const projectedState = turnDraftReady
+      && turnDraftWindow !== null
+      && !turnDraftWindow.isDestroyed()
+      && turnDraftWindow.isVisible()
+      && isIntegratedTurnWindowDesign(config.turn_window_design)
+      && isIntegratedOverlayActivity(state.state)
+      ? { state: "hidden", text: "", tone: "normal" } satisfies OverlayState
+      : state;
+    if (projectedState.state === "hidden") {
       // Keep the click-through native window presented. Windows fades a newly
       // shown layered window and shifts its raster by a pixel during that fade.
-      overlay.webContents.send("overlay:state", state);
+      overlay.webContents.send("overlay:state", projectedState);
       return;
     }
     presentOverlayWindow();
-    overlay.webContents.send("overlay:state", state);
+    overlay.webContents.send("overlay:state", projectedState);
   };
 
   const publishTurnDraft = (): void => {
     const draftWindow = turnDraftWindow;
-    if (draftWindow === null || draftWindow.isDestroyed()) return;
+    if (draftWindow === null || draftWindow.isDestroyed() || !turnDraftReady) return;
     const snapshot = turnBuffer.snapshot();
     const provisional = [...liveCaptures.values()]
       .filter((capture) => capture.state !== "processing" && capture.text.trim().length > 0);
@@ -305,17 +390,43 @@ if (!gotLock || devQuitRequest) {
       .map((part) => part.trim()).filter(Boolean).join(" ");
     const liveState = [...liveCaptures.values()].some(({ state }) => state === "listening")
       ? "listening"
-      : liveCaptures.size > 0 ? "finalizing" : null;
-    const draft: TurnDraftView | null = text.length === 0 ? null : {
+      : [...liveCaptures.values()].some(({ state }) => state === "finalizing")
+        ? "finalizing"
+        : null;
+    const overlayState = overlayController.current().state;
+    const overlayActivity: TurnDraftView["activity"] = overlayState === "recording"
+      || overlayState === "locked"
+      || overlayState === "transcribing"
+      || overlayState === "slow"
+      ? overlayState
+      : "idle";
+    const activity: TurnDraftView["activity"] = overlayState === "locked"
+      || overlayState === "slow"
+      ? overlayState
+      : liveState ?? overlayActivity;
+    const integrated = isIntegratedTurnWindowDesign(config.turn_window_design);
+    const hasActiveTurn = snapshot !== null
+      || liveCaptures.size > 0
+      || isIntegratedOverlayActivity(overlayState);
+    if (hasActiveTurn && !turnDraftTurnActive) {
+      turnDraftUserHeightFloor = TURN_DRAFT_TEXT_SIZE.height;
+    }
+    turnDraftTurnActive = hasActiveTurn;
+    const draft: TurnDraftView | null = text.length === 0
+      && !(integrated && isIntegratedOverlayActivity(overlayState)) ? null : {
+      design: config.turn_window_design,
       text,
       fragmentCount: (snapshot?.fragmentCount ?? 0) + provisional.length,
       charCount: text.length,
       liveState,
+      activity,
     };
     if (draft === null) {
       if (draftWindow.isVisible()) draftWindow.hide();
+      turnDraftMode = "hidden";
       return;
     }
+    setTurnDraftMode(draftWindow, text.length === 0 ? "compact" : "text");
     draftWindow.webContents.send("turnDraft:view", draft);
     presentTurnDraftWindow();
   };
@@ -329,9 +440,17 @@ if (!gotLock || devQuitRequest) {
   const sendOverlayLevel = (rms: number): void => {
     const overlay = overlayWindow;
     const state = overlayController.current().state;
-    if (overlay === null || overlay.isDestroyed()
-      || (state !== "recording" && state !== "locked")) return;
-    overlay.webContents.send("overlay:level", rms);
+    if (state !== "recording" && state !== "locked") return;
+    if (overlay !== null && !overlay.isDestroyed()) {
+      overlay.webContents.send("overlay:level", rms);
+    }
+    const draftWindow = turnDraftWindow;
+    if (turnDraftReady
+      && isIntegratedTurnWindowDesign(config.turn_window_design)
+      && draftWindow !== null
+      && !draftWindow.isDestroyed()) {
+      draftWindow.webContents.send("turnDraft:level", rms);
+    }
   };
 
   const showFeedback = (
@@ -703,6 +822,16 @@ if (!gotLock || devQuitRequest) {
         renderOverlay(overlayController.current());
       }
       if (turnDraftWindow !== null && !turnDraftWindow.isDestroyed()) {
+        if (turnDraftMode === "text") {
+          const heightLimit = screen.getDisplayMatching(
+            turnDraftWindow.getBounds(),
+          ).workArea.height;
+          turnDraftUserHeightFloor = Math.min(turnDraftUserHeightFloor, heightLimit);
+          const { width, height } = turnDraftWindow.getBounds();
+          if (height > heightLimit) {
+            resizeTurnDraftAnchored(turnDraftWindow, width, heightLimit);
+          }
+        }
         keepTurnDraftOnScreen(turnDraftWindow);
       }
     };
@@ -712,8 +841,8 @@ if (!gotLock || devQuitRequest) {
 
   const createTurnDraft = async (): Promise<void> => {
     const draftWindow = new BrowserWindow({
-      width: 540,
-      height: 96,
+      width: TURN_DRAFT_TEXT_SIZE.width,
+      height: TURN_DRAFT_TEXT_SIZE.height,
       show: false,
       frame: false,
       transparent: true,
@@ -721,8 +850,8 @@ if (!gotLock || devQuitRequest) {
       focusable: false,
       movable: true,
       resizable: true,
-      minWidth: 320,
-      minHeight: 96,
+      minWidth: TURN_DRAFT_TEXT_MIN_WIDTH,
+      minHeight: TURN_DRAFT_TEXT_SIZE.height,
       skipTaskbar: true,
       hasShadow: false,
       webPreferences: {
@@ -737,8 +866,29 @@ if (!gotLock || devQuitRequest) {
     draftWindow.on("will-move", () => {
       turnDraftUserPositioned = true;
     });
-    draftWindow.webContents.on("did-finish-load", publishTurnDraft);
+    draftWindow.on("will-resize", (_event, nextBounds) => {
+      if (turnDraftMode !== "text"
+        || nextBounds.height === draftWindow.getBounds().height) return;
+      turnDraftUserHeightFloor = Math.max(
+        TURN_DRAFT_TEXT_SIZE.height,
+        Math.min(
+          screen.getDisplayMatching(nextBounds).workArea.height,
+          Math.round(nextBounds.height),
+        ),
+      );
+    });
+    draftWindow.webContents.on("did-start-loading", () => {
+      turnDraftReady = false;
+      renderOverlay(overlayController.current());
+    });
+    draftWindow.webContents.on("did-finish-load", () => {
+      turnDraftReady = true;
+      publishTurnDraft();
+      renderOverlay(overlayController.current());
+    });
     draftWindow.webContents.on("render-process-gone", (_event, details) => {
+      turnDraftReady = false;
+      renderOverlay(overlayController.current());
       console.error("Open-turn draft renderer exited", details);
       if (!quitting && !draftWindow.isDestroyed()) draftWindow.reload();
     });
@@ -1288,6 +1438,7 @@ if (!gotLock || devQuitRequest) {
       const previousDiscard = config.discard_hotkey;
       const previousProvider = config.provider;
       const previousLiveTranscription = config.live_transcription;
+      const previousTurnWindowDesign = config.turn_window_design;
       if (isRecord(value) && value.startWithWindows !== undefined) {
         if (typeof value.startWithWindows !== "boolean") {
           throw new Error("startWithWindows must be boolean");
@@ -1300,6 +1451,10 @@ if (!gotLock || devQuitRequest) {
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
+      if (previousTurnWindowDesign !== config.turn_window_design) {
+        publishTurnDraft();
+        renderOverlay(overlayController.current());
+      }
       if ((previousProvider !== config.provider
         || previousLiveTranscription !== config.live_transcription)
         && gestures.state !== GestureState.idle) {
@@ -1647,6 +1802,25 @@ if (!gotLock || devQuitRequest) {
     if (event.sender !== draftWindow?.webContents) return;
     turnDraftUserPositioned = false;
     positionTurnDraft(draftWindow);
+  });
+  ipcMain.on("turnDraft:content-height", (event, height: unknown) => {
+    const draftWindow = turnDraftWindow;
+    if (event.sender !== draftWindow?.webContents
+      || turnDraftMode !== "text"
+      || typeof height !== "number"
+      || !Number.isFinite(height)
+      || !Number.isInteger(height)) return;
+    const workAreaHeight = screen.getDisplayMatching(draftWindow.getBounds()).workArea.height;
+    const desiredHeight = Math.min(
+      workAreaHeight,
+      Math.max(
+        TURN_DRAFT_TEXT_SIZE.height,
+        turnDraftUserHeightFloor,
+        Math.min(turnDraftAutoHeightLimit(draftWindow), height),
+      ),
+    );
+    const { width } = draftWindow.getBounds();
+    resizeTurnDraftAnchored(draftWindow, width, desiredHeight);
   });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;

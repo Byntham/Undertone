@@ -1,3 +1,5 @@
+import type { TurnWindowDesign } from "./turnWindow";
+
 export type SettingsProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
 export type CloudProviderId = "xai" | "openai" | "openrouter";
 export type ModelProviderId = CloudProviderId | "openai-subscription";
@@ -61,6 +63,7 @@ export interface SettingsSnapshot {
   shortcutWarning: string | null;
   liveTranscription: boolean;
   openTurnCleanupStrategy: OpenTurnCleanupStrategySetting;
+  turnWindowDesign: TurnWindowDesign;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
@@ -101,6 +104,7 @@ export interface SettingsPatch {
   discardHotkey?: string;
   liveTranscription?: boolean;
   openTurnCleanupStrategy?: OpenTurnCleanupStrategySetting;
+  turnWindowDesign?: TurnWindowDesign;
   inputDevice?: string;
   provider?: TranscriptionProviderId;
   cleanupProvider?: CleanupProviderId;

@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Undertone — Command pill concept</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+        font-synthesis: none;
+        --accent: 136 164 255;
+        --stage-gutter: 28px;
+      }
+
+      * { box-sizing: border-box; }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 19% 2%, rgb(216 229 255 / 0.56), transparent 32%),
+          radial-gradient(circle at 74% 28%, rgb(83 125 218 / 0.48), transparent 36%),
+          linear-gradient(145deg, #49608d 0%, #262f4c 47%, #151827 100%);
+        color: #eef2fa;
+      }
+
+      button { font: inherit; }
+
+      .desktop {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        min-width: 360px;
+        isolation: isolate;
+        overflow: hidden;
+      }
+
+      .desktop::before {
+        position: absolute;
+        inset: 0;
+        z-index: -3;
+        content: "";
+        background:
+          linear-gradient(118deg, transparent 0 38%, rgb(255 255 255 / 0.065) 38.2% 38.35%, transparent 38.55%),
+          radial-gradient(ellipse at 62% 57%, rgb(163 178 235 / 0.16), transparent 33%);
+      }
+
+      .ghost-window {
+        position: absolute;
+        border: 1px solid rgb(255 255 255 / 0.12);
+        border-radius: 13px;
+        background: rgb(12 18 33 / 0.38);
+        box-shadow: 0 20px 70px rgb(3 6 14 / 0.22);
+        backdrop-filter: blur(18px);
+        overflow: hidden;
+        opacity: 0.64;
+      }
+
+      .ghost-window::before {
+        display: block;
+        height: 34px;
+        content: "";
+        border-bottom: 1px solid rgb(255 255 255 / 0.08);
+        background:
+          radial-gradient(circle at calc(100% - 18px) 50%, rgb(255 255 255 / 0.24) 0 2px, transparent 2.5px),
+          radial-gradient(circle at calc(100% - 36px) 50%, rgb(255 255 255 / 0.19) 0 2px, transparent 2.5px),
+          linear-gradient(90deg, rgb(255 255 255 / 0.09) 16px 112px, transparent 112px);
+        background-size: auto, auto, auto 5px;
+        background-repeat: no-repeat;
+        background-position: center, center, left 15px center;
+      }
+
+      .ghost-window::after {
+        position: absolute;
+        inset: 54px 28px 28px;
+        content: "";
+        opacity: 0.55;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgb(232 238 255 / 0.16) 0 5px,
+          transparent 5px 18px
+        );
+        mask-image: linear-gradient(90deg, #000 0 72%, transparent 72%);
+      }
+
+      .ghost-window.one {
+        left: -38px;
+        top: 16%;
+        width: 38vw;
+        height: 57vh;
+        transform: rotate(-0.7deg);
+      }
+
+      .ghost-window.two {
+        right: -58px;
+        top: 10%;
+        width: 31vw;
+        height: 42vh;
+        opacity: 0.42;
+        transform: rotate(0.6deg);
+      }
+
+      .concept-label {
+        position: absolute;
+        top: 24px;
+        left: var(--stage-gutter);
+        z-index: 5;
+        display: grid;
+        gap: 3px;
+        user-select: none;
+      }
+
+      .concept-label strong {
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgb(255 255 255 / 0.9);
+      }
+
+      .concept-label span {
+        font-size: 12px;
+        color: rgb(239 244 255 / 0.58);
+      }
+
+      .draft {
+        position: absolute;
+        left: calc(50% - 270px);
+        top: calc(50% - 48px);
+        z-index: 10;
+        width: 540px;
+        height: 96px;
+        min-width: 360px;
+        min-height: 82px;
+        max-width: min(760px, calc(100vw - 24px));
+        max-height: min(480px, calc(100vh - 112px));
+        border: 1px solid rgb(255 255 255 / 0.15);
+        border-radius: 22px;
+        background:
+          linear-gradient(145deg, rgb(32 36 46 / 0.94), rgb(15 18 24 / 0.93)),
+          rgb(17 20 27 / 0.94);
+        box-shadow:
+          0 1px 0 rgb(255 255 255 / 0.08) inset,
+          0 24px 64px rgb(0 4 12 / 0.38),
+          0 5px 14px rgb(0 4 12 / 0.28);
+        backdrop-filter: blur(28px) saturate(1.24);
+        overflow: hidden;
+        transition: border-color 160ms ease, box-shadow 160ms ease, opacity 180ms ease, transform 180ms ease;
+      }
+
+      .draft:hover,
+      .draft:focus-within {
+        border-color: rgb(255 255 255 / 0.23);
+        box-shadow:
+          0 1px 0 rgb(255 255 255 / 0.1) inset,
+          0 28px 78px rgb(0 4 12 / 0.45),
+          0 6px 18px rgb(0 4 12 / 0.3);
+      }
+
+      .draft.dismissed {
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(6px) scale(0.985);
+      }
+
+      .grip {
+        position: absolute;
+        inset: 0 auto 0 0;
+        z-index: 4;
+        width: 34px;
+        padding: 0;
+        border: 0;
+        border-right: 1px solid rgb(255 255 255 / 0.055);
+        background: rgb(255 255 255 / 0.018);
+        color: inherit;
+        cursor: grab;
+        touch-action: none;
+      }
+
+      .grip:active { cursor: grabbing; }
+
+      .grip::before {
+        position: absolute;
+        left: 12px;
+        top: calc(50% - 13px);
+        width: 3px;
+        height: 26px;
+        content: "";
+        border-radius: 999px;
+        background: linear-gradient(
+          to bottom,
+          rgb(var(--accent) / 0.08),
+          rgb(var(--accent) / 0.7) 28%,
+          rgb(var(--accent) / 0.35) 70%,
+          rgb(var(--accent) / 0.07)
+        );
+        box-shadow: 0 0 14px rgb(var(--accent) / 0.18);
+        transition: width 150ms ease, left 150ms ease, box-shadow 150ms ease;
+      }
+
+      .grip::after {
+        position: absolute;
+        left: 20px;
+        top: calc(50% - 8px);
+        width: 2px;
+        height: 16px;
+        content: "";
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.18);
+        box-shadow: 0 -6px 0 -0.35px rgb(255 255 255 / 0.12), 0 6px 0 -0.35px rgb(255 255 255 / 0.12);
+      }
+
+      .grip:hover::before,
+      .grip:focus-visible::before {
+        left: 10px;
+        width: 4px;
+        box-shadow: 0 0 18px rgb(var(--accent) / 0.38);
+      }
+
+      .copy-wrap {
+        position: absolute;
+        inset: 0 0 0 34px;
+        overflow: hidden;
+      }
+
+      .copy-wrap::after {
+        position: absolute;
+        right: 0;
+        top: 0;
+        z-index: 2;
+        width: 92px;
+        height: 52px;
+        content: "";
+        pointer-events: none;
+        background: linear-gradient(90deg, transparent, rgb(17 20 27 / 0.86) 55%);
+        opacity: 0;
+        transition: opacity 140ms ease;
+      }
+
+      .draft:hover .copy-wrap::after,
+      .draft:focus-within .copy-wrap::after { opacity: 1; }
+
+      .copy {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 18px 24px 17px 18px;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: rgb(246 248 252 / 0.96);
+        font-size: 14px;
+        font-weight: 420;
+        line-height: 21px;
+        letter-spacing: 0.002em;
+        scrollbar-width: thin;
+        scrollbar-color: rgb(255 255 255 / 0.17) transparent;
+      }
+
+      .copy::-webkit-scrollbar { width: 5px; }
+      .copy::-webkit-scrollbar-track { background: transparent; }
+      .copy::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.16);
+      }
+
+      .copy.updating::after {
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        margin-left: 4px;
+        vertical-align: -0.1em;
+        content: "";
+        border-radius: 2px;
+        background: rgb(var(--accent) / 0.9);
+        animation: caret 900ms steps(2, jump-none) infinite;
+      }
+
+      .actions {
+        position: absolute;
+        right: 10px;
+        top: 9px;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        padding: 3px;
+        border: 1px solid rgb(255 255 255 / 0.08);
+        border-radius: 11px;
+        background: rgb(10 12 17 / 0.68);
+        box-shadow: 0 5px 16px rgb(0 0 0 / 0.2);
+        opacity: 0;
+        transform: translateY(-3px);
+        transition: opacity 140ms ease, transform 140ms ease;
+      }
+
+      .draft:hover .actions,
+      .draft:focus-within .actions,
+      .draft.confirming .actions {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .action {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        place-items: center;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: rgb(231 236 246 / 0.68);
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease, transform 90ms ease;
+      }
+
+      .action:hover {
+        color: rgb(248 250 255 / 0.96);
+        background: rgb(255 255 255 / 0.09);
+      }
+
+      .action:active { transform: scale(0.93); }
+      .action svg { width: 15px; height: 15px; }
+
+      .action.discard:hover {
+        color: rgb(255 177 186 / 1);
+        background: rgb(242 87 105 / 0.16);
+      }
+
+      .action:focus-visible,
+      .grip:focus-visible,
+      .demo-control:focus-visible,
+      .confirm button:focus-visible {
+        outline: 2px solid rgb(var(--accent) / 0.95);
+        outline-offset: 1px;
+      }
+
+      .confirm {
+        position: absolute;
+        right: 10px;
+        top: 9px;
+        z-index: 6;
+        display: flex;
+        height: 36px;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 3px 3px 10px;
+        border: 1px solid rgb(255 183 192 / 0.16);
+        border-radius: 11px;
+        background: rgb(28 18 22 / 0.96);
+        box-shadow: 0 7px 20px rgb(0 0 0 / 0.26);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(6px);
+        transition: opacity 140ms ease, transform 140ms ease;
+      }
+
+      .draft.confirming .actions { opacity: 0; pointer-events: none; }
+      .draft.confirming .confirm { opacity: 1; pointer-events: auto; transform: translateX(0); }
+
+      .confirm span {
+        margin-right: 3px;
+        color: rgb(255 231 234 / 0.8);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .confirm button {
+        height: 28px;
+        padding: 0 9px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: rgb(242 244 249 / 0.7);
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .confirm .destroy {
+        background: rgb(230 78 96 / 0.2);
+        color: rgb(255 195 202 / 0.95);
+      }
+
+      .confirm button:hover { background: rgb(255 255 255 / 0.08); }
+      .confirm .destroy:hover { background: rgb(230 78 96 / 0.34); }
+
+      .resize-handle {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        z-index: 7;
+        width: 20px;
+        height: 20px;
+        cursor: nwse-resize;
+        touch-action: none;
+        opacity: 0.3;
+        transition: opacity 120ms ease;
+      }
+
+      .resize-handle::before,
+      .resize-handle::after {
+        position: absolute;
+        right: 5px;
+        bottom: 5px;
+        width: 7px;
+        height: 1px;
+        content: "";
+        background: rgb(255 255 255 / 0.7);
+        transform: rotate(-45deg);
+        transform-origin: right center;
+      }
+
+      .resize-handle::after {
+        right: 5px;
+        bottom: 9px;
+        width: 3px;
+      }
+
+      .draft:hover .resize-handle { opacity: 0.75; }
+
+      .demo-dock {
+        position: absolute;
+        left: 50%;
+        bottom: 38px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px;
+        border: 1px solid rgb(255 255 255 / 0.15);
+        border-radius: 14px;
+        background: rgb(12 16 25 / 0.68);
+        box-shadow: 0 12px 30px rgb(0 0 0 / 0.24);
+        backdrop-filter: blur(20px);
+        transform: translateX(-50%);
+      }
+
+      .demo-dock::before {
+        padding: 0 7px 0 6px;
+        content: "Preview";
+        color: rgb(241 245 255 / 0.48);
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .demo-control {
+        height: 28px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: rgb(239 243 252 / 0.62);
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .demo-control:hover { color: #f7f9ff; background: rgb(255 255 255 / 0.07); }
+      .demo-control.active {
+        color: rgb(244 247 255 / 0.96);
+        background: rgb(var(--accent) / 0.18);
+        box-shadow: 0 0 0 1px rgb(var(--accent) / 0.18) inset;
+      }
+
+      .hint {
+        position: absolute;
+        left: var(--stage-gutter);
+        bottom: 31px;
+        z-index: 4;
+        max-width: 260px;
+        color: rgb(239 244 255 / 0.48);
+        font-size: 11px;
+        line-height: 1.5;
+        user-select: none;
+      }
+
+      .toast {
+        position: absolute;
+        left: 50%;
+        bottom: 95px;
+        z-index: 30;
+        padding: 7px 11px;
+        border: 1px solid rgb(255 255 255 / 0.12);
+        border-radius: 10px;
+        background: rgb(10 13 20 / 0.82);
+        color: rgb(246 248 253 / 0.8);
+        font-size: 11px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, 4px);
+        transition: opacity 160ms ease, transform 160ms ease;
+        backdrop-filter: blur(18px);
+      }
+
+      .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+      .taskbar {
+        position: absolute;
+        left: 50%;
+        bottom: 7px;
+        z-index: 2;
+        display: flex;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid rgb(255 255 255 / 0.12);
+        border-radius: 11px;
+        background: rgb(20 25 39 / 0.47);
+        backdrop-filter: blur(18px);
+        transform: translateX(-50%);
+        opacity: 0.55;
+      }
+
+      .taskbar i {
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        background: linear-gradient(145deg, rgb(171 195 255 / 0.8), rgb(83 118 207 / 0.8));
+      }
+
+      .taskbar i:nth-child(2) { background: linear-gradient(145deg, #e0e7f6, #889ab9); }
+      .taskbar i:nth-child(3) { background: linear-gradient(145deg, #8fd6cb, #377c79); }
+      .taskbar i:nth-child(4) { background: linear-gradient(145deg, #d6aaf3, #7d4da6); }
+
+      @keyframes caret { 0%, 40% { opacity: 1; } 41%, 100% { opacity: 0.15; } }
+
+      @media (max-width: 700px) {
+        :root { --stage-gutter: 16px; }
+        .draft { left: 16px; width: calc(100vw - 32px); }
+        .hint { display: none; }
+        .demo-dock { bottom: 30px; }
+        .demo-dock::before { display: none; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="desktop" aria-label="Undertone command-pill design preview">
+      <div class="ghost-window one" aria-hidden="true"></div>
+      <div class="ghost-window two" aria-hidden="true"></div>
+
+      <div class="concept-label">
+        <strong>Command pill</strong>
+        <span>Text first. Controls on demand.</span>
+      </div>
+
+      <section class="draft" id="draft" aria-label="Open turn draft preview">
+        <button class="grip" id="grip" aria-label="Drag open turn window" title="Drag window"></button>
+
+        <div class="copy-wrap">
+          <div class="copy" id="copy" role="textbox" aria-readonly="true">Draft a concise release note for the new turn buffer. Explain that the text stays visible until I commit it.</div>
+        </div>
+
+        <div class="actions" aria-label="Window actions">
+          <button class="action" id="snap" aria-label="Move to default position" title="Move to default position">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <circle cx="10" cy="10" r="5.5" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="10" cy="10" r="1.7" fill="currentColor" />
+              <path d="M10 1.75v2M10 16.25v2M1.75 10h2M16.25 10h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="action discard" id="discard" aria-label="Discard open turn" title="Discard open turn">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M5.7 6.7l.55 9.1h7.5l.55-9.1M4.5 5h11M8 5V3.5h4V5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M8.25 8.5v4.8M11.75 8.5v4.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="confirm" aria-live="polite">
+          <span>Discard this turn?</span>
+          <button id="cancel-discard">Keep</button>
+          <button class="destroy" id="confirm-discard">Discard</button>
+        </div>
+
+        <div class="resize-handle" id="resize" role="button" aria-label="Resize open turn window" title="Drag to resize"></div>
+      </section>
+
+      <div class="hint">Drag the blue rail · Resize from the corner · Hover the draft for actions</div>
+
+      <nav class="demo-dock" aria-label="Preview states">
+        <button class="demo-control active" data-state="short">Short turn</button>
+        <button class="demo-control" data-state="long">Long copy</button>
+        <button class="demo-control" data-state="updating">Updating</button>
+      </nav>
+
+      <div class="toast" id="toast" role="status"></div>
+      <div class="taskbar" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    </main>
+
+    <script>
+      (() => {
+        const draft = document.querySelector("#draft");
+        const grip = document.querySelector("#grip");
+        const resize = document.querySelector("#resize");
+        const copy = document.querySelector("#copy");
+        const snap = document.querySelector("#snap");
+        const discard = document.querySelector("#discard");
+        const cancelDiscard = document.querySelector("#cancel-discard");
+        const confirmDiscard = document.querySelector("#confirm-discard");
+        const toast = document.querySelector("#toast");
+        const controls = [...document.querySelectorAll(".demo-control")];
+
+        const samples = {
+          short: "Draft a concise release note for the new turn buffer. Explain that the text stays visible until I commit it.",
+          long: "Draft a concise release note for the new turn buffer. Explain that each dictated fragment remains visible until the full turn is committed. Mention that the window can be moved and resized without taking focus from the application underneath it. Keep the language direct, avoid a list of implementation details, and finish with one sentence explaining that the newest text always remains in view. Add a short note that discarding the turn is deliberate and requires confirmation.",
+          updating: "Draft a concise release note for the new turn buffer. Keep the tone direct and mention that the draft follows along as I speak"
+        };
+
+        let toastTimer;
+        let mode = "short";
+
+        const showToast = (message) => {
+          window.clearTimeout(toastTimer);
+          toast.textContent = message;
+          toast.classList.add("show");
+          toastTimer = window.setTimeout(() => toast.classList.remove("show"), 1500);
+        };
+
+        const centeredPosition = () => ({
+          left: Math.round((window.innerWidth - draft.offsetWidth) / 2),
+          top: Math.round((window.innerHeight - draft.offsetHeight) / 2)
+        });
+
+        const constrain = (left, top, width = draft.offsetWidth, height = draft.offsetHeight) => ({
+          left: Math.min(Math.max(12, left), Math.max(12, window.innerWidth - width - 12)),
+          top: Math.min(Math.max(76, top), Math.max(76, window.innerHeight - height - 76))
+        });
+
+        const setMode = (nextMode) => {
+          mode = nextMode;
+          copy.textContent = samples[nextMode];
+          copy.classList.toggle("updating", nextMode === "updating");
+          controls.forEach((button) => button.classList.toggle("active", button.dataset.state === nextMode));
+          draft.classList.remove("confirming");
+
+          if (nextMode === "long") {
+            draft.style.width = `${Math.min(620, window.innerWidth - 32)}px`;
+            draft.style.height = `${Math.min(214, window.innerHeight - 190)}px`;
+          } else {
+            draft.style.width = `${Math.min(540, window.innerWidth - 32)}px`;
+            draft.style.height = "96px";
+          }
+
+          const position = centeredPosition();
+          draft.style.left = `${position.left}px`;
+          draft.style.top = `${position.top}px`;
+          copy.scrollTop = copy.scrollHeight;
+        };
+
+        const beginPointerOperation = (event, operation) => {
+          event.preventDefault();
+          const pointerId = event.pointerId;
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const startLeft = draft.offsetLeft;
+          const startTop = draft.offsetTop;
+          const startWidth = draft.offsetWidth;
+          const startHeight = draft.offsetHeight;
+          event.currentTarget.setPointerCapture(pointerId);
+
+          const onMove = (moveEvent) => {
+            if (moveEvent.pointerId !== pointerId) return;
+            const dx = moveEvent.clientX - startX;
+            const dy = moveEvent.clientY - startY;
+
+            if (operation === "move") {
+              const next = constrain(startLeft + dx, startTop + dy);
+              draft.style.left = `${next.left}px`;
+              draft.style.top = `${next.top}px`;
+            } else {
+              const width = Math.min(Math.max(360, startWidth + dx), Math.min(760, window.innerWidth - startLeft - 12));
+              const height = Math.min(Math.max(82, startHeight + dy), Math.min(480, window.innerHeight - startTop - 76));
+              draft.style.width = `${width}px`;
+              draft.style.height = `${height}px`;
+            }
+          };
+
+          const onEnd = (endEvent) => {
+            if (endEvent.pointerId !== pointerId) return;
+            event.currentTarget.removeEventListener("pointermove", onMove);
+            event.currentTarget.removeEventListener("pointerup", onEnd);
+            event.currentTarget.removeEventListener("pointercancel", onEnd);
+          };
+
+          event.currentTarget.addEventListener("pointermove", onMove);
+          event.currentTarget.addEventListener("pointerup", onEnd);
+          event.currentTarget.addEventListener("pointercancel", onEnd);
+        };
+
+        grip.addEventListener("pointerdown", (event) => beginPointerOperation(event, "move"));
+        resize.addEventListener("pointerdown", (event) => beginPointerOperation(event, "resize"));
+
+        snap.addEventListener("click", () => {
+          draft.classList.remove("confirming");
+          const position = centeredPosition();
+          draft.style.left = `${position.left}px`;
+          draft.style.top = `${position.top}px`;
+          showToast("Moved to default position");
+        });
+
+        discard.addEventListener("click", () => draft.classList.add("confirming"));
+        cancelDiscard.addEventListener("click", () => draft.classList.remove("confirming"));
+        confirmDiscard.addEventListener("click", () => {
+          draft.classList.remove("confirming");
+          draft.classList.add("dismissed");
+          showToast("Open turn discarded · restoring demo");
+          window.setTimeout(() => {
+            draft.classList.remove("dismissed");
+            setMode(mode);
+          }, 1100);
+        });
+
+        controls.forEach((button) => button.addEventListener("click", () => setMode(button.dataset.state)));
+
+        window.addEventListener("resize", () => {
+          const width = Math.min(draft.offsetWidth, window.innerWidth - 24);
+          draft.style.width = `${Math.max(360, width)}px`;
+          const next = constrain(draft.offsetLeft, draft.offsetTop, draft.offsetWidth, draft.offsetHeight);
+          draft.style.left = `${next.left}px`;
+          draft.style.top = `${next.top}px`;
+        });
+
+        setMode("short");
+      })();
+    </script>
+  </body>
+</html>

@@ -1,3 +1,5 @@
+import type { TurnWindowDesign } from "./turnWindow";
+
 export type OverlayMode =
   | "recording"
   | "locked"
@@ -17,8 +19,17 @@ export interface OverlayState {
 
 /** Live open-turn draft shown while recording or composing fragments. */
 export interface TurnDraftView {
+  design: TurnWindowDesign;
   text: string;
   fragmentCount: number;
   charCount: number;
   liveState: "listening" | "finalizing" | null;
+  activity:
+    | "idle"
+    | "recording"
+    | "locked"
+    | "transcribing"
+    | "slow"
+    | "listening"
+    | "finalizing";
 }

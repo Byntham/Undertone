@@ -126,22 +126,31 @@ async function captureFade(win, tone, direction) {
 }
 
 async function captureTurnDraft() {
-  const turnText = [
-    "Draft a concise release note for the new turn buffer.",
-    "Explain that fragments now stay visible until commit.",
-    "Mention the movable window and discard control.",
-    "Remove the drop shadow.",
-    "Keep the drag behavior reliable.",
-    "Let the user resize the draft.",
-    "Retain the chosen position between turns.",
-    "Add a control for the default position.",
-    "Show the joined turn as continuous text.",
-    "Keep the newest text visible.",
-    "Verify the eleventh fragment remains on screen after enough accumulated copy to exceed the current window height. Make the preview read exactly like the text that will be pasted when the turn is committed, without visual separators between dictated pieces. Continue following the bottom as additional speech is appended.",
+  const designs = [
+    "smoked-glass",
+    "quiet-slate",
+    "center-rail",
+    "aurora-film",
+    "smoked-rim",
+    "slate-pulse",
+    "aurora-rim",
+  ];
+  const integratedDesigns = new Set(["smoked-rim", "slate-pulse", "aurora-rim"]);
+  const shortText = "A clean open turn grows with the words.";
+  const mediumText = [
+    "This open turn starts small and expands upward as the transcript develops.",
+    "Its controls stay quiet until they are needed, while every dictated word remains visible.",
+    "The voice activity stays connected to the same surface instead of floating beside it.",
   ].join(" ");
+  const cappedText = Array.from(
+    { length: 24 },
+    (_, index) => `Sentence ${index + 1} keeps extending the open turn with readable transcript text.`,
+  ).join(" ");
+  let requestedHeight = 68;
+  const requestedHeights = [];
   const win = new BrowserWindow({
-    width: 540,
-    height: 180,
+    width: 400,
+    height: 68,
     show: false,
     frame: false,
     transparent: true,
@@ -151,35 +160,104 @@ async function captureTurnDraft() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
       preload: turnDraftPreload,
     },
   });
+  const resizeFromRenderer = (event, height) => {
+    if (event.sender !== win.webContents || !Number.isFinite(height)) return;
+    requestedHeight = Math.round(height);
+    requestedHeights.push(requestedHeight);
+    const nextHeight = requestedHeight <= 44
+      ? 44
+      : Math.max(68, Math.min(360, requestedHeight));
+    const bounds = win.getBounds();
+    win.setBounds({
+      x: bounds.x,
+      y: bounds.y + bounds.height - nextHeight,
+      width: bounds.width,
+      height: nextHeight,
+    });
+  };
+  ipcMain.on("turnDraft:content-height", resizeFromRenderer);
   await win.loadFile(turnDraftFile);
-  win.webContents.send("turnDraft:view", {
-    text: turnText,
-    fragmentCount: 11,
-    charCount: turnText.length,
-  });
-  const renderDeadline = Date.now() + 500;
-  while (Date.now() < renderDeadline) {
-    const renderedText = await win.webContents.executeJavaScript(
-      `document.querySelector("#draftText").textContent`,
+
+  const setBaseBounds = (width, height) => {
+    const bounds = win.getBounds();
+    win.setBounds({
+      x: bounds.x + Math.round((bounds.width - width) / 2),
+      y: bounds.y + bounds.height - height,
+      width,
+      height,
+    });
+  };
+
+  const waitForStableRender = async (design, text, expectedHeight) => {
+    const deadline = Date.now() + 1_500;
+    let stablePasses = 0;
+    let previousHeight = -1;
+    while (Date.now() < deadline) {
+      const rendered = await win.webContents.executeJavaScript(`(() => {
+        const draft = document.querySelector("#draft");
+        return {
+          text: document.querySelector("#draftText").textContent,
+          design: draft.dataset.design,
+        };
+      })()`);
+      const height = win.getBounds().height;
+      const expected = typeof expectedHeight === "function"
+        ? expectedHeight(height)
+        : height === expectedHeight;
+      stablePasses = rendered.text === text && rendered.design === design
+        && expected && height === previousHeight ? stablePasses + 1 : 0;
+      if (stablePasses >= 3) return;
+      previousHeight = height;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(
+      `Open-turn ${design} did not settle: bounds=${JSON.stringify(win.getBounds())} requested=${requestedHeight}`,
     );
-    if (renderedText === turnText) break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  const layout = await win.webContents.executeJavaScript(`(() => {
+  };
+
+  const sendDraft = async (design, text, activity = "recording") => {
+    requestedHeights.length = 0;
+    win.webContents.send("turnDraft:view", {
+      text,
+      fragmentCount: text.length === 0 ? 0 : 1,
+      charCount: text.length,
+      liveState: activity === "listening" ? "listening" : null,
+      activity,
+      design,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (const level of [0.015, 0.04, 0.12, 0.28, 0.16]) {
+      win.webContents.send("turnDraft:level", level);
+    }
+  };
+
+  const inspectLayout = async (text) => win.webContents.executeJavaScript(`(() => {
     const draft = document.querySelector("#draft");
     const header = document.querySelector(".draftHeader");
     const text = document.querySelector("#draftText");
     const snap = document.querySelector("#snap");
     const discard = document.querySelector("#discard");
+    const signalRim = document.querySelector("#signalRim");
     return {
+      design: draft.dataset.design,
+      integrated: draft.dataset.integrated,
+      empty: draft.dataset.empty,
+      activity: draft.dataset.activity,
+      voiceLevel: Number.parseFloat(getComputedStyle(draft).getPropertyValue("--voice-level")) || 0,
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      continuousText: text.textContent === ${JSON.stringify(turnText)},
+      continuousText: text.textContent === ${JSON.stringify(text)},
       hasFragmentRows: document.querySelector("#draftList, .index, #draftText li") !== null,
-      hasVerticalOverflow: text.scrollHeight > text.clientHeight,
+      hasVerticalOverflow: text.scrollHeight > text.clientHeight + 1,
+      textScrollHeight: text.scrollHeight,
+      textClientHeight: text.clientHeight,
+      viewportClientHeight: document.querySelector("#draftViewport").clientHeight,
+      windowInnerHeight: window.innerHeight,
       latestVisible: text.scrollHeight - text.scrollTop <= text.clientHeight + 1,
+      signalRimVisible: getComputedStyle(signalRim).display !== "none",
       shadow: getComputedStyle(draft).boxShadow,
       headerRegion: getComputedStyle(header).getPropertyValue("app-region")
         || getComputedStyle(header).getPropertyValue("-webkit-app-region"),
@@ -189,32 +267,108 @@ async function captureTurnDraft() {
         || getComputedStyle(discard).getPropertyValue("-webkit-app-region"),
     };
   })()`);
-  if (layout.overflow || layout.headerRegion.trim() !== "drag"
-      || layout.snapRegion.trim() !== "no-drag"
-      || layout.discardRegion.trim() !== "no-drag"
-      || layout.shadow !== "none" || !layout.continuousText || layout.hasFragmentRows
-      || !layout.hasVerticalOverflow || !layout.latestVisible || win.getBounds().height !== 180) {
-    throw new Error(`Open-turn interaction layout is invalid: ${JSON.stringify(layout)}`);
-  }
-  await win.webContents.executeJavaScript(`document.querySelector("#draftText").scrollTop = 1e9`);
-  win.webContents.invalidate();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const image = await win.capturePage();
-  await writeFile(path.join(outputDir, "open-turn.png"), image.toPNG());
 
-  const snapped = new Promise((resolve) => ipcMain.once("turnDraft:snap", resolve));
-  await win.webContents.executeJavaScript(`document.querySelector("#snap").click()`);
-  await Promise.race([
-    snapped,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("Snap IPC timed out")), 500)),
-  ]);
-  const discarded = new Promise((resolve) => ipcMain.once("turnDraft:discard", resolve));
-  await win.webContents.executeJavaScript(`document.querySelector("#discard").click()`);
-  await Promise.race([
-    discarded,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("Discard IPC timed out")), 500)),
-  ]);
-  win.destroy();
+  const captureDraft = async (name) => {
+    // Hidden BrowserWindows can pause compositor animations. Capture the stable
+    // resting state directly after verifying the renderer received the view.
+    await win.webContents.executeJavaScript(
+      `document.querySelector("#draft").classList.remove("reveal")`,
+    );
+    win.webContents.invalidate();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // Prime Chromium's transparent compositor after native bounds changes.
+    await win.capturePage();
+    win.webContents.invalidate();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const image = await win.capturePage();
+    await writeFile(path.join(outputDir, `${name}.png`), image.toPNG());
+    return image;
+  };
+
+  try {
+    for (const design of designs) {
+      const integrated = integratedDesigns.has(design);
+      if (integrated) {
+        setBaseBounds(72, 44);
+        await sendDraft(design, "");
+        await waitForStableRender(design, "", 44);
+        const compact = await inspectLayout("");
+        if (!compact.signalRimVisible || compact.integrated !== "true"
+            || compact.empty !== "true" || compact.activity !== "recording"
+            || compact.voiceLevel <= 0 || compact.overflow) {
+          throw new Error(`Open-turn ${design} compact layout is invalid: ${JSON.stringify(compact)}`);
+        }
+        await captureDraft(`open-turn-${design}-voice`);
+        await sendDraft(design, "", "transcribing");
+        await waitForStableRender(design, "", 44);
+        await captureDraft(`open-turn-${design}-loading`);
+        setBaseBounds(400, 68);
+      } else {
+        setBaseBounds(400, 68);
+      }
+
+      await sendDraft(design, shortText);
+      await waitForStableRender(design, shortText, 68);
+      const short = await inspectLayout(shortText);
+      if (short.overflow || short.hasVerticalOverflow || !short.continuousText
+          || short.hasFragmentRows || short.shadow !== "none") {
+        throw new Error(`Open-turn ${design} short layout is invalid: ${JSON.stringify(short)}`);
+      }
+      await captureDraft(`open-turn-${design}-short`);
+
+      await sendDraft(design, mediumText);
+      await waitForStableRender(
+        design,
+        mediumText,
+        (height) => height > 68 && height < 360,
+      );
+      const expandedHeight = win.getBounds().height;
+      const medium = await inspectLayout(mediumText);
+      if (medium.overflow || medium.hasVerticalOverflow || !medium.latestVisible
+          || requestedHeights.length === 0) {
+        throw new Error(`Open-turn ${design} growth is invalid: ${JSON.stringify({ medium, requestedHeights })}`);
+      }
+      const expandedImage = await captureDraft(`open-turn-${design}-expanded`);
+      await writeFile(
+        path.join(outputDir, `open-turn-${design}.png`),
+        expandedImage.toPNG(),
+      );
+      if (design === "smoked-glass") {
+        await writeFile(path.join(outputDir, "open-turn.png"), expandedImage.toPNG());
+      }
+
+      await sendDraft(design, cappedText);
+      await waitForStableRender(design, cappedText, 360);
+      const capped = await inspectLayout(cappedText);
+      if (win.getBounds().height !== 360 || expandedHeight >= 360
+          || !capped.hasVerticalOverflow || !capped.latestVisible || capped.overflow) {
+        throw new Error(`Open-turn ${design} cap is invalid: ${JSON.stringify({ capped, expandedHeight })}`);
+      }
+      await captureDraft(`open-turn-${design}-capped`);
+    }
+
+    const layout = await inspectLayout(cappedText);
+    if (layout.headerRegion.trim() !== "drag"
+        || layout.snapRegion.trim() !== "no-drag"
+        || layout.discardRegion.trim() !== "no-drag") {
+      throw new Error(`Open-turn interaction regions are invalid: ${JSON.stringify(layout)}`);
+    }
+    const snapped = new Promise((resolve) => ipcMain.once("turnDraft:snap", resolve));
+    await win.webContents.executeJavaScript(`document.querySelector("#snap").click()`);
+    await Promise.race([
+      snapped,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Snap IPC timed out")), 500)),
+    ]);
+    const discarded = new Promise((resolve) => ipcMain.once("turnDraft:discard", resolve));
+    await win.webContents.executeJavaScript(`document.querySelector("#discard").click()`);
+    await Promise.race([
+      discarded,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Discard IPC timed out")), 500)),
+    ]);
+  } finally {
+    ipcMain.removeListener("turnDraft:content-height", resizeFromRenderer);
+    win.destroy();
+  }
 }
 
 app.whenReady().then(async () => {
@@ -259,6 +413,6 @@ app.whenReady().then(async () => {
   win.destroy();
   app.quit();
 }).catch((error) => {
-  console.error(error);
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   app.exit(1);
 });

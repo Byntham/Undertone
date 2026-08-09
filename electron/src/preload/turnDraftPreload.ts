@@ -4,6 +4,9 @@ import type { TurnDraftView } from "../shared/overlay";
 contextBridge.exposeInMainWorld("undertoneTurnDraft", {
   discard: (): void => { ipcRenderer.send("turnDraft:discard"); },
   snap: (): void => { ipcRenderer.send("turnDraft:snap"); },
+  reportContentHeight: (height: number): void => {
+    ipcRenderer.send("turnDraft:content-height", height);
+  },
   onView: (listener: (draft: TurnDraftView) => void): (() => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -11,5 +14,12 @@ contextBridge.exposeInMainWorld("undertoneTurnDraft", {
     ): void => { listener(draft); };
     ipcRenderer.on("turnDraft:view", handler);
     return () => ipcRenderer.removeListener("turnDraft:view", handler);
+  },
+  onLevel: (listener: (level: number) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, level: number): void => {
+      listener(level);
+    };
+    ipcRenderer.on("turnDraft:level", handler);
+    return () => ipcRenderer.removeListener("turnDraft:level", handler);
   },
 });

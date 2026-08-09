@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Undertone turn window — Editorial card</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0b0d10;
+        color: #f3f0e8;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body { min-height: 100%; }
+
+      body {
+        margin: 0;
+        overflow-x: hidden;
+        background:
+          radial-gradient(circle at 17% 4%, rgba(72, 85, 104, .22), transparent 34rem),
+          #0b0d10;
+      }
+
+      button { font: inherit; }
+
+      .page {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 52px 0 64px;
+      }
+
+      .intro {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 30px;
+        margin-bottom: 24px;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: #9299a5;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        color: #f4f1e9;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(28px, 4vw, 43px);
+        font-weight: 400;
+        letter-spacing: -.035em;
+      }
+
+      .intro p:last-child {
+        max-width: 440px;
+        margin: 0 0 4px;
+        color: #969da8;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .scene {
+        position: relative;
+        height: min(650px, calc(100vh - 190px));
+        min-height: 490px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, .09);
+        border-radius: 24px;
+        background:
+          radial-gradient(circle at 77% 21%, rgba(105, 128, 160, .26), transparent 25rem),
+          linear-gradient(150deg, #1a2029 0%, #11151b 52%, #17181a 100%);
+        box-shadow: 0 30px 90px rgba(0, 0, 0, .38);
+        isolation: isolate;
+      }
+
+      .wallpaper-mark {
+        position: absolute;
+        right: -8%;
+        top: -32%;
+        width: 58%;
+        aspect-ratio: 1;
+        border: 1px solid rgba(213, 226, 242, .07);
+        border-radius: 46% 54% 63% 37%;
+        transform: rotate(-17deg);
+      }
+
+      .desktop-bar {
+        position: absolute;
+        inset: auto 0 0;
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border-top: 1px solid rgba(255, 255, 255, .07);
+        background: rgba(10, 12, 15, .72);
+        backdrop-filter: blur(18px);
+      }
+
+      .task-icon {
+        width: 23px;
+        height: 23px;
+        border: 1px solid rgba(255,255,255,.08);
+        border-radius: 6px;
+        background: rgba(255,255,255,.08);
+      }
+
+      .task-icon.active { background: rgba(184, 199, 220, .2); }
+
+      .editor {
+        position: absolute;
+        left: 8%;
+        top: 9%;
+        width: 68%;
+        height: 69%;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, .08);
+        border-radius: 11px;
+        background: rgba(20, 23, 28, .78);
+        box-shadow: 0 22px 50px rgba(0, 0, 0, .24);
+      }
+
+      .editor-titlebar {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(255,255,255,.06);
+        color: rgba(224, 228, 235, .43);
+        font-size: 11px;
+      }
+
+      .editor-titlebar::before {
+        content: "";
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        background: rgba(151, 171, 199, .31);
+      }
+
+      .editor-copy {
+        width: min(560px, 75%);
+        padding: 34px 40px;
+        color: rgba(223, 228, 235, .22);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(13px, 1.4vw, 17px);
+        line-height: 1.75;
+      }
+
+      .editor-copy .line {
+        height: .68em;
+        margin: 0 0 1em;
+        border-radius: 999px;
+        background: currentColor;
+      }
+
+      .editor-copy .short { width: 58%; }
+      .editor-copy .medium { width: 82%; }
+
+      .preview-zone {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+      }
+
+      .draft-window {
+        position: absolute;
+        left: 50%;
+        bottom: 82px;
+        width: 540px;
+        height: 96px;
+        transform: translateX(-50%);
+        border: 1px solid rgba(255, 255, 255, .11);
+        border-radius: 17px;
+        background:
+          linear-gradient(117deg, rgba(255,255,255,.025), transparent 34%),
+          rgba(17, 19, 23, .94);
+        box-shadow:
+          0 1px 0 rgba(255,255,255,.04) inset,
+          0 18px 48px rgba(0,0,0,.42),
+          0 3px 10px rgba(0,0,0,.28);
+        backdrop-filter: blur(20px) saturate(115%);
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+        transition: border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease, transform 250ms cubic-bezier(.2,.8,.2,1);
+      }
+
+      .draft-window:hover,
+      .draft-window.dragging {
+        border-color: rgba(255, 255, 255, .16);
+        box-shadow:
+          0 1px 0 rgba(255,255,255,.055) inset,
+          0 22px 58px rgba(0,0,0,.5),
+          0 3px 10px rgba(0,0,0,.28);
+      }
+
+      .draft-window.dragging {
+        cursor: grabbing;
+        transition: none;
+      }
+
+      .drag-affordance {
+        position: absolute;
+        z-index: 3;
+        top: 5px;
+        left: 50%;
+        width: 28px;
+        height: 3px;
+        transform: translateX(-50%);
+        border-radius: 99px;
+        background: rgba(255,255,255,.13);
+        opacity: .75;
+        transition: width 160ms ease, background 160ms ease, opacity 160ms ease;
+      }
+
+      .draft-window:hover .drag-affordance {
+        width: 34px;
+        background: rgba(255,255,255,.22);
+        opacity: 1;
+      }
+
+      .text-viewport {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        border-radius: inherit;
+      }
+
+      .draft-text {
+        position: absolute;
+        inset: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 19px 80px 16px 21px;
+        color: #f1eee7;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 15px;
+        font-weight: 400;
+        line-height: 22px;
+        letter-spacing: -.006em;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,.16) transparent;
+        user-select: text;
+      }
+
+      .draft-text::-webkit-scrollbar { width: 5px; }
+      .draft-text::-webkit-scrollbar-track { background: transparent; }
+      .draft-text::-webkit-scrollbar-thumb {
+        border-radius: 99px;
+        background: rgba(255,255,255,.15);
+      }
+
+      .text-viewport::after {
+        content: "";
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 92px;
+        height: 100%;
+        pointer-events: none;
+        background: linear-gradient(90deg, transparent, rgba(17,19,23,.94) 56%);
+        opacity: 0;
+        transition: opacity 160ms ease;
+      }
+
+      .draft-window:hover .text-viewport::after { opacity: 1; }
+
+      .window-actions {
+        position: absolute;
+        z-index: 4;
+        top: 10px;
+        right: 10px;
+        display: flex;
+        gap: 2px;
+        opacity: .42;
+        transition: opacity 160ms ease;
+      }
+
+      .draft-window:hover .window-actions,
+      .window-actions:focus-within { opacity: 1; }
+
+      .icon-button {
+        position: relative;
+        width: 27px;
+        height: 27px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        color: #aeb4bc;
+        background: transparent;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+
+      .icon-button svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.65;
+      }
+
+      .icon-button:hover {
+        color: #f5f2eb;
+        background: rgba(255,255,255,.085);
+      }
+
+      .icon-button.discard:hover {
+        color: #ffc4c4;
+        background: rgba(229, 91, 91, .13);
+      }
+
+      .icon-button::after {
+        content: attr(aria-label);
+        position: absolute;
+        top: calc(100% + 7px);
+        right: 0;
+        width: max-content;
+        padding: 5px 7px;
+        border: 1px solid rgba(255,255,255,.09);
+        border-radius: 6px;
+        color: #d9dde3;
+        background: #25282e;
+        box-shadow: 0 6px 18px rgba(0,0,0,.3);
+        font-size: 10px;
+        line-height: 1;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-2px);
+        transition: opacity 100ms ease, transform 100ms ease;
+      }
+
+      .icon-button:hover::after {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .restore {
+        position: absolute;
+        left: 50%;
+        bottom: 104px;
+        z-index: 2;
+        display: none;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 9px 8px 12px;
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 10px;
+        color: #b8bec7;
+        background: rgba(20,22,27,.93);
+        box-shadow: 0 12px 35px rgba(0,0,0,.35);
+        font-size: 11px;
+        transform: translateX(-50%);
+      }
+
+      .restore button {
+        padding: 4px 7px;
+        border: 0;
+        border-radius: 6px;
+        color: #f0ede6;
+        background: rgba(255,255,255,.09);
+        cursor: pointer;
+      }
+
+      .restore.visible { display: flex; }
+
+      .controls {
+        position: absolute;
+        z-index: 7;
+        left: 20px;
+        bottom: 18px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px;
+        border: 1px solid rgba(255,255,255,.08);
+        border-radius: 12px;
+        background: rgba(12,14,18,.58);
+        backdrop-filter: blur(14px);
+      }
+
+      .sample-button {
+        padding: 7px 10px;
+        border: 0;
+        border-radius: 8px;
+        color: #939aa5;
+        background: transparent;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .sample-button:hover { color: #d9dde4; }
+
+      .sample-button.active {
+        color: #f2efe8;
+        background: rgba(255,255,255,.1);
+        box-shadow: 0 1px 0 rgba(255,255,255,.05) inset;
+      }
+
+      .scale-note {
+        position: absolute;
+        z-index: 7;
+        right: 20px;
+        bottom: 25px;
+        margin: 0;
+        color: rgba(220,225,232,.46);
+        font-size: 10px;
+        letter-spacing: .05em;
+        text-transform: uppercase;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .note {
+        padding: 15px 16px;
+        border: 1px solid rgba(255,255,255,.065);
+        border-radius: 13px;
+        color: #969da7;
+        background: rgba(255,255,255,.025);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 3px;
+        color: #d8d9d6;
+        font-weight: 600;
+      }
+
+      @media (max-width: 760px) {
+        .page { width: min(100% - 18px, 1180px); padding-top: 28px; }
+        .intro { display: block; }
+        .intro p:last-child { margin-top: 12px; }
+        .scene { min-height: 430px; }
+        .editor { left: 4%; width: 88%; }
+        .draft-window { transform: translateX(-50%) scale(.78); }
+        .notes { grid-template-columns: 1fr; }
+        .scale-note { display: none; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0s !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Turn window · direction 01</p>
+          <h1 id="page-title">Editorial card</h1>
+        </div>
+        <p>A content-first reading surface. No status copy, no header bar—just the words, a small drag cue, and controls that recede until needed.</p>
+      </section>
+
+      <section class="scene" id="scene" aria-label="Interactive desktop preview">
+        <div class="wallpaper-mark" aria-hidden="true"></div>
+        <div class="editor" aria-hidden="true">
+          <div class="editor-titlebar">Notes</div>
+          <div class="editor-copy">
+            <div class="line medium"></div>
+            <div class="line"></div>
+            <div class="line short"></div>
+            <div class="line"></div>
+            <div class="line medium"></div>
+          </div>
+        </div>
+
+        <div class="preview-zone" id="previewZone">
+          <article class="draft-window" id="draftWindow" aria-label="Undertone turn window preview">
+            <span class="drag-affordance" aria-hidden="true"></span>
+            <div class="text-viewport">
+              <div class="draft-text" id="draftText">This is what the turn window looks like right now.</div>
+            </div>
+            <div class="window-actions">
+              <button class="icon-button" id="snapButton" type="button" aria-label="Return to position">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="5"></circle>
+                  <circle cx="8" cy="8" r="1.6"></circle>
+                  <path d="M8 1v2M8 13v2M1 8h2M13 8h2"></path>
+                </svg>
+              </button>
+              <button class="icon-button discard" id="discardButton" type="button" aria-label="Discard turn">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="m4.25 4.25 7.5 7.5M11.75 4.25l-7.5 7.5"></path>
+                </svg>
+              </button>
+            </div>
+          </article>
+
+          <div class="restore" id="restore" role="status">
+            Turn discarded
+            <button id="undoButton" type="button">Undo</button>
+          </div>
+        </div>
+
+        <div class="controls" aria-label="Preview text length">
+          <button class="sample-button active" type="button" data-sample="short">Short turn</button>
+          <button class="sample-button" type="button" data-sample="medium">Growing turn</button>
+          <button class="sample-button" type="button" data-sample="long">Long turn</button>
+        </div>
+        <p class="scale-note">Window shown at actual size · 540 × 96</p>
+
+        <div class="desktop-bar" aria-hidden="true">
+          <span class="task-icon"></span>
+          <span class="task-icon active"></span>
+          <span class="task-icon"></span>
+          <span class="task-icon"></span>
+        </div>
+      </section>
+
+      <section class="notes" aria-label="Design details">
+        <div class="note"><strong>Words first</strong>Editorial type and generous line spacing make the draft feel readable rather than technical.</div>
+        <div class="note"><strong>Chrome on demand</strong>Snap and discard stay discoverable, but gain contrast only when the pointer enters the card.</div>
+        <div class="note"><strong>Built for 96px</strong>Long turns scroll inside the fixed surface and automatically land on the newest lines.</div>
+      </section>
+    </main>
+
+    <script>
+      const samples = {
+        short: "This is what the turn window looks like right now.",
+        medium: "This is what the turn window looks like right now. I want to improve the way this looks for the user. It should feel cleaner, quieter, and easier to read.",
+        long: "This is what the turn window looks like right now. I want to improve the way this looks for the user. It should feel cleaner, quieter, and easier to read. The window should stay out of the way while I am talking, then let the latest words settle naturally into view. I do not need a fragment count or a live label competing with the actual content."
+      };
+
+      const scene = document.querySelector("#scene");
+      const previewZone = document.querySelector("#previewZone");
+      const draftWindow = document.querySelector("#draftWindow");
+      const draftText = document.querySelector("#draftText");
+      const snapButton = document.querySelector("#snapButton");
+      const discardButton = document.querySelector("#discardButton");
+      const restore = document.querySelector("#restore");
+      const undoButton = document.querySelector("#undoButton");
+      const sampleButtons = document.querySelectorAll("[data-sample]");
+
+      let drag = null;
+
+      function resetPosition() {
+        draftWindow.style.left = "50%";
+        draftWindow.style.bottom = "82px";
+        draftWindow.style.top = "auto";
+        draftWindow.style.transform = window.innerWidth <= 760
+          ? "translateX(-50%) scale(.78)"
+          : "translateX(-50%)";
+      }
+
+      function showDraft() {
+        draftWindow.getAnimations().forEach((animation) => animation.cancel());
+        draftWindow.style.display = "block";
+        restore.classList.remove("visible");
+      }
+
+      sampleButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          sampleButtons.forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          draftText.textContent = samples[button.dataset.sample];
+          requestAnimationFrame(() => { draftText.scrollTop = draftText.scrollHeight; });
+          showDraft();
+        });
+      });
+
+      snapButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+      discardButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+      snapButton.addEventListener("click", () => {
+        resetPosition();
+        draftWindow.animate(
+          [
+            { boxShadow: "0 18px 48px rgba(0,0,0,.42)" },
+            { boxShadow: "0 0 0 2px rgba(230,234,239,.16), 0 18px 48px rgba(0,0,0,.42)" },
+            { boxShadow: "0 18px 48px rgba(0,0,0,.42)" }
+          ],
+          { duration: 420, easing: "ease-out" }
+        );
+      });
+
+      discardButton.addEventListener("click", () => {
+        draftWindow.animate(
+          [
+            { opacity: 1, transform: getComputedStyle(draftWindow).transform },
+            { opacity: 0, transform: `${getComputedStyle(draftWindow).transform} scale(.97)` }
+          ],
+          { duration: 160, easing: "ease-in" }
+        ).finished.then(() => {
+          draftWindow.style.display = "none";
+          restore.classList.add("visible");
+        });
+      });
+
+      undoButton.addEventListener("click", showDraft);
+
+      draftWindow.addEventListener("pointerdown", (event) => {
+        if (event.target.closest("button") || event.target.closest(".draft-text")) return;
+        const zoneRect = previewZone.getBoundingClientRect();
+        const cardRect = draftWindow.getBoundingClientRect();
+        drag = {
+          pointerId: event.pointerId,
+          offsetX: event.clientX - cardRect.left,
+          offsetY: event.clientY - cardRect.top,
+          zoneLeft: zoneRect.left,
+          zoneTop: zoneRect.top
+        };
+        draftWindow.setPointerCapture(event.pointerId);
+        draftWindow.classList.add("dragging");
+      });
+
+      draftWindow.addEventListener("pointermove", (event) => {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const scale = window.innerWidth <= 760 ? .78 : 1;
+        const maxX = previewZone.clientWidth - draftWindow.offsetWidth * scale;
+        const maxY = previewZone.clientHeight - draftWindow.offsetHeight * scale - 42;
+        const nextX = Math.min(Math.max(0, event.clientX - drag.zoneLeft - drag.offsetX), maxX);
+        const nextY = Math.min(Math.max(0, event.clientY - drag.zoneTop - drag.offsetY), maxY);
+        draftWindow.style.left = `${nextX}px`;
+        draftWindow.style.top = `${nextY}px`;
+        draftWindow.style.bottom = "auto";
+        draftWindow.style.transform = window.innerWidth <= 760 ? "scale(.78)" : "none";
+        draftWindow.style.transformOrigin = "top left";
+      });
+
+      function stopDrag(event) {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        drag = null;
+        draftWindow.classList.remove("dragging");
+        draftWindow.releasePointerCapture(event.pointerId);
+      }
+
+      draftWindow.addEventListener("pointerup", stopDrag);
+      draftWindow.addEventListener("pointercancel", stopDrag);
+      window.addEventListener("resize", resetPosition);
+    </script>
+  </body>
+</html>

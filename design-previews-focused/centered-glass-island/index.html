@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Undertone — Centered Glass Island</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --page: #090b0f;
+      --panel: #11151a;
+      --line: rgb(255 255 255 / .09);
+      --text: #f4f6f8;
+      --muted: #929ba6;
+      --accent: #9bf2df;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; background: var(--page); color: var(--text); }
+    button { font: inherit; }
+    .page { width: min(1240px, 100%); margin: 0 auto; padding: 42px clamp(16px, 4vw, 48px) 60px; }
+    .header { max-width: 760px; margin-bottom: 26px; }
+    .eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(34px, 5vw, 56px); line-height: 1; letter-spacing: -.052em; }
+    .intro { margin: 15px 0 0; max-width: 680px; color: #b7bec7; font-size: 15px; line-height: 1.6; }
+
+    .demo { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: 0 28px 80px rgb(0 0 0 / .3); }
+    .stage {
+      position: relative;
+      height: min(650px, 69vh);
+      min-height: 510px;
+      overflow: hidden;
+      isolation: isolate;
+      background:
+        radial-gradient(70% 95% at 72% 15%, rgb(67 82 105 / .25), transparent 63%),
+        linear-gradient(145deg, #171b22, #0d1015 74%);
+      transition: background 220ms ease;
+    }
+    .stage::before {
+      position: absolute; inset: 0; z-index: -2; content: "";
+      background:
+        radial-gradient(45% 55% at 18% 24%, rgb(126 154 181 / .1), transparent 62%),
+        linear-gradient(90deg, transparent 49.9%, rgb(255 255 255 / .018) 50%, transparent 50.1%);
+    }
+    .desktop-card {
+      position: absolute;
+      border: 1px solid rgb(255 255 255 / .055);
+      border-radius: 14px;
+      background: rgb(255 255 255 / .025);
+      box-shadow: 0 25px 70px rgb(0 0 0 / .2);
+      opacity: .78;
+      transition: background 220ms ease, border-color 220ms ease, opacity 220ms ease;
+    }
+    .desktop-card.a { width: 37%; height: 37%; left: 8%; top: 13%; }
+    .desktop-card.b { width: 34%; height: 42%; right: 7%; top: 20%; }
+    .desktop-card::before {
+      position: absolute; top: 18px; left: 18px; width: 42%; height: 7px; border-radius: 999px;
+      content: ""; background: rgb(255 255 255 / .075); box-shadow: 0 22px 0 rgb(255 255 255 / .035), 0 44px 0 rgb(255 255 255 / .035);
+    }
+    .stage[data-scene="light"] {
+      background:
+        radial-gradient(70% 95% at 72% 15%, rgb(174 193 214 / .42), transparent 63%),
+        linear-gradient(145deg, #dbe1e8, #b9c2cc 74%);
+    }
+    .stage[data-scene="light"]::before { background: radial-gradient(45% 55% at 18% 24%, rgb(255 255 255 / .52), transparent 62%); }
+    .stage[data-scene="light"] .desktop-card { border-color: rgb(23 34 49 / .08); background: rgb(255 255 255 / .2); }
+    .stage[data-scene="light"] .desktop-card::before { background: rgb(25 38 53 / .1); box-shadow: 0 22px 0 rgb(25 38 53 / .055), 0 44px 0 rgb(25 38 53 / .055); }
+    .stage[data-scene="busy"] {
+      background:
+        radial-gradient(50% 80% at 75% 18%, rgb(68 90 116 / .3), transparent 65%),
+        linear-gradient(135deg, #0f141b, #181c24 55%, #101318);
+    }
+    .stage[data-scene="busy"] .desktop-card { opacity: 1; background: rgb(7 10 15 / .5); }
+    .stage[data-scene="busy"] .desktop-card.a { width: 45%; height: 54%; left: 4%; top: 8%; }
+    .stage[data-scene="busy"] .desktop-card.b { width: 41%; height: 50%; right: 4%; top: 13%; }
+    .stage[data-scene="busy"] .desktop-card::after {
+      position: absolute; left: 18px; right: 18px; bottom: 20px; height: 42%; content: "";
+      background: repeating-linear-gradient(180deg, rgb(134 177 211 / .13) 0 3px, transparent 3px 15px);
+      mask: linear-gradient(90deg, #000 0 82%, transparent 82%);
+    }
+
+    .island {
+      --island-width: 54px;
+      --island-height: 36px;
+      position: absolute;
+      z-index: 10;
+      left: 50%;
+      top: 63%;
+      width: var(--island-width);
+      height: var(--island-height);
+      overflow: hidden;
+      transform: translate(-50%, -50%);
+      color: rgb(249 251 253 / .97);
+      border: 1px solid rgb(255 255 255 / .2);
+      border-radius: calc(var(--island-height) / 2);
+      background:
+        linear-gradient(145deg, rgb(255 255 255 / .075), transparent 32%),
+        rgb(13 16 21 / .66);
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / .07),
+        inset 0 -1px 0 rgb(0 0 0 / .22),
+        0 13px 34px rgb(0 0 0 / .34),
+        0 3px 9px rgb(0 0 0 / .28);
+      backdrop-filter: blur(22px) saturate(1.22);
+      -webkit-backdrop-filter: blur(22px) saturate(1.22);
+      transition:
+        width 560ms cubic-bezier(.2, .9, .22, 1),
+        height 440ms 70ms cubic-bezier(.2, .9, .22, 1),
+        border-radius 440ms 40ms cubic-bezier(.2, .9, .22, 1),
+        opacity 180ms ease,
+        transform 240ms ease,
+        border-color 160ms ease,
+        box-shadow 160ms ease;
+    }
+    .island.phase-transcribing { --island-width: 72px; }
+    .island.phase-first,
+    .island.phase-append {
+      --island-width: min(540px, calc(100% - 32px));
+      --island-height: 82px;
+      border-radius: 29px;
+      background:
+        linear-gradient(145deg, rgb(255 255 255 / .07), transparent 27%),
+        rgb(19 22 28 / .53);
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / .075),
+        inset 0 -1px 0 rgb(0 0 0 / .16),
+        0 16px 38px rgb(0 0 0 / .31),
+        0 3px 10px rgb(0 0 0 / .22);
+    }
+    .island.phase-first:hover,
+    .island.phase-append:hover {
+      border-color: rgb(255 255 255 / .27);
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / .09),
+        inset 0 -1px 0 rgb(0 0 0 / .15),
+        0 18px 44px rgb(0 0 0 / .34),
+        0 4px 11px rgb(0 0 0 / .24);
+    }
+    .island.discarding { opacity: 0; transform: translate(-50%, -50%) scale(.96); }
+    .island.snap-pulse { animation: snap-pulse 340ms ease-out; }
+
+    .glass-field { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 260ms 240ms ease; }
+    .phase-first .glass-field,
+    .phase-append .glass-field { opacity: 1; }
+    .glass-field::before,
+    .glass-field::after { position: absolute; content: ""; border-radius: 999px; filter: blur(16px); }
+    .glass-field::before { width: 42%; height: 75%; left: 7%; top: -27%; background: rgb(207 221 234 / .095); transform: rotate(-9deg); }
+    .glass-field::after { width: 35%; height: 85%; right: 7%; bottom: -43%; background: rgb(124 144 166 / .1); transform: rotate(12deg); }
+    .edge-glint {
+      position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+      background: linear-gradient(105deg, rgb(255 255 255 / .13), transparent 12% 82%, rgb(204 225 244 / .07));
+      padding: 1px;
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: .72;
+    }
+
+    .signal,
+    .processing {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 2px;
+      transition: opacity 140ms ease, transform 200ms ease;
+    }
+    .signal i,
+    .processing i { display: block; width: 3px; height: 4px; border-radius: 999px; background: rgb(213 220 228 / .9); }
+    .processing { opacity: 0; }
+    .phase-transcribing .signal { opacity: 0; }
+    .phase-transcribing .processing { opacity: 1; }
+    .processing i { height: 6px; animation: processing 820ms ease-in-out infinite; }
+    .processing i:nth-child(2) { animation-delay: 90ms; }
+    .processing i:nth-child(3) { animation-delay: 180ms; }
+    .processing i:nth-child(4) { animation-delay: 270ms; }
+    .processing i:nth-child(5) { animation-delay: 360ms; }
+    .phase-first .signal, .phase-append .signal,
+    .phase-first .processing, .phase-append .processing { opacity: 0; transform: scale(.8); }
+
+    .drag-mark {
+      position: absolute; z-index: 4; top: 8px; left: 50%; width: 26px; height: 2px;
+      border-radius: 999px; background: rgb(255 255 255 / .12); transform: translateX(-50%); opacity: 0;
+      transition: opacity 180ms 300ms ease;
+    }
+    .phase-first .drag-mark, .phase-append .drag-mark { opacity: .72; }
+    .transcript {
+      position: absolute; z-index: 3; left: 28px; right: 72px; top: 50%;
+      max-height: 42px; overflow: hidden; transform: translateY(calc(-50% + 2px));
+      color: rgb(249 251 253 / .97); font-size: 14px; font-weight: 450; line-height: 20px;
+      opacity: 0; filter: blur(3px); transition: opacity 230ms 310ms ease, filter 260ms 300ms ease;
+    }
+    .phase-first .transcript, .phase-append .transcript { opacity: 1; filter: blur(0); }
+    .actions {
+      position: absolute; z-index: 5; top: 50%; right: 12px; display: flex; gap: 3px;
+      transform: translateY(-50%) scale(.96); opacity: 0; pointer-events: none;
+      transition: opacity 140ms ease, transform 160ms ease;
+    }
+    .phase-first:hover .actions, .phase-append:hover .actions { opacity: 1; pointer-events: auto; transform: translateY(-50%) scale(1); }
+    .action {
+      appearance: none; width: 24px; height: 24px; padding: 0; display: grid; place-items: center;
+      border: 0; border-radius: 7px; background: rgb(255 255 255 / .065); color: rgb(222 229 235 / .76); cursor: pointer;
+    }
+    .action:hover { color: white; background: rgb(255 255 255 / .11); }
+    .action.discard:hover { color: #ffd5d9; background: rgb(240 111 124 / .16); }
+    .action svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+    .controls { padding: 13px 15px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 22px; border-top: 1px solid var(--line); }
+    .control-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .control-label { margin-right: 3px; color: #707a87; font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .control {
+      appearance: none; border: 1px solid transparent; border-radius: 7px; background: rgb(255 255 255 / .045);
+      color: #aeb6bf; padding: 6px 9px; font-size: 11px; cursor: pointer;
+    }
+    .control:hover { color: var(--text); background: rgb(255 255 255 / .075); }
+    .control[aria-pressed="true"] { color: var(--accent); border-color: rgb(155 242 223 / .2); background: rgb(155 242 223 / .075); }
+    .control.replay { color: var(--text); border-color: var(--line); background: transparent; font-weight: 700; }
+    .notes { margin-top: 13px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .notes article { padding: 14px 15px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+    .notes h2 { margin: 0 0 6px; font-size: 12px; }
+    .notes p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+    @keyframes processing { 0%, 58%, 100% { opacity: .34; transform: translateY(0); } 28% { opacity: 1; transform: translateY(-2px); } }
+    @keyframes snap-pulse { 0% { transform: translate(-50%, -50%) scale(1); } 45% { transform: translate(-50%, -50%) scale(.985); } 100% { transform: translate(-50%, -50%) scale(1); } }
+    @media (max-width: 620px) {
+      .stage { min-height: 470px; }
+      .transcript { left: 22px; right: 66px; font-size: 13px; }
+      .notes { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .island, .signal, .processing, .transcript, .glass-field, .drag-mark, .actions { transition-duration: .01ms !important; transition-delay: 0ms !important; }
+      .processing i { animation: none; }
+      .island.snap-pulse { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <p class="eyebrow">Focused direction</p>
+      <h1>Centered Glass Island</h1>
+      <p class="intro">A compact voice indicator that expands symmetrically into a thinner, more translucent turn surface. Hover over the settled island to reveal its controls.</p>
+    </header>
+
+    <section class="demo" aria-label="Centered Glass Island preview">
+      <div class="stage" id="stage" data-scene="dark">
+        <div class="desktop-card a" aria-hidden="true"></div>
+        <div class="desktop-card b" aria-hidden="true"></div>
+
+        <section class="island phase-append" id="island" aria-label="Open turn preview">
+          <span class="glass-field" aria-hidden="true"></span>
+          <span class="edge-glint" aria-hidden="true"></span>
+          <div class="signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="processing" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <span class="drag-mark" aria-hidden="true"></span>
+          <div class="transcript" id="transcript">This is what it looks like now. The voice indicator grows into the turn from the center.</div>
+          <div class="actions">
+            <button class="action" id="snap" type="button" tabindex="-1" aria-label="Move to default position" title="Move to default position">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2"></circle><circle cx="8" cy="8" r="1.5"></circle></svg>
+            </button>
+            <button class="action discard" id="discard" type="button" tabindex="-1" aria-label="Discard open turn" title="Discard open turn">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <div class="controls" aria-label="Preview controls">
+        <div class="control-group" id="phaseControls">
+          <span class="control-label">Lifecycle</span>
+          <button class="control replay" id="replay" type="button">Replay</button>
+          <button class="control" type="button" data-phase="recording" aria-pressed="false">Recording</button>
+          <button class="control" type="button" data-phase="transcribing" aria-pressed="false">Transcribing</button>
+          <button class="control" type="button" data-phase="first" aria-pressed="false">First turn</button>
+          <button class="control" type="button" data-phase="append" aria-pressed="true">Append</button>
+        </div>
+        <div class="control-group" id="sceneControls">
+          <span class="control-label">Desktop</span>
+          <button class="control" type="button" data-scene="dark" aria-pressed="true">Dark</button>
+          <button class="control" type="button" data-scene="light" aria-pressed="false">Light</button>
+          <button class="control" type="button" data-scene="busy" aria-pressed="false">Busy</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="notes" aria-label="Design intent">
+      <article><h2>Centered transformation</h2><p>The island keeps one fixed center while both width and height change, avoiding a directional rail or edge-origin expansion.</p></article>
+      <article><h2>Thinner surface</h2><p>The settled turn is 540×82 with a 1px rim, giving the transcript room without the heavier windshield proportion.</p></article>
+      <article><h2>Quiet glass</h2><p>Backdrop blur, two faint optical fields, and a restrained edge glint preserve depth without becoming the visual subject.</p></article>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const stage = document.querySelector("#stage");
+      const island = document.querySelector("#island");
+      const transcript = document.querySelector("#transcript");
+      const bars = [...document.querySelectorAll(".signal i")];
+      const actions = document.querySelector(".actions");
+      const phaseButtons = [...document.querySelectorAll("[data-phase]")];
+      const sceneButtons = [...document.querySelectorAll("[data-scene]")];
+      const replayButton = document.querySelector("#replay");
+      const snap = document.querySelector("#snap");
+      const discard = document.querySelector("#discard");
+      const copy = {
+        first: "This is what it looks like now.",
+        append: "This is what it looks like now. The voice indicator grows into the turn from the center."
+      };
+      let phase = "append";
+      let scene = "dark";
+      let timers = [];
+      let envelope = 0;
+      let history = bars.map(() => 0);
+      let frame;
+
+      function clearReplay() {
+        timers.forEach(window.clearTimeout);
+        timers = [];
+        replayButton.disabled = false;
+      }
+      function setPressed(buttons, attribute, value) {
+        buttons.forEach(button => button.setAttribute("aria-pressed", String(button.getAttribute(attribute) === value)));
+      }
+      function applyPhase(next, cancelReplay = true) {
+        if (cancelReplay) clearReplay();
+        phase = next;
+        island.className = `island phase-${next}`;
+        transcript.textContent = next === "first" ? copy.first : next === "append" ? copy.append : "";
+        setPressed(phaseButtons, "data-phase", next);
+      }
+      function applyScene(next) {
+        scene = next;
+        stage.dataset.scene = next;
+        setPressed(sceneButtons, "data-scene", next);
+      }
+      function replay() {
+        clearReplay();
+        replayButton.disabled = true;
+        applyPhase("recording", false);
+        timers.push(window.setTimeout(() => applyPhase("transcribing", false), 1400));
+        timers.push(window.setTimeout(() => applyPhase("first", false), 2250));
+        timers.push(window.setTimeout(() => {
+          applyPhase("append", false);
+          timers = [];
+          replayButton.disabled = false;
+        }, 3600));
+      }
+      function renderVoice(now) {
+        if (phase === "recording") {
+          const target = Math.max(0, Math.sin(now / 95) * .5 + Math.sin(now / 43) * .23 + .27);
+          envelope = target > envelope ? envelope * .18 + target * .82 : envelope * .72 + target * .28;
+          history.pop();
+          history.unshift(envelope);
+          bars.forEach((bar, index) => {
+            const shape = index === 2 ? 1 : index === 1 || index === 3 ? .82 : .62;
+            bar.style.height = `${Math.round(4 + (history[index] || 0) * 17 * shape)}px`;
+          });
+        }
+        frame = window.requestAnimationFrame(renderVoice);
+      }
+      function inspect() {
+        const rect = island.getBoundingClientRect();
+        return {
+          phase,
+          scene,
+          islandWidth: Math.round(rect.width),
+          islandHeight: Math.round(rect.height),
+          controlsOpacity: Number.parseFloat(getComputedStyle(actions).opacity),
+          transcript: transcript.textContent
+        };
+      }
+
+      phaseButtons.forEach(button => button.addEventListener("click", () => applyPhase(button.dataset.phase)));
+      sceneButtons.forEach(button => button.addEventListener("click", () => applyScene(button.dataset.scene)));
+      replayButton.addEventListener("click", replay);
+      snap.addEventListener("click", () => {
+        island.classList.remove("snap-pulse");
+        void island.offsetWidth;
+        island.classList.add("snap-pulse");
+        window.setTimeout(() => island.classList.remove("snap-pulse"), 380);
+      });
+      discard.addEventListener("click", () => {
+        island.classList.add("discarding");
+        window.setTimeout(() => {
+          island.classList.remove("discarding");
+          applyPhase("append");
+        }, 520);
+      });
+
+      window.centeredGlassPreview = { setPhase: applyPhase, setScene: applyScene, replay, inspect };
+      frame = window.requestAnimationFrame(renderVoice);
+    })();
+  </script>
+</body>
+</html>

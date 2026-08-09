@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: "Segoe UI", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
 }
 
 html,
@@ -13,44 +13,132 @@ body {
 }
 
 body {
-  padding: 8px;
   box-sizing: border-box;
+  padding: 6px;
 }
 
 .draft {
+  --surface: linear-gradient(145deg, rgb(82 87 96 / 0.3), rgb(34 37 43 / 0.82) 38%, rgb(18 20 24 / 0.9));
+  --rim: rgb(255 255 255 / 0.16);
+  --text: rgb(244 246 249 / 0.98);
+  --scrollbar: rgb(204 211 221 / 0.3);
+  --signal: 173 205 230;
+  --voice-level: 0;
   box-sizing: border-box;
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 8px 8px 11px 12px;
-  border-radius: 14px;
-  background: rgb(18 20 24 / 0.9);
-  border: 1px solid rgb(255 255 255 / 0.08);
-  color: rgb(226 229 233 / 1);
+  border: 0;
+  border-radius: 28px;
+  background: transparent;
+  color: var(--text);
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+}
+
+.draft::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--rim);
+  border-radius: inherit;
+  background: var(--surface);
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.draft::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  bottom: 1px;
+  width: 104px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgb(116 188 242 / 0.9), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) scaleX(0.35);
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.draft[data-design="smoked-glass"] {
+  --surface:
+    radial-gradient(120% 95% at 50% -25%, rgb(255 255 255 / 0.16), transparent 53%),
+    linear-gradient(145deg, rgb(74 79 88 / 0.31), rgb(31 34 40 / 0.84) 42%, rgb(17 19 23 / 0.91));
+  --rim: rgb(255 255 255 / 0.18);
+}
+
+.draft[data-design="quiet-slate"] {
+  --surface: linear-gradient(180deg, rgb(46 51 60 / 0.92), rgb(26 30 36 / 0.94));
+  --rim: rgb(210 219 232 / 0.13);
+  --text: rgb(236 239 244 / 0.98);
+  --scrollbar: rgb(183 194 208 / 0.27);
+}
+
+.draft[data-design="center-rail"] {
+  --surface:
+    radial-gradient(55% 105% at 50% 115%, rgb(71 133 176 / 0.2), transparent 61%),
+    linear-gradient(150deg, rgb(58 64 73 / 0.42), rgb(23 27 33 / 0.9) 48%, rgb(16 19 24 / 0.93));
+  --rim: rgb(174 202 225 / 0.16);
+}
+
+.draft[data-design="center-rail"]::after {
+  opacity: 0.42;
+  transform: translateX(-50%) scaleX(0.62);
+}
+
+.draft[data-design="aurora-film"] {
+  --surface:
+    radial-gradient(95% 135% at 12% 14%, rgb(80 164 178 / 0.22), transparent 52%),
+    radial-gradient(86% 130% at 88% 84%, rgb(126 91 172 / 0.22), transparent 56%),
+    linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
+  --rim: rgb(214 227 240 / 0.2);
+  --scrollbar: rgb(191 207 224 / 0.31);
+}
+
+/* Integrated studies preserve the preferred surfaces and move activity to the rim. */
+.draft[data-integrated="true"] {
+  --signal-rim-color: 178 220 246;
+}
+
+.draft[data-design="smoked-rim"] {
+  --surface:
+    radial-gradient(120% 95% at 50% -25%, rgb(255 255 255 / 0.16), transparent 53%),
+    linear-gradient(145deg, rgb(74 79 88 / 0.31), rgb(31 34 40 / 0.84) 42%, rgb(17 19 23 / 0.91));
+  --rim: rgb(255 255 255 / 0.11);
+}
+
+.draft[data-design="slate-pulse"] {
+  --surface: linear-gradient(180deg, rgb(46 51 60 / 0.92), rgb(26 30 36 / 0.94));
+  --rim: rgb(210 219 232 / 0.08);
+  --signal-rim-color: 139 197 235;
+}
+
+.draft[data-design="aurora-rim"] {
+  --surface:
+    radial-gradient(95% 135% at 12% 14%, rgb(80 164 178 / 0.22), transparent 52%),
+    radial-gradient(86% 130% at 88% 84%, rgb(126 91 172 / 0.22), transparent 56%),
+    linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
+  --rim: rgb(214 227 240 / 0.1);
 }
 
 .draftHeader {
   app-region: drag;
   -webkit-app-region: drag;
-  min-height: 22px;
+  position: absolute;
+  z-index: 4;
+  top: 5px;
+  right: 6px;
+  left: 6px;
+  height: 22px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-end;
   cursor: move;
-  user-select: none;
-}
-
-.draftMeta {
-  padding-left: 1px;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgb(170 178 190 / 0.95);
   user-select: none;
 }
 
@@ -60,7 +148,16 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
 }
+
+.draft:hover .windowActions,
+.windowActions:focus-within {
+  opacity: 1;
+}
+
+.draft[data-empty="true"] .windowActions { display: none; }
 
 .windowAction {
   app-region: no-drag;
@@ -71,38 +168,45 @@ body {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: rgb(170 178 190 / 0.95);
+  color: rgb(190 198 209 / 0.88);
   font: 400 18px/20px "Segoe UI", sans-serif;
   cursor: pointer;
 }
 
-.snap {
-  font-size: 16px;
-}
+.snap { font-size: 15px; }
 
 .windowAction:hover {
-  color: rgb(225 230 237 / 1);
-  background: rgb(255 255 255 / 0.08);
+  color: rgb(239 243 248 / 1);
+  background: rgb(255 255 255 / 0.09);
 }
 
 .discard:hover {
-  color: rgb(248 201 206 / 1);
-  background: rgb(240 111 124 / 0.16);
+  color: rgb(250 205 211 / 1);
+  background: rgb(240 111 124 / 0.17);
 }
 
-.discard:active {
-  background: rgb(240 111 124 / 0.25);
-}
+.discard:active { background: rgb(240 111 124 / 0.25); }
 
 .draftViewport {
-  flex: 1;
+  position: absolute;
+  z-index: 2;
+  inset: 8px 64px 8px 18px;
+  min-width: 0;
   min-height: 0;
+  display: grid;
+  align-items: center;
   overflow: hidden;
+  pointer-events: none;
 }
+
+.draft[data-empty="true"] .draftViewport { display: none; }
 
 .draftText {
   box-sizing: border-box;
+  align-self: center;
   width: 100%;
+  min-width: 0;
+  min-height: 0;
   margin: 0;
   padding: 0 4px 0 0;
   overflow-x: hidden;
@@ -110,18 +214,124 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  font-size: 13px;
-  line-height: 18px;
-  color: rgb(238 241 245 / 0.98);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  color: var(--text);
+  pointer-events: auto;
 }
 
-.draftText::-webkit-scrollbar { width: 6px; }
+.draftText::-webkit-scrollbar { width: 5px; }
 .draftText::-webkit-scrollbar-track { background: transparent; }
 .draftText::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgb(170 178 190 / 0.28);
+  background: var(--scrollbar);
+}
+
+.signalRim {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  box-sizing: border-box;
+  display: none;
+  border: 1px solid rgb(var(--signal-rim-color));
+  border-radius: inherit;
+  opacity: calc(0.16 + var(--voice-level) * 0.84);
+  pointer-events: none;
+}
+
+.draft[data-integrated="true"] .signalRim { display: block; }
+
+.draft[data-design="aurora-rim"] .signalRim {
+  border-top-color: rgb(106 205 218);
+  border-right-color: rgb(181 139 231);
+  border-bottom-color: rgb(230 164 209);
+  border-left-color: rgb(109 188 222);
+}
+
+.draft[data-activity="locked"] .signalRim { opacity: 0.88; }
+
+.draft[data-activity="transcribing"] .signalRim,
+.draft[data-activity="finalizing"] .signalRim {
+  opacity: 0.92;
+  animation: rimTrace 1.25s ease-in-out infinite;
+}
+
+.draft[data-design="slate-pulse"][data-activity="transcribing"] .signalRim,
+.draft[data-design="slate-pulse"][data-activity="finalizing"] .signalRim {
+  animation: rimBreathe 900ms ease-in-out infinite alternate;
+}
+
+.draft[data-design="aurora-rim"][data-activity="transcribing"] .signalRim,
+.draft[data-design="aurora-rim"][data-activity="finalizing"] .signalRim {
+  animation: rimSpectrum 1.8s ease-in-out infinite;
+}
+
+.draft[data-activity="slow"] .signalRim {
+  border-color: rgb(235 193 111);
+  opacity: 0.9;
+  animation: rimBreathe 1.4s ease-in-out infinite alternate;
+}
+
+.draft.reveal::before { animation: surfaceReveal 260ms cubic-bezier(0.2, 0.75, 0.2, 1); }
+.draft.reveal .draftViewport,
+.draft.reveal .signalRim { animation: contentReveal 180ms 70ms ease-out both; }
+
+@keyframes surfaceReveal {
+  from { opacity: 0; transform: scaleX(0.12) scaleY(0.52); }
+  68% { opacity: 1; transform: scaleX(1.015) scaleY(1); }
+  to { opacity: 1; transform: scaleX(1) scaleY(1); }
+}
+
+@keyframes contentReveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes rimTrace {
+  0%, 100% {
+    border-color: rgb(112 177 218 / 0.26);
+  }
+  35% {
+    border-top-color: rgb(220 242 255);
+    border-right-color: rgb(112 177 218 / 0.34);
+  }
+  68% {
+    border-bottom-color: rgb(220 242 255);
+    border-left-color: rgb(112 177 218 / 0.34);
+  }
+}
+
+@keyframes rimBreathe {
+  from { opacity: 0.24; }
+  to { opacity: 0.9; }
+}
+
+@keyframes rimSpectrum {
+  0%, 100% {
+    border-top-color: rgb(106 205 218);
+    border-right-color: rgb(181 139 231);
+    border-bottom-color: rgb(230 164 209);
+    border-left-color: rgb(109 188 222);
+  }
+  50% {
+    border-top-color: rgb(192 150 235);
+    border-right-color: rgb(231 172 207);
+    border-bottom-color: rgb(107 205 219);
+    border-left-color: rgb(145 179 239);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .windowAction { transition: none; }
+  .draft::after,
+  .windowActions,
+  .signalRim { transition: none; }
+  .draft.reveal::before,
+  .draft.reveal .draftViewport,
+  .draft.reveal .signalRim,
+  .draft[data-activity="transcribing"] .signalRim,
+  .draft[data-activity="finalizing"] .signalRim,
+  .draft[data-activity="slow"] .signalRim {
+    animation: none;
+  }
 }
