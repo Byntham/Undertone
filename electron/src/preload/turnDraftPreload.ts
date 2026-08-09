@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld("undertoneTurnDraft", {
   reportContentHeight: (height: number): void => {
     ipcRenderer.send("turnDraft:content-height", height);
   },
+  completeDismiss: (revision: number): void => {
+    ipcRenderer.send("turnDraft:dismiss-complete", revision);
+  },
   onView: (listener: (draft: TurnDraftView) => void): (() => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

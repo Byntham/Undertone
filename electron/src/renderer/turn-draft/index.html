@@ -19,7 +19,14 @@
       <div id="draftViewport" class="draftViewport">
         <div id="draftText" class="draftText"></div>
       </div>
-      <div id="signalRim" class="signalRim" aria-hidden="true"></div>
+      <svg
+        id="signalRim"
+        class="signalRim"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <rect id="signalPath" class="signalPath" pathLength="100"></rect>
+      </svg>
     </section>
     <script type="module" src="/turn-draft/turnDraft.ts"></script>
   </body>

@@ -15,7 +15,11 @@ type DraftActivity =
   | "listening"
   | "finalizing";
 
-type ActivityView = TurnDraftView & { activity?: DraftActivity };
+type ActivityView = TurnDraftView & {
+  activity?: DraftActivity;
+  presentation?: "visible" | "dismissing";
+  revision?: number;
+};
 
 declare global {
   interface Window {
@@ -23,13 +27,13 @@ declare global {
       discard: () => void;
       snap: () => void;
       reportContentHeight: (height: number) => void;
+      completeDismiss: (revision: number) => void;
       onView: (listener: (draft: TurnDraftView) => void) => () => void;
       onLevel: (listener: (level: number) => void) => () => void;
     };
   }
 }
 
-const COMPACT_HEIGHT = 44;
 const TEXT_BASE_HEIGHT = 68;
 const BODY_GUTTERS = 12;
 const TEXT_CHROME = 16;
@@ -44,17 +48,19 @@ function requiredElement<T extends Element>(selector: string): T {
 const draft = requiredElement<HTMLElement>("#draft");
 const draftViewport = requiredElement<HTMLDivElement>("#draftViewport");
 const draftText = requiredElement<HTMLDivElement>("#draftText");
-requiredElement<HTMLDivElement>("#signalRim");
+const signalRim = requiredElement<SVGSVGElement>("#signalRim");
+const signalPath = requiredElement<SVGRectElement>("#signalPath");
 const discard = requiredElement<HTMLButtonElement>("#discard");
 const snap = requiredElement<HTMLButtonElement>("#snap");
 
 let currentDesign: TurnWindowDesign | null = null;
 let currentActivity: DraftActivity = "idle";
 let rendered = false;
-let renderedEmpty = false;
 let envelope = 0;
 let layoutFrame: number | undefined;
 let lastRequestedHeight: number | undefined;
+let dismissingRevision: number | null = null;
+let completedDismissalRevision: number | null = null;
 
 function contentIsEmpty(): boolean {
   return draft.dataset.empty === "true";
@@ -88,12 +94,8 @@ function fitTextViewport(): void {
 
 function requestContentHeight(): void {
   layoutFrame = undefined;
-  const integrated = currentDesign !== null
-    && isIntegratedTurnWindowDesign(currentDesign);
   let height: number;
-  if (contentIsEmpty() && integrated) {
-    height = COMPACT_HEIGHT;
-  } else if (contentIsEmpty()) {
+  if (contentIsEmpty()) {
     height = TEXT_BASE_HEIGHT;
   } else {
     // Ignore the transient narrow frame while the native window grows from
@@ -115,7 +117,45 @@ function scheduleLayout(): void {
   layoutFrame = requestAnimationFrame(requestContentHeight);
 }
 
+function sizeSignalPath(): void {
+  const width = draft.clientWidth;
+  const height = draft.clientHeight;
+  const inset = 1.25;
+  signalRim.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  signalPath.setAttribute("x", String(inset));
+  signalPath.setAttribute("y", String(inset));
+  signalPath.setAttribute("width", String(Math.max(0, width - inset * 2)));
+  signalPath.setAttribute("height", String(Math.max(0, height - inset * 2)));
+  signalPath.setAttribute("rx", String(Math.max(0, Math.min(27, height / 2 - inset))));
+}
+
+function cancelDismissal(): void {
+  dismissingRevision = null;
+  draft.classList.remove("dismissing");
+}
+
+function completeDismissal(revision: number): void {
+  if (dismissingRevision !== revision || completedDismissalRevision === revision) return;
+  completedDismissalRevision = revision;
+  rendered = false;
+  window.undertoneTurnDraft?.completeDismiss(revision);
+}
+
+function startDismissal(revision: number): void {
+  if (dismissingRevision === revision) return;
+  dismissingRevision = revision;
+  completedDismissalRevision = null;
+  draft.classList.remove("reveal", "dismissing");
+  void draft.offsetWidth;
+  draft.classList.add("dismissing");
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    requestAnimationFrame(() => { completeDismissal(revision); });
+  }
+}
+
 new ResizeObserver(scheduleLayout).observe(draftViewport);
+new ResizeObserver(sizeSignalPath).observe(draft);
+sizeSignalPath();
 window.addEventListener("resize", scheduleLayout);
 
 discard.addEventListener("click", () => { window.undertoneTurnDraft?.discard(); });
@@ -123,6 +163,9 @@ snap.addEventListener("click", () => { window.undertoneTurnDraft?.snap(); });
 
 draft.addEventListener("animationend", (event) => {
   if (event.animationName === "surfaceReveal") draft.classList.remove("reveal");
+  if (event.animationName === "draftDismiss" && dismissingRevision !== null) {
+    completeDismissal(dismissingRevision);
+  }
 });
 
 window.undertoneTurnDraft?.onLevel((rms) => {
@@ -147,13 +190,22 @@ window.undertoneTurnDraft?.onView((incoming) => {
     ? "listening"
     : view.liveState === "finalizing" ? "finalizing" : "idle";
   const nextActivity = view.activity ?? fallbackActivity;
-  const reveal = !rendered || design !== currentDesign || empty !== renderedEmpty;
+  const presentation = view.presentation ?? "visible";
+  const revision = Number.isSafeInteger(view.revision) ? (view.revision ?? 0) : 0;
+  const reveal = !rendered;
   const activityChanged = nextActivity !== currentActivity;
+
+  draft.dataset.presentation = presentation;
+  draft.dataset.revision = String(revision);
+  if (presentation === "dismissing") {
+    startDismissal(revision);
+    return;
+  }
+  cancelDismissal();
 
   currentDesign = design;
   currentActivity = nextActivity;
   rendered = true;
-  renderedEmpty = empty;
   draft.dataset.design = design;
   draft.dataset.integrated = String(integrated);
   draft.dataset.empty = String(empty);

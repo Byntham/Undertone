@@ -135,7 +135,6 @@ async function captureTurnDraft() {
     "slate-pulse",
     "aurora-rim",
   ];
-  const integratedDesigns = new Set(["smoked-rim", "slate-pulse", "aurora-rim"]);
   const shortText = "A clean open turn grows with the words.";
   const mediumText = [
     "This open turn starts small and expands upward as the transcript develops.",
@@ -147,7 +146,9 @@ async function captureTurnDraft() {
     (_, index) => `Sentence ${index + 1} keeps extending the open turn with readable transcript text.`,
   ).join(" ");
   let requestedHeight = 68;
+  let revision = 0;
   const requestedHeights = [];
+  const completedDismissals = [];
   const win = new BrowserWindow({
     width: 400,
     height: 68,
@@ -168,9 +169,7 @@ async function captureTurnDraft() {
     if (event.sender !== win.webContents || !Number.isFinite(height)) return;
     requestedHeight = Math.round(height);
     requestedHeights.push(requestedHeight);
-    const nextHeight = requestedHeight <= 44
-      ? 44
-      : Math.max(68, Math.min(360, requestedHeight));
+    const nextHeight = Math.max(68, Math.min(360, requestedHeight));
     const bounds = win.getBounds();
     win.setBounds({
       x: bounds.x,
@@ -180,6 +179,11 @@ async function captureTurnDraft() {
     });
   };
   ipcMain.on("turnDraft:content-height", resizeFromRenderer);
+  const recordDismissal = (event, completedRevision) => {
+    if (event.sender !== win.webContents || !Number.isInteger(completedRevision)) return;
+    completedDismissals.push(completedRevision);
+  };
+  ipcMain.on("turnDraft:dismiss-complete", recordDismissal);
   await win.loadFile(turnDraftFile);
 
   const setBaseBounds = (width, height) => {
@@ -219,15 +223,25 @@ async function captureTurnDraft() {
     );
   };
 
-  const sendDraft = async (design, text, activity = "recording") => {
+  const sendDraft = async (
+    design,
+    text,
+    activity = "listening",
+    presentation = "visible",
+    viewRevision = ++revision,
+  ) => {
     requestedHeights.length = 0;
     win.webContents.send("turnDraft:view", {
       text,
       fragmentCount: text.length === 0 ? 0 : 1,
       charCount: text.length,
-      liveState: activity === "listening" ? "listening" : null,
+      liveState: activity === "listening"
+        ? "listening"
+        : activity === "finalizing" ? "finalizing" : null,
       activity,
       design,
+      presentation,
+      revision: viewRevision,
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     for (const level of [0.015, 0.04, 0.12, 0.28, 0.16]) {
@@ -242,11 +256,16 @@ async function captureTurnDraft() {
     const snap = document.querySelector("#snap");
     const discard = document.querySelector("#discard");
     const signalRim = document.querySelector("#signalRim");
+    const signalPath = document.querySelector("#signalPath");
     return {
       design: draft.dataset.design,
       integrated: draft.dataset.integrated,
       empty: draft.dataset.empty,
       activity: draft.dataset.activity,
+      presentation: draft.dataset.presentation,
+      revision: Number.parseInt(draft.dataset.revision ?? "", 10),
+      draftClass: draft.className,
+      draftAnimation: getComputedStyle(draft).animationName,
       voiceLevel: Number.parseFloat(getComputedStyle(draft).getPropertyValue("--voice-level")) || 0,
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       continuousText: text.textContent === ${JSON.stringify(text)},
@@ -258,6 +277,12 @@ async function captureTurnDraft() {
       windowInnerHeight: window.innerHeight,
       latestVisible: text.scrollHeight - text.scrollTop <= text.clientHeight + 1,
       signalRimVisible: getComputedStyle(signalRim).display !== "none",
+      signalRimOpacity: Number.parseFloat(getComputedStyle(signalRim).opacity),
+      signalRimAnimation: getComputedStyle(signalPath).animationName,
+      signalDasharray: getComputedStyle(signalPath).strokeDasharray,
+      signalPathWidth: Number.parseFloat(signalPath.getAttribute("width")),
+      signalPathHeight: Number.parseFloat(signalPath.getAttribute("height")),
+      draftOpacity: Number.parseFloat(getComputedStyle(draft).opacity),
       shadow: getComputedStyle(draft).boxShadow,
       headerRegion: getComputedStyle(header).getPropertyValue("app-region")
         || getComputedStyle(header).getPropertyValue("-webkit-app-region"),
@@ -287,36 +312,116 @@ async function captureTurnDraft() {
 
   try {
     for (const design of designs) {
-      const integrated = integratedDesigns.has(design);
-      if (integrated) {
-        setBaseBounds(72, 44);
-        await sendDraft(design, "");
-        await waitForStableRender(design, "", 44);
-        const compact = await inspectLayout("");
-        if (!compact.signalRimVisible || compact.integrated !== "true"
-            || compact.empty !== "true" || compact.activity !== "recording"
-            || compact.voiceLevel <= 0 || compact.overflow) {
-          throw new Error(`Open-turn ${design} compact layout is invalid: ${JSON.stringify(compact)}`);
-        }
-        await captureDraft(`open-turn-${design}-voice`);
-        await sendDraft(design, "", "transcribing");
-        await waitForStableRender(design, "", 44);
-        await captureDraft(`open-turn-${design}-loading`);
-        setBaseBounds(400, 68);
-      } else {
-        setBaseBounds(400, 68);
+      setBaseBounds(400, 68);
+      await sendDraft(design, "", "listening");
+      await waitForStableRender(design, "", 68);
+      const listening = await inspectLayout("");
+      if (!listening.signalRimVisible || listening.empty !== "true"
+          || listening.activity !== "listening" || listening.presentation !== "visible"
+          || listening.voiceLevel <= 0 || listening.signalRimOpacity <= 0.14
+          || listening.overflow
+          || win.getBounds().width !== 400 || win.getBounds().height !== 68) {
+        throw new Error(`Open-turn ${design} listening layout is invalid: ${JSON.stringify(listening)}`);
       }
+      await captureDraft(`open-turn-${design}-voice`);
 
-      await sendDraft(design, shortText);
+      await sendDraft(design, shortText, "listening");
       await waitForStableRender(design, shortText, 68);
       const short = await inspectLayout(shortText);
       if (short.overflow || short.hasVerticalOverflow || !short.continuousText
-          || short.hasFragmentRows || short.shadow !== "none") {
+          || short.hasFragmentRows || short.shadow !== "none"
+          || short.activity !== "listening" || short.presentation !== "visible") {
         throw new Error(`Open-turn ${design} short layout is invalid: ${JSON.stringify(short)}`);
       }
       await captureDraft(`open-turn-${design}-short`);
 
-      await sendDraft(design, mediumText);
+      const releaseBounds = win.getBounds();
+      await sendDraft(design, shortText, "finalizing");
+      await waitForStableRender(design, shortText, 68);
+      const finalizing = await inspectLayout(shortText);
+      const processingBounds = win.getBounds();
+      if (JSON.stringify(processingBounds) !== JSON.stringify(releaseBounds)
+          || finalizing.activity !== "finalizing"
+          || finalizing.presentation !== "visible"
+          || finalizing.signalRimAnimation === "none"
+          || finalizing.signalDasharray === "none"
+          || finalizing.signalPathWidth < 380 || finalizing.signalPathHeight < 50
+          || !finalizing.continuousText) {
+        throw new Error(`Open-turn ${design} release handoff is invalid: ${JSON.stringify({ finalizing, releaseBounds, processingBounds })}`);
+      }
+      await captureDraft(`open-turn-${design}-loading`);
+
+      // Completing a keep-open fragment settles the same surface without a
+      // dismissal acknowledgement or a compact-window handoff.
+      const dismissalsBeforeKeepOpen = completedDismissals.length;
+      await sendDraft(design, shortText, "idle");
+      await waitForStableRender(design, shortText, 68);
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const keepOpen = await inspectLayout(shortText);
+      if (keepOpen.presentation !== "visible" || keepOpen.activity !== "idle"
+          || completedDismissals.length !== dismissalsBeforeKeepOpen
+          || JSON.stringify(win.getBounds()) !== JSON.stringify(releaseBounds)) {
+        throw new Error(`Open-turn ${design} keep-open state is invalid: ${JSON.stringify({ keepOpen, completedDismissals })}`);
+      }
+
+      // A newer visible revision must cancel an in-flight dismissal. This
+      // prevents an old paste completion from hiding a newly started turn.
+      const staleRevision = ++revision;
+      await sendDraft(design, shortText, "idle", "dismissing", staleRevision);
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      const replacementRevision = ++revision;
+      await sendDraft(design, shortText, "listening", "visible", replacementRevision);
+      await waitForStableRender(design, shortText, 68);
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const replacement = await inspectLayout(shortText);
+      if (completedDismissals.includes(staleRevision)
+          || replacement.presentation !== "visible"
+          || replacement.revision !== replacementRevision
+          || replacement.draftOpacity !== 1) {
+        throw new Error(`Open-turn ${design} stale dismissal was not cancelled: ${JSON.stringify({ replacement, completedDismissals })}`);
+      }
+
+      // A successful commit is acknowledged only after the quick fade ends.
+      const dismissRevision = ++revision;
+      await sendDraft(design, shortText, "idle", "dismissing", dismissRevision);
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      await captureDraft(`open-turn-${design}-dismissing`);
+      let dismissDeadline = Date.now() + 350;
+      while (!completedDismissals.includes(dismissRevision) && Date.now() < dismissDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!completedDismissals.includes(dismissRevision)) {
+        // Hidden BrowserWindows advance the animation for capture but do not
+        // reliably emit animationend. Verify the fade reached its end state,
+        // then exercise the same renderer completion handler explicitly.
+        const faded = await inspectLayout(shortText);
+        if (faded.draftAnimation !== "draftDismiss" || faded.draftOpacity > 0.01) {
+          throw new Error(`Open-turn ${design} dismissal did not fade cleanly: ${JSON.stringify(faded)}`);
+        }
+        await win.webContents.executeJavaScript(`document.querySelector("#draft").dispatchEvent(
+          new AnimationEvent("animationend", { animationName: "draftDismiss", bubbles: true })
+        )`);
+        dismissDeadline = Date.now() + 350;
+        while (!completedDismissals.includes(dismissRevision) && Date.now() < dismissDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      if (!completedDismissals.includes(dismissRevision)) {
+        const dismissal = await inspectLayout(shortText);
+        throw new Error(`Open-turn ${design} dismissal acknowledgement timed out: ${JSON.stringify({ dismissal, completedDismissals })}`);
+      }
+
+      // Restore the visible view and cover a failed commit retaining its text.
+      await sendDraft(design, shortText, "finalizing");
+      await waitForStableRender(design, shortText, 68);
+      await sendDraft(design, shortText, "idle");
+      await waitForStableRender(design, shortText, 68);
+      const retained = await inspectLayout(shortText);
+      if (retained.presentation !== "visible" || !retained.continuousText) {
+        throw new Error(`Open-turn ${design} failure retention is invalid: ${JSON.stringify(retained)}`);
+      }
+
+      await sendDraft(design, mediumText, "idle");
       await waitForStableRender(
         design,
         mediumText,
@@ -337,7 +442,7 @@ async function captureTurnDraft() {
         await writeFile(path.join(outputDir, "open-turn.png"), expandedImage.toPNG());
       }
 
-      await sendDraft(design, cappedText);
+      await sendDraft(design, cappedText, "idle");
       await waitForStableRender(design, cappedText, 360);
       const capped = await inspectLayout(cappedText);
       if (win.getBounds().height !== 360 || expandedHeight >= 360
@@ -367,6 +472,7 @@ async function captureTurnDraft() {
     ]);
   } finally {
     ipcMain.removeListener("turnDraft:content-height", resizeFromRenderer);
+    ipcMain.removeListener("turnDraft:dismiss-complete", recordDismissal);
     win.destroy();
   }
 }

@@ -84,7 +84,12 @@ import type {
   ShortcutSetting,
   SystemAction,
 } from "../shared/settings";
-import type { OverlayState, OverlayTone, TurnDraftView } from "../shared/overlay";
+import {
+  canHideTurnDraftAfterDismissal,
+  type OverlayState,
+  type OverlayTone,
+  type TurnDraftView,
+} from "../shared/overlay";
 import { isIntegratedTurnWindowDesign } from "../shared/turnWindow";
 
 const DEV_QUIT_ARGUMENT = "--undertone-dev-quit";
@@ -114,6 +119,14 @@ interface LiveCapture {
   encoder: StreamingPcm16Encoder;
   text: string;
   state: "listening" | "finalizing" | "processing";
+  /** Stable text through this capture, latched before the turn buffer changes. */
+  latchedText?: string;
+}
+
+interface TurnDraftDismissal {
+  revision: number;
+  captureId?: number;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 if (packagedSmoke) {
@@ -217,6 +230,10 @@ if (!gotLock || devQuitRequest) {
   let turnDraftMode: "hidden" | "compact" | "text" = "hidden";
   let turnDraftTurnActive = false;
   let turnDraftUserHeightFloor: number = TURN_DRAFT_TEXT_SIZE.height;
+  let turnDraftRevision = 0;
+  let turnDraftDismissal: TurnDraftDismissal | null = null;
+  let turnDraftManualProcessing = false;
+  let lastTurnDraftView: TurnDraftView | null = null;
   let normalTrayImage: Electron.NativeImage | null = null;
   let recordingTrayImage: Electron.NativeImage | null = null;
   let microphoneTest: {
@@ -366,7 +383,8 @@ if (!gotLock || devQuitRequest) {
       && turnDraftWindow !== null
       && !turnDraftWindow.isDestroyed()
       && turnDraftWindow.isVisible()
-      && isIntegratedTurnWindowDesign(config.turn_window_design)
+      && (liveCaptures.size > 0
+        || isIntegratedTurnWindowDesign(config.turn_window_design))
       && isIntegratedOverlayActivity(state.state)
       ? { state: "hidden", text: "", tone: "normal" } satisfies OverlayState
       : state;
@@ -380,17 +398,89 @@ if (!gotLock || devQuitRequest) {
     overlay.webContents.send("overlay:state", projectedState);
   };
 
+  const composeTurnDraftText = (throughCaptureId = Number.POSITIVE_INFINITY): string => {
+    const captures = [...liveCaptures.entries()]
+      .filter(([captureId]) => captureId <= throughCaptureId);
+    const latched = captures.find(([, capture]) => capture.state === "processing"
+      && capture.latchedText !== undefined);
+    const parts = latched === undefined
+      ? [turnBuffer.snapshot()?.text ?? "", ...captures.map(([, capture]) => capture.text)]
+      : [
+        latched[1].latchedText ?? "",
+        ...captures
+          .filter(([captureId]) => captureId > latched[0])
+          .map(([, capture]) => capture.text),
+      ];
+    return parts.map((part) => part.trim()).filter(Boolean).join(" ");
+  };
+
+  const cancelTurnDraftDismissal = (): void => {
+    const dismissal = turnDraftDismissal;
+    if (dismissal === null) return;
+    if (dismissal.timer !== undefined) clearTimeout(dismissal.timer);
+    turnDraftDismissal = null;
+    if (dismissal.captureId !== undefined) liveCaptures.delete(dismissal.captureId);
+    turnDraftManualProcessing = false;
+  };
+
+  const completeTurnDraftDismissal = (revision: number): void => {
+    const dismissal = turnDraftDismissal;
+    if (dismissal === null || dismissal.revision !== revision) return;
+    if (dismissal.timer !== undefined) clearTimeout(dismissal.timer);
+    turnDraftDismissal = null;
+    if (dismissal.captureId !== undefined) liveCaptures.delete(dismissal.captureId);
+    turnDraftManualProcessing = false;
+    const hasActiveWork = liveCaptures.size > 0 || turnBuffer.snapshot() !== null;
+    if (!canHideTurnDraftAfterDismissal(dismissal.revision, revision, hasActiveWork)) {
+      publishTurnDraft();
+      return;
+    }
+    const draftWindow = turnDraftWindow;
+    if (draftWindow !== null && !draftWindow.isDestroyed() && draftWindow.isVisible()) {
+      draftWindow.hide();
+    }
+    turnDraftMode = "hidden";
+    turnDraftTurnActive = false;
+    lastTurnDraftView = null;
+  };
+
+  const beginTurnDraftDismissal = (captureId?: number): void => {
+    const hasNewerWork = [...liveCaptures.keys()]
+      .some((candidateId) => candidateId !== captureId);
+    if (turnBuffer.snapshot() !== null || hasNewerWork) {
+      if (captureId !== undefined) liveCaptures.delete(captureId);
+      turnDraftManualProcessing = false;
+      publishTurnDraft();
+      return;
+    }
+    cancelTurnDraftDismissal();
+    const revision = ++turnDraftRevision;
+    turnDraftDismissal = { revision, ...(captureId === undefined ? {} : { captureId }) };
+    publishTurnDraft();
+    const dismissal = turnDraftDismissal;
+    if (dismissal === null || dismissal.revision !== revision) return;
+    dismissal.timer = setTimeout(() => completeTurnDraftDismissal(revision), 320);
+  };
+
   const publishTurnDraft = (): void => {
     const draftWindow = turnDraftWindow;
     if (draftWindow === null || draftWindow.isDestroyed() || !turnDraftReady) return;
     const snapshot = turnBuffer.snapshot();
-    const provisional = [...liveCaptures.values()]
-      .filter((capture) => capture.state !== "processing" && capture.text.trim().length > 0);
-    const text = [snapshot?.text ?? "", ...provisional.map((capture) => capture.text)]
-      .map((part) => part.trim()).filter(Boolean).join(" ");
+    const dismissal = turnDraftDismissal;
+    const hasNewerWork = dismissal !== null && (
+      snapshot !== null
+      || [...liveCaptures.keys()].some((captureId) => captureId !== dismissal.captureId)
+    );
+    if (hasNewerWork) cancelTurnDraftDismissal();
+    const activeDismissal = turnDraftDismissal;
+    const provisional = [...liveCaptures.values()];
+    let text = composeTurnDraftText();
+    if (text.length === 0 && (turnDraftManualProcessing || activeDismissal !== null)) {
+      text = lastTurnDraftView?.text ?? "";
+    }
     const liveState = [...liveCaptures.values()].some(({ state }) => state === "listening")
       ? "listening"
-      : [...liveCaptures.values()].some(({ state }) => state === "finalizing")
+      : [...liveCaptures.values()].some(({ state }) => state !== "listening")
         ? "finalizing"
         : null;
     const overlayState = overlayController.current().state;
@@ -403,16 +493,21 @@ if (!gotLock || devQuitRequest) {
     const activity: TurnDraftView["activity"] = overlayState === "locked"
       || overlayState === "slow"
       ? overlayState
-      : liveState ?? overlayActivity;
+      : turnDraftManualProcessing ? "finalizing" : liveState ?? overlayActivity;
     const integrated = isIntegratedTurnWindowDesign(config.turn_window_design);
     const hasActiveTurn = snapshot !== null
       || liveCaptures.size > 0
-      || isIntegratedOverlayActivity(overlayState);
+      || turnDraftManualProcessing
+      || activeDismissal !== null
+      || (integrated && isIntegratedOverlayActivity(overlayState));
     if (hasActiveTurn && !turnDraftTurnActive) {
       turnDraftUserHeightFloor = TURN_DRAFT_TEXT_SIZE.height;
     }
     turnDraftTurnActive = hasActiveTurn;
+    const fullLiveWindow = liveCaptures.size > 0 || turnDraftManualProcessing;
     const draft: TurnDraftView | null = text.length === 0
+      && !fullLiveWindow
+      && activeDismissal === null
       && !(integrated && isIntegratedOverlayActivity(overlayState)) ? null : {
       design: config.turn_window_design,
       text,
@@ -420,13 +515,20 @@ if (!gotLock || devQuitRequest) {
       charCount: text.length,
       liveState,
       activity,
+      presentation: activeDismissal === null ? "visible" : "dismissing",
+      revision: activeDismissal?.revision ?? ++turnDraftRevision,
     };
     if (draft === null) {
       if (draftWindow.isVisible()) draftWindow.hide();
       turnDraftMode = "hidden";
+      lastTurnDraftView = null;
       return;
     }
-    setTurnDraftMode(draftWindow, text.length === 0 ? "compact" : "text");
+    lastTurnDraftView = draft;
+    setTurnDraftMode(
+      draftWindow,
+      text.length === 0 && !fullLiveWindow ? "compact" : "text",
+    );
     draftWindow.webContents.send("turnDraft:view", draft);
     presentTurnDraftWindow();
   };
@@ -446,7 +548,8 @@ if (!gotLock || devQuitRequest) {
     }
     const draftWindow = turnDraftWindow;
     if (turnDraftReady
-      && isIntegratedTurnWindowDesign(config.turn_window_design)
+      && (liveCaptures.size > 0
+        || isIntegratedTurnWindowDesign(config.turn_window_design))
       && draftWindow !== null
       && !draftWindow.isDestroyed()) {
       draftWindow.webContents.send("turnDraft:level", rms);
@@ -678,12 +781,9 @@ if (!gotLock || devQuitRequest) {
       const target = completion === "commit"
         ? captureForegroundTarget()
         : Promise.resolve(null);
-      const overlayRevision = overlayController.transcribing();
       const liveCapture = liveCaptures.get(captureId);
-      if (liveCapture !== undefined) {
-        liveCapture.state = "finalizing";
-        publishTurnDraft();
-      }
+      if (liveCapture !== undefined) liveCapture.state = "finalizing";
+      const overlayRevision = overlayController.transcribing();
       if (activePipeline !== null) {
         let resolveAudio!: (capture: CapturedAudio | null) => void;
         const audio = new Promise<CapturedAudio | null>((resolve) => { resolveAudio = resolve; });
@@ -1273,12 +1373,15 @@ if (!gotLock || devQuitRequest) {
       () => config,
       {
         dictate: async (input, target, snapshot, overlayRevision, completion) => {
-          try {
-            if (input.type === "transcript") {
-              const capture = liveCaptures.get(input.previewId);
-              if (capture !== undefined) capture.state = "processing";
-              publishTurnDraft();
+          if (input.type === "transcript") {
+            const capture = liveCaptures.get(input.previewId);
+            if (capture !== undefined) {
+              capture.latchedText = composeTurnDraftText(input.previewId);
+              capture.state = "processing";
             }
+            publishTurnDraft();
+          }
+          try {
             const feedback = {
               message: showFeedback,
               dismiss: () => {
@@ -1290,11 +1393,17 @@ if (!gotLock || devQuitRequest) {
             } else {
               await runner.runTranscript(input.text, target, snapshot, completion, feedback);
             }
-          } finally {
-            if (input.type === "transcript") {
+            if (input.type !== "transcript") return;
+            if (completion === "commit" && turnBuffer.snapshot() === null) {
+              beginTurnDraftDismissal(input.previewId);
+            } else {
               liveCaptures.delete(input.previewId);
+              publishTurnDraft();
             }
+          } catch (error) {
+            if (input.type === "transcript") liveCaptures.delete(input.previewId);
             publishTurnDraft();
+            throw error;
           }
         },
         repaste: async (text, snapshot) => {
@@ -1303,11 +1412,24 @@ if (!gotLock || devQuitRequest) {
           overlayController.confirm();
         },
         commit: async (snapshot) => {
-          await runner.commit(snapshot, {
-            message: showFeedback,
-            dismiss: () => { overlayController.confirm("Turn committed", 1_000); },
-          });
+          turnDraftManualProcessing = turnBuffer.snapshot() !== null;
           publishTurnDraft();
+          try {
+            await runner.commit(snapshot, {
+              message: showFeedback,
+              dismiss: () => { overlayController.confirm("Turn committed", 1_000); },
+            });
+            if (turnDraftManualProcessing && turnBuffer.snapshot() === null) {
+              beginTurnDraftDismissal();
+            } else {
+              turnDraftManualProcessing = false;
+              publishTurnDraft();
+            }
+          } catch (error) {
+            turnDraftManualProcessing = false;
+            publishTurnDraft();
+            throw error;
+          }
         },
         discard: async () => {
           runner.discard({
@@ -1342,6 +1464,8 @@ if (!gotLock || devQuitRequest) {
 
   async function shutdownServices(): Promise<void> {
     overlayController.dispose();
+    if (turnDraftDismissal?.timer !== undefined) clearTimeout(turnDraftDismissal.timer);
+    turnDraftDismissal = null;
     openAiSubscription?.dispose();
     for (const pending of pendingAudioFinalizations.values()) {
       clearTimeout(pending.timer);
@@ -1821,6 +1945,12 @@ if (!gotLock || devQuitRequest) {
     );
     const { width } = draftWindow.getBounds();
     resizeTurnDraftAnchored(draftWindow, width, desiredHeight);
+  });
+  ipcMain.on("turnDraft:dismiss-complete", (event, revision: unknown) => {
+    if (event.sender !== turnDraftWindow?.webContents
+      || typeof revision !== "number"
+      || !Number.isSafeInteger(revision)) return;
+    completeTurnDraftDismissal(revision);
   });
   ipcMain.on("audio:event", (event, payload: unknown) => {
     if (event.sender !== audioWindow?.webContents || !isRecord(payload)) return;

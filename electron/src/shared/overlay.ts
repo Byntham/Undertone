@@ -24,6 +24,9 @@ export interface TurnDraftView {
   fragmentCount: number;
   charCount: number;
   liveState: "listening" | "finalizing" | null;
+  presentation: "visible" | "dismissing";
+  /** Monotonic token used to reject stale dismissal completions. */
+  revision: number;
   activity:
     | "idle"
     | "recording"
@@ -32,4 +35,15 @@ export interface TurnDraftView {
     | "slow"
     | "listening"
     | "finalizing";
+}
+
+export function canHideTurnDraftAfterDismissal(
+  pendingRevision: number | null,
+  completedRevision: unknown,
+  hasActiveWork: boolean,
+): boolean {
+  return pendingRevision !== null
+    && Number.isSafeInteger(completedRevision)
+    && completedRevision === pendingRevision
+    && !hasActiveWork;
 }

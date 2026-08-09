@@ -22,7 +22,7 @@ body {
   --rim: rgb(255 255 255 / 0.16);
   --text: rgb(244 246 249 / 0.98);
   --scrollbar: rgb(204 211 221 / 0.3);
-  --signal: 173 205 230;
+  --signal-rim-color: 178 220 246;
   --voice-level: 0;
   box-sizing: border-box;
   position: relative;
@@ -98,11 +98,6 @@ body {
     linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
   --rim: rgb(214 227 240 / 0.2);
   --scrollbar: rgb(191 207 224 / 0.31);
-}
-
-/* Integrated studies preserve the preferred surfaces and move activity to the rim. */
-.draft[data-integrated="true"] {
-  --signal-rim-color: 178 220 246;
 }
 
 .draft[data-design="smoked-rim"] {
@@ -232,106 +227,76 @@ body {
   position: absolute;
   z-index: 1;
   inset: 0;
-  box-sizing: border-box;
-  display: none;
-  border: 1px solid rgb(var(--signal-rim-color));
-  border-radius: inherit;
-  opacity: calc(0.16 + var(--voice-level) * 0.84);
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  opacity: 0;
   pointer-events: none;
 }
 
-.draft[data-integrated="true"] .signalRim { display: block; }
-
-.draft[data-design="aurora-rim"] .signalRim {
-  border-top-color: rgb(106 205 218);
-  border-right-color: rgb(181 139 231);
-  border-bottom-color: rgb(230 164 209);
-  border-left-color: rgb(109 188 222);
+.signalPath {
+  fill: none;
+  stroke: rgb(var(--signal-rim-color));
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }
 
-.draft[data-activity="locked"] .signalRim { opacity: 0.88; }
+.draft[data-design="aurora-film"],
+.draft[data-design="aurora-rim"] { --signal-rim-color: 170 199 242; }
+
+.draft[data-design="slate-pulse"] { --signal-rim-color: 139 197 235; }
+
+.draft[data-activity="recording"] .signalRim,
+.draft[data-activity="listening"] .signalRim,
+.draft[data-activity="locked"] .signalRim {
+  opacity: calc(0.14 + var(--voice-level) * 0.86);
+}
 
 .draft[data-activity="transcribing"] .signalRim,
 .draft[data-activity="finalizing"] .signalRim {
-  opacity: 0.92;
-  animation: rimTrace 1.25s ease-in-out infinite;
+  opacity: 0.94;
 }
 
-.draft[data-design="slate-pulse"][data-activity="transcribing"] .signalRim,
-.draft[data-design="slate-pulse"][data-activity="finalizing"] .signalRim {
-  animation: rimBreathe 900ms ease-in-out infinite alternate;
-}
-
-.draft[data-design="aurora-rim"][data-activity="transcribing"] .signalRim,
-.draft[data-design="aurora-rim"][data-activity="finalizing"] .signalRim {
-  animation: rimSpectrum 1.8s ease-in-out infinite;
+.draft[data-activity="transcribing"] .signalPath,
+.draft[data-activity="finalizing"] .signalPath,
+.draft[data-activity="slow"] .signalPath {
+  stroke-dasharray: 12 88;
+  stroke-linecap: round;
+  animation: rimOrbit 1.15s linear infinite;
 }
 
 .draft[data-activity="slow"] .signalRim {
-  border-color: rgb(235 193 111);
   opacity: 0.9;
-  animation: rimBreathe 1.4s ease-in-out infinite alternate;
 }
 
-.draft.reveal::before { animation: surfaceReveal 260ms cubic-bezier(0.2, 0.75, 0.2, 1); }
-.draft.reveal .draftViewport,
-.draft.reveal .signalRim { animation: contentReveal 180ms 70ms ease-out both; }
+.draft[data-activity="slow"] .signalPath { stroke: rgb(235 193 111); }
+
+.draft.reveal { animation: surfaceReveal 160ms ease-out both; }
+.draft.dismissing { animation: draftDismiss 160ms ease-in both; }
 
 @keyframes surfaceReveal {
-  from { opacity: 0; transform: scaleX(0.12) scaleY(0.52); }
-  68% { opacity: 1; transform: scaleX(1.015) scaleY(1); }
-  to { opacity: 1; transform: scaleX(1) scaleY(1); }
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
 }
 
-@keyframes contentReveal {
-  from { opacity: 0; }
-  to { opacity: 1; }
+@keyframes draftDismiss {
+  from { opacity: 1; transform: scale(1); filter: blur(0); }
+  to { opacity: 0; transform: scale(0.985); filter: blur(1px); }
 }
 
-@keyframes rimTrace {
-  0%, 100% {
-    border-color: rgb(112 177 218 / 0.26);
-  }
-  35% {
-    border-top-color: rgb(220 242 255);
-    border-right-color: rgb(112 177 218 / 0.34);
-  }
-  68% {
-    border-bottom-color: rgb(220 242 255);
-    border-left-color: rgb(112 177 218 / 0.34);
-  }
-}
-
-@keyframes rimBreathe {
-  from { opacity: 0.24; }
-  to { opacity: 0.9; }
-}
-
-@keyframes rimSpectrum {
-  0%, 100% {
-    border-top-color: rgb(106 205 218);
-    border-right-color: rgb(181 139 231);
-    border-bottom-color: rgb(230 164 209);
-    border-left-color: rgb(109 188 222);
-  }
-  50% {
-    border-top-color: rgb(192 150 235);
-    border-right-color: rgb(231 172 207);
-    border-bottom-color: rgb(107 205 219);
-    border-left-color: rgb(145 179 239);
-  }
+@keyframes rimOrbit {
+  to { stroke-dashoffset: -100; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .draft::after,
   .windowActions,
   .signalRim { transition: none; }
-  .draft.reveal::before,
-  .draft.reveal .draftViewport,
-  .draft.reveal .signalRim,
-  .draft[data-activity="transcribing"] .signalRim,
-  .draft[data-activity="finalizing"] .signalRim,
-  .draft[data-activity="slow"] .signalRim {
+  .draft.reveal,
+  .draft.dismissing,
+  .draft[data-activity="transcribing"] .signalPath,
+  .draft[data-activity="finalizing"] .signalPath,
+  .draft[data-activity="slow"] .signalPath {
     animation: none;
   }
 }
