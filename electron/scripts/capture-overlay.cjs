@@ -188,6 +188,8 @@ async function captureTurnDraft() {
         listeningWake: draft.classList.contains("listeningWake"),
         leftInset: viewportRect.left - draftRect.left,
         rightInset: draftRect.right - viewportRect.right,
+        textPaddingLeft: Number.parseFloat(getComputedStyle(text).paddingLeft),
+        textPaddingRight: Number.parseFloat(getComputedStyle(text).paddingRight),
         opacity: Number.parseFloat(getComputedStyle(draft).opacity),
         shadow: getComputedStyle(draft).boxShadow,
       };
@@ -289,7 +291,8 @@ async function captureTurnDraft() {
     const expandedHeight = await waitForHeight((height) => height > 68 && height < 360);
     const expanded = await inspect(mediumText);
     if (expanded.overflow || expanded.verticalOverflow || !expanded.continuousText
-        || Math.abs(expanded.leftInset - expanded.rightInset) > 0.5) {
+        || Math.abs(expanded.leftInset - expanded.rightInset) > 0.5
+        || Math.abs(expanded.textPaddingLeft - expanded.textPaddingRight) > 0.5) {
       throw new Error(`Aurora growth is invalid: ${JSON.stringify(expanded)}`);
     }
     await capture("open-turn-aurora-expanded");
