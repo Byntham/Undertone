@@ -179,7 +179,11 @@ async function captureTurnDraft() {
         rimAnimation: getComputedStyle(path).animationName,
         dasharray: getComputedStyle(path).strokeDasharray,
         strokeOpacity: Number.parseFloat(getComputedStyle(path).strokeOpacity),
+        strokeWidth: Number.parseFloat(getComputedStyle(path).strokeWidth),
         pathFilter: getComputedStyle(path).filter,
+        voiceLevel: Number.parseFloat(
+          getComputedStyle(draft).getPropertyValue("--voice-level"),
+        ),
         listeningWake: draft.classList.contains("listeningWake"),
         opacity: Number.parseFloat(getComputedStyle(draft).opacity),
         shadow: getComputedStyle(draft).boxShadow,
@@ -222,9 +226,6 @@ async function captureTurnDraft() {
     await capture("open-turn-aurora-idle");
 
     await sendDraft(shortText, "listening");
-    for (const level of [0.015, 0.04, 0.12, 0.28, 0.16]) {
-      win.webContents.send("turnDraft:level", level);
-    }
     const ignition = await inspect(shortText);
     if (!ignition.listeningWake || ignition.rimAnimation !== "auroraListeningWake"
         || ignition.dasharray !== "none" || ignition.strokeOpacity >= 1
@@ -233,9 +234,17 @@ async function captureTurnDraft() {
     }
     await capture("open-turn-aurora-ignition");
     await new Promise((resolve) => setTimeout(resolve, 220));
+    const resting = await inspect(shortText);
+    for (const level of [0.018, 0.03, 0.055, 0.09]) {
+      win.webContents.send("turnDraft:level", level);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
     const listening = await inspect(shortText);
-    if (listening.hasBars || listening.rimOpacity < 0.58
-        || listening.rimAnimation !== "auroraListeningBreath") {
+    if (listening.hasBars || listening.rimAnimation !== "auroraListeningBreath"
+        || resting.rimOpacity > 0.4
+        || listening.voiceLevel < resting.voiceLevel + 0.35
+        || listening.rimOpacity < resting.rimOpacity + 0.2
+        || listening.strokeWidth < resting.strokeWidth + 0.5) {
       throw new Error(`Aurora listening state is invalid: ${JSON.stringify(listening)}`);
     }
     await capture("open-turn-aurora-listening");

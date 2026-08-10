@@ -183,10 +183,12 @@ window.undertoneTurnDraft?.onLevel((rms) => {
     .includes(currentActivity) || !Number.isFinite(rms)) return;
   const decibels = 20 * Math.log10(Math.max(0.00001, rms));
   const normalized = Math.max(0, Math.min(1, (decibels + 52) / 38));
-  const target = normalized < 0.12 ? 0 : (normalized - 0.12) / 0.88;
+  const target = normalized < 0.08
+    ? 0
+    : Math.pow((normalized - 0.08) / 0.92, 0.58);
   envelope = target > envelope
-    ? envelope * 0.2 + target * 0.8
-    : envelope * 0.68 + target * 0.32;
+    ? envelope * 0.35 + target * 0.65
+    : envelope * 0.9 + target * 0.1;
   draft.style.setProperty("--voice-level", envelope.toFixed(3));
 });
 

@@ -163,7 +163,7 @@ body {
   opacity: 0;
   pointer-events: none;
   transform-origin: center;
-  transition: opacity 120ms ease-out, filter 120ms ease-out;
+  transition: opacity 45ms linear, filter 60ms ease-out;
 }
 
 .signalPath {
@@ -176,14 +176,14 @@ body {
 .draft[data-activity="recording"] .signalRim,
 .draft[data-activity="listening"] .signalRim,
 .draft[data-activity="locked"] .signalRim {
-  opacity: calc(0.58 + var(--voice-level) * 0.42);
-  filter: drop-shadow(0 0 calc(2px + var(--voice-level) * 3px) rgb(139 205 242 / 0.42));
+  opacity: calc(0.32 + var(--voice-level) * 0.68);
+  filter: drop-shadow(0 0 calc(1px + var(--voice-level) * 7px) rgb(139 205 242 / 0.56));
 }
 
 .draft[data-activity="recording"] .signalPath,
 .draft[data-activity="listening"] .signalPath,
 .draft[data-activity="locked"] .signalPath {
-  stroke-width: calc(1.6px + var(--voice-level) * 0.9px);
+  stroke-width: calc(1.35px + var(--voice-level) * 1.65px);
   animation: auroraListeningBreath 1.8s ease-in-out infinite;
 }
 
