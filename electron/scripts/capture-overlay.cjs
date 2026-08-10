@@ -6,12 +6,28 @@ const scaleArgument = process.argv.find((value) => value.startsWith("--scale="))
 const scale = Number(scaleArgument?.slice("--scale=".length) ?? "1");
 if (![1, 1.5, 2].includes(scale)) throw new Error("Scale must be 1, 1.5, or 2");
 app.commandLine.appendSwitch("force-device-scale-factor", String(scale));
+app.on("window-all-closed", () => {});
 
 const outputDir = path.resolve(__dirname, `../test-output/overlay/${Math.round(scale * 100)}pct`);
 app.setPath("userData", path.join(outputDir, `profile-${process.pid}`));
 const overlayFile = path.resolve(__dirname, "../dist/renderer/overlay/index.html");
 const turnDraftFile = path.resolve(__dirname, "../dist/renderer/turn-draft/index.html");
 const turnDraftPreload = path.resolve(__dirname, "../dist/main/preload/turnDraftPreload.js");
+
+async function capturePage(win) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await win.capturePage();
+    } catch (error) {
+      lastError = error;
+      win.showInactive();
+      win.webContents.invalidate();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError;
+}
 
 async function captureMessageOverlay() {
   const win = new BrowserWindow({
@@ -24,6 +40,8 @@ async function captureMessageOverlay() {
   });
   try {
     await win.loadFile(overlayFile);
+    win.showInactive();
+    await new Promise((resolve) => setTimeout(resolve, 30));
     for (const [tone, text] of [
       ["normal", "Text pasted"],
       ["warning", "Couldn't paste — the text is on your clipboard"],
@@ -44,7 +62,7 @@ async function captureMessageOverlay() {
       }
       win.webContents.invalidate();
       await new Promise((resolve) => setTimeout(resolve, 30));
-      const image = await win.capturePage();
+      const image = await capturePage(win);
       await writeFile(path.join(outputDir, `message-${tone}.png`), image.toPNG());
     }
   } finally {
@@ -65,6 +83,7 @@ async function captureTurnDraft() {
   ).join(" ");
   let revision = 0;
   let requestedHeight = 68;
+  let compactCapture = false;
   const completedDismissals = [];
   const win = new BrowserWindow({
     width: 400,
@@ -83,7 +102,7 @@ async function captureTurnDraft() {
     },
   });
   const resizeFromRenderer = (event, height) => {
-    if (event.sender !== win.webContents || !Number.isFinite(height)) return;
+    if (event.sender !== win.webContents || !Number.isFinite(height) || compactCapture) return;
     requestedHeight = Math.round(height);
     const nextHeight = Math.max(68, Math.min(360, requestedHeight));
     const bounds = win.getBounds();
@@ -103,6 +122,8 @@ async function captureTurnDraft() {
   ipcMain.on("turnDraft:dismiss-complete", recordDismissal);
   try {
     await win.loadFile(turnDraftFile);
+    win.showInactive();
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
     const sendDraft = async (
       text,
@@ -157,6 +178,9 @@ async function captureTurnDraft() {
         rimOpacity: Number.parseFloat(getComputedStyle(rim).opacity),
         rimAnimation: getComputedStyle(path).animationName,
         dasharray: getComputedStyle(path).strokeDasharray,
+        strokeOpacity: Number.parseFloat(getComputedStyle(path).strokeOpacity),
+        pathFilter: getComputedStyle(path).filter,
+        listeningWake: draft.classList.contains("listeningWake"),
         opacity: Number.parseFloat(getComputedStyle(draft).opacity),
         shadow: getComputedStyle(draft).boxShadow,
       };
@@ -166,10 +190,32 @@ async function captureTurnDraft() {
       await win.webContents.executeJavaScript(`document.querySelector("#draft").classList.remove("reveal")`);
       win.webContents.invalidate();
       await new Promise((resolve) => setTimeout(resolve, 30));
-      await win.capturePage();
-      const image = await win.capturePage();
+      await capturePage(win);
+      const image = await capturePage(win);
       await writeFile(path.join(outputDir, `${name}.png`), image.toPNG());
     };
+
+    compactCapture = true;
+    win.setBounds({ ...win.getBounds(), width: 72, height: 44 });
+    await sendDraft("", "idle");
+    await sendDraft("", "listening");
+    const compactIgnition = await inspect("");
+    if (!compactIgnition.listeningWake
+        || compactIgnition.rimAnimation !== "auroraListeningWake"
+        || compactIgnition.dasharray !== "none"
+        || compactIgnition.strokeOpacity >= 1
+        || compactIgnition.pathFilter === "none") {
+      throw new Error(`Compact Aurora ignition is invalid: ${JSON.stringify(compactIgnition)}`);
+    }
+    await capture("compact-aurora-ignition");
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    const compactListening = await inspect("");
+    if (compactListening.listeningWake
+        || compactListening.rimAnimation !== "auroraListeningBreath") {
+      throw new Error(`Compact Aurora ignition did not settle: ${JSON.stringify(compactListening)}`);
+    }
+    compactCapture = false;
+    win.setBounds({ ...win.getBounds(), width: 400, height: 68 });
 
     await sendDraft(shortText, "idle");
     await waitForHeight((height) => height === 68);
@@ -179,7 +225,14 @@ async function captureTurnDraft() {
     for (const level of [0.015, 0.04, 0.12, 0.28, 0.16]) {
       win.webContents.send("turnDraft:level", level);
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const ignition = await inspect(shortText);
+    if (!ignition.listeningWake || ignition.rimAnimation !== "auroraListeningWake"
+        || ignition.dasharray !== "none" || ignition.strokeOpacity >= 1
+        || ignition.pathFilter === "none") {
+      throw new Error(`Aurora ignition is invalid: ${JSON.stringify(ignition)}`);
+    }
+    await capture("open-turn-aurora-ignition");
+    await new Promise((resolve) => setTimeout(resolve, 220));
     const listening = await inspect(shortText);
     if (listening.hasBars || listening.rimOpacity < 0.58
         || listening.rimAnimation !== "auroraListeningBreath") {

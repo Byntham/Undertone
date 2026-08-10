@@ -232,7 +232,9 @@ window.undertoneTurnDraft?.onView((incoming) => {
     clearListeningWake();
     void draft.offsetWidth;
     draft.classList.add("listeningWake");
-    listeningWakeTimer = window.setTimeout(clearListeningWake, 450);
+    // The timer is only a fallback for renderers that do not deliver
+    // animationend while hidden.
+    listeningWakeTimer = window.setTimeout(clearListeningWake, 250);
   }
   scheduleLayout();
   if (reveal) {

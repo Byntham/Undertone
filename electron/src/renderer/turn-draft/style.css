@@ -163,6 +163,7 @@ body {
   opacity: 0;
   pointer-events: none;
   transform-origin: center;
+  transition: opacity 120ms ease-out, filter 120ms ease-out;
 }
 
 .signalPath {
@@ -187,9 +188,8 @@ body {
 }
 
 .draft.listeningWake .signalPath {
-  stroke-dasharray: 18 82;
-  stroke-linecap: round;
-  animation: auroraListeningWake 420ms ease-out 1;
+  stroke-dasharray: none;
+  animation: auroraListeningWake 180ms ease-out both;
 }
 
 .draft[data-activity="transcribing"] .signalRim,
@@ -251,13 +251,19 @@ body {
 }
 
 @keyframes auroraListeningWake {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: -100; }
+  from {
+    stroke-opacity: 0.28;
+    filter: blur(0.7px);
+  }
+  to {
+    stroke-opacity: 1;
+    filter: blur(0);
+  }
 }
 
 @keyframes auroraListeningBreath {
-  0%, 100% { stroke-opacity: 0.72; }
-  50% { stroke-opacity: 1; }
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.76; }
 }
 
 @keyframes outcomePulse {
