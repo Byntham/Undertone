@@ -12,7 +12,7 @@ export interface PendingDictation {
 }
 
 export type DictationInput =
-  | { type: "audio"; wav: Uint8Array }
+  | { type: "audio"; wav: Uint8Array; captureId?: number }
   | { type: "transcript"; text: string; previewId: number };
 
 export interface PipelineHandlers {
@@ -137,7 +137,11 @@ export class DictationPipelineQueue {
 
 function cloneInput(input: DictationInput): DictationInput {
   return input.type === "audio"
-    ? { type: "audio", wav: input.wav.slice() }
+    ? {
+      type: "audio",
+      wav: input.wav.slice(),
+      ...(input.captureId === undefined ? {} : { captureId: input.captureId }),
+    }
     : { ...input };
 }
 

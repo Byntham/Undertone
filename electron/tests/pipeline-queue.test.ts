@@ -137,6 +137,29 @@ describe("dictation pipeline queue", () => {
     expect(events).toEqual(["dictate", "scratch", "commit"]);
   });
 
+  it("preserves recorded capture identity through the queue", async () => {
+    let receivedCaptureId: number | undefined;
+    const queue = new DictationPipelineQueue(
+      () => normalizeConfig(undefined),
+      {
+        async dictate(input) {
+          if (input.type === "audio") receivedCaptureId = input.captureId;
+        },
+        async repaste() {},
+        async commit() {},
+        async discard() {},
+        async scratch() {},
+      },
+    );
+    await queue.enqueuePendingDictation(Promise.resolve({
+      input: { type: "audio", wav: Uint8Array.of(1), captureId: 42 },
+      target: null,
+      overlayRevision: undefined,
+      completion: "commit",
+    }));
+    expect(receivedCaptureId).toBe(42);
+  });
+
   it("rejects a failed job without stalling later work", async () => {
     const events: string[] = [];
     const queue = new DictationPipelineQueue(

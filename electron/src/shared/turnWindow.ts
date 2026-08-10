@@ -14,6 +14,7 @@ export const TURN_WINDOW_DESIGNS = [
 
 export type TurnWindowDesign = typeof TURN_WINDOW_DESIGNS[number];
 export type IntegratedTurnWindowDesign = typeof INTEGRATED_TURN_WINDOW_DESIGNS[number];
+export type TurnFeedbackFamily = "five-bar" | "turn-window";
 
 export function isTurnWindowDesign(value: unknown): value is TurnWindowDesign {
   return typeof value === "string"
@@ -25,4 +26,13 @@ export function isIntegratedTurnWindowDesign(
 ): value is IntegratedTurnWindowDesign {
   return typeof value === "string"
     && (INTEGRATED_TURN_WINDOW_DESIGNS as readonly string[]).includes(value);
+}
+
+export function turnFeedbackFamily(
+  design: TurnWindowDesign,
+  liveTranscription: boolean,
+): TurnFeedbackFamily {
+  return liveTranscription || isIntegratedTurnWindowDesign(design)
+    ? "turn-window"
+    : "five-bar";
 }

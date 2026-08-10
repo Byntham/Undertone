@@ -86,11 +86,15 @@ import type {
 } from "../shared/settings";
 import {
   canHideTurnDraftAfterDismissal,
+  hasActiveTurnDraftWork,
   type OverlayState,
   type OverlayTone,
   type TurnDraftView,
 } from "../shared/overlay";
-import { isIntegratedTurnWindowDesign } from "../shared/turnWindow";
+import {
+  turnFeedbackFamily,
+  type TurnFeedbackFamily,
+} from "../shared/turnWindow";
 
 const DEV_QUIT_ARGUMENT = "--undertone-dev-quit";
 const OPEN_SETTINGS_ARGUMENT = "--undertone-open-settings";
@@ -206,6 +210,8 @@ if (!gotLock || devQuitRequest) {
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
   const liveCaptures = new Map<number, LiveCapture>();
+  const activeDictationCaptureIds = new Set<number>();
+  const dictationFeedbackFamilies = new Map<number, TurnFeedbackFamily>();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
     executable: path.join(process.resourcesPath, "native", "Undertone.WinHost.exe"),
@@ -375,16 +381,19 @@ if (!gotLock || devQuitRequest) {
       || state === "slow";
   };
 
+  const activeTurnFeedbackFamily = (): TurnFeedbackFamily | null => {
+    let family: TurnFeedbackFamily | null = null;
+    for (const captureId of activeDictationCaptureIds) {
+      family = dictationFeedbackFamilies.get(captureId) ?? family;
+    }
+    return family;
+  };
+
   const renderOverlay = (state: OverlayState): void => {
     const overlay = overlayWindow;
     if (overlay === null || overlay.isDestroyed()) return;
     publishTurnDraft();
-    const projectedState = turnDraftReady
-      && turnDraftWindow !== null
-      && !turnDraftWindow.isDestroyed()
-      && turnDraftWindow.isVisible()
-      && (liveCaptures.size > 0
-        || isIntegratedTurnWindowDesign(config.turn_window_design))
+    const projectedState = activeTurnFeedbackFamily() === "turn-window"
       && isIntegratedOverlayActivity(state.state)
       ? { state: "hidden", text: "", tone: "normal" } satisfies OverlayState
       : state;
@@ -430,7 +439,11 @@ if (!gotLock || devQuitRequest) {
     turnDraftDismissal = null;
     if (dismissal.captureId !== undefined) liveCaptures.delete(dismissal.captureId);
     turnDraftManualProcessing = false;
-    const hasActiveWork = liveCaptures.size > 0 || turnBuffer.snapshot() !== null;
+    const hasActiveWork = hasActiveTurnDraftWork(
+      turnBuffer.snapshot() !== null,
+      [...activeDictationCaptureIds],
+      dismissal.captureId,
+    );
     if (!canHideTurnDraftAfterDismissal(dismissal.revision, revision, hasActiveWork)) {
       publishTurnDraft();
       return;
@@ -445,9 +458,12 @@ if (!gotLock || devQuitRequest) {
   };
 
   const beginTurnDraftDismissal = (captureId?: number): void => {
-    const hasNewerWork = [...liveCaptures.keys()]
-      .some((candidateId) => candidateId !== captureId);
-    if (turnBuffer.snapshot() !== null || hasNewerWork) {
+    const hasNewerWork = hasActiveTurnDraftWork(
+      turnBuffer.snapshot() !== null,
+      [...activeDictationCaptureIds],
+      captureId,
+    );
+    if (hasNewerWork) {
       if (captureId !== undefined) liveCaptures.delete(captureId);
       turnDraftManualProcessing = false;
       publishTurnDraft();
@@ -467,9 +483,10 @@ if (!gotLock || devQuitRequest) {
     if (draftWindow === null || draftWindow.isDestroyed() || !turnDraftReady) return;
     const snapshot = turnBuffer.snapshot();
     const dismissal = turnDraftDismissal;
-    const hasNewerWork = dismissal !== null && (
-      snapshot !== null
-      || [...liveCaptures.keys()].some((captureId) => captureId !== dismissal.captureId)
+    const hasNewerWork = dismissal !== null && hasActiveTurnDraftWork(
+      snapshot !== null,
+      [...activeDictationCaptureIds],
+      dismissal.captureId,
     );
     if (hasNewerWork) cancelTurnDraftDismissal();
     const activeDismissal = turnDraftDismissal;
@@ -494,12 +511,12 @@ if (!gotLock || devQuitRequest) {
       || overlayState === "slow"
       ? overlayState
       : turnDraftManualProcessing ? "finalizing" : liveState ?? overlayActivity;
-    const integrated = isIntegratedTurnWindowDesign(config.turn_window_design);
+    const turnWindowSessionActive = activeTurnFeedbackFamily() === "turn-window";
     const hasActiveTurn = snapshot !== null
       || liveCaptures.size > 0
       || turnDraftManualProcessing
       || activeDismissal !== null
-      || (integrated && isIntegratedOverlayActivity(overlayState));
+      || turnWindowSessionActive;
     if (hasActiveTurn && !turnDraftTurnActive) {
       turnDraftUserHeightFloor = TURN_DRAFT_TEXT_SIZE.height;
     }
@@ -508,7 +525,7 @@ if (!gotLock || devQuitRequest) {
     const draft: TurnDraftView | null = text.length === 0
       && !fullLiveWindow
       && activeDismissal === null
-      && !(integrated && isIntegratedOverlayActivity(overlayState)) ? null : {
+      && !turnWindowSessionActive ? null : {
       design: config.turn_window_design,
       text,
       fragmentCount: (snapshot?.fragmentCount ?? 0) + provisional.length,
@@ -548,8 +565,7 @@ if (!gotLock || devQuitRequest) {
     }
     const draftWindow = turnDraftWindow;
     if (turnDraftReady
-      && (liveCaptures.size > 0
-        || isIntegratedTurnWindowDesign(config.turn_window_design))
+      && activeTurnFeedbackFamily() === "turn-window"
       && draftWindow !== null
       && !draftWindow.isDestroyed()) {
       draftWindow.webContents.send("turnDraft:level", rms);
@@ -728,6 +744,14 @@ if (!gotLock || devQuitRequest) {
       }
       const captureId = nextAudioFinalizationId++;
       const streamLive = liveTranscriptionEnabled(config);
+      const feedbackFamily = turnFeedbackFamily(config.turn_window_design, streamLive);
+      if (feedbackFamily === "turn-window"
+        && (!turnDraftReady
+          || turnDraftWindow === null
+          || turnDraftWindow.isDestroyed())) {
+        showFeedback("Turn window unavailable — recording did not start", "error");
+        return false;
+      }
       if (streamLive) {
         try {
           const provider = config.provider === "openai" ? "openai" : "xai";
@@ -761,6 +785,8 @@ if (!gotLock || devQuitRequest) {
         }
       }
       activeAudioCaptureId = captureId;
+      activeDictationCaptureIds.add(captureId);
+      dictationFeedbackFamilies.set(captureId, feedbackFamily);
       anchorOverlayToCursor();
       audioWindow.webContents.send("audio:command", {
         type: "start",
@@ -833,7 +859,7 @@ if (!gotLock || devQuitRequest) {
                 return null;
               }
             } else if (captured.wav !== null) {
-              input = { type: "audio", wav: captured.wav };
+              input = { type: "audio", wav: captured.wav, captureId };
             } else {
               return null;
             }
@@ -847,14 +873,22 @@ if (!gotLock || devQuitRequest) {
             };
           },
         );
-        void activePipeline.enqueuePendingDictation(pending).catch((error: unknown) => {
-          console.error("Dictation pipeline failed", error);
-          showFeedback(
-            error instanceof Error ? error.message : "The dictation pipeline failed",
-            "error",
-          );
-        });
+        void activePipeline.enqueuePendingDictation(pending)
+          .catch((error: unknown) => {
+            console.error("Dictation pipeline failed", error);
+            showFeedback(
+              error instanceof Error ? error.message : "The dictation pipeline failed",
+              "error",
+            );
+          })
+          .finally(() => {
+            activeDictationCaptureIds.delete(captureId);
+            dictationFeedbackFamilies.delete(captureId);
+            publishTurnDraft();
+          });
       } else {
+        activeDictationCaptureIds.delete(captureId);
+        dictationFeedbackFamilies.delete(captureId);
         abandonLiveCapture(captureId);
         showFeedback("Dictation service is not ready", "error");
       }
@@ -865,7 +899,11 @@ if (!gotLock || devQuitRequest) {
     onDiscard: () => {
       const captureId = activeAudioCaptureId;
       activeAudioCaptureId = null;
-      if (captureId !== null) abandonLiveCapture(captureId);
+      if (captureId !== null) {
+        activeDictationCaptureIds.delete(captureId);
+        dictationFeedbackFamilies.delete(captureId);
+        abandonLiveCapture(captureId);
+      }
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
       playCue("cancel");
       setTrayRecording(false);
@@ -987,9 +1025,15 @@ if (!gotLock || devQuitRequest) {
       renderOverlay(overlayController.current());
     });
     draftWindow.webContents.on("render-process-gone", (_event, details) => {
+      const requiredByActiveDictation = activeTurnFeedbackFamily() === "turn-window";
       turnDraftReady = false;
-      renderOverlay(overlayController.current());
       console.error("Open-turn draft renderer exited", details);
+      if (requiredByActiveDictation && !quitting) {
+        gestures.cancel();
+        showFeedback("Turn window unavailable", "error");
+      } else {
+        renderOverlay(overlayController.current());
+      }
       if (!quitting && !draftWindow.isDestroyed()) draftWindow.reload();
     });
     await draftWindow.loadFile(
@@ -1373,6 +1417,10 @@ if (!gotLock || devQuitRequest) {
       () => config,
       {
         dictate: async (input, target, snapshot, overlayRevision, completion) => {
+          const captureId = input.type === "transcript" ? input.previewId : input.captureId;
+          const feedbackFamily = captureId === undefined
+            ? "five-bar"
+            : dictationFeedbackFamilies.get(captureId) ?? "five-bar";
           if (input.type === "transcript") {
             const capture = liveCaptures.get(input.previewId);
             if (capture !== undefined) {
@@ -1385,7 +1433,11 @@ if (!gotLock || devQuitRequest) {
             const feedback = {
               message: showFeedback,
               dismiss: () => {
-                overlayController.confirm("Text pasted", 1_000, overlayRevision);
+                if (feedbackFamily === "turn-window") {
+                  overlayController.hide(overlayRevision);
+                } else {
+                  overlayController.confirm("Text pasted", 1_000, overlayRevision);
+                }
               },
             };
             if (input.type === "audio") {
@@ -1393,11 +1445,15 @@ if (!gotLock || devQuitRequest) {
             } else {
               await runner.runTranscript(input.text, target, snapshot, completion, feedback);
             }
-            if (input.type !== "transcript") return;
-            if (completion === "commit" && turnBuffer.snapshot() === null) {
-              beginTurnDraftDismissal(input.previewId);
-            } else {
+            if (completion === "commit"
+              && turnBuffer.snapshot() === null
+              && feedbackFamily === "turn-window"
+              && captureId !== undefined) {
+              beginTurnDraftDismissal(captureId);
+            } else if (input.type === "transcript") {
               liveCaptures.delete(input.previewId);
+              publishTurnDraft();
+            } else {
               publishTurnDraft();
             }
           } catch (error) {
@@ -1417,7 +1473,11 @@ if (!gotLock || devQuitRequest) {
           try {
             await runner.commit(snapshot, {
               message: showFeedback,
-              dismiss: () => { overlayController.confirm("Turn committed", 1_000); },
+              dismiss: () => {
+                if (activeDictationCaptureIds.size === 0) {
+                  overlayController.hide();
+                }
+              },
             });
             if (turnDraftManualProcessing && turnBuffer.snapshot() === null) {
               beginTurnDraftDismissal();
@@ -1466,6 +1526,8 @@ if (!gotLock || devQuitRequest) {
     overlayController.dispose();
     if (turnDraftDismissal?.timer !== undefined) clearTimeout(turnDraftDismissal.timer);
     turnDraftDismissal = null;
+    activeDictationCaptureIds.clear();
+    dictationFeedbackFamilies.clear();
     openAiSubscription?.dispose();
     for (const pending of pendingAudioFinalizations.values()) {
       clearTimeout(pending.timer);

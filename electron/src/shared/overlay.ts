@@ -47,3 +47,12 @@ export function canHideTurnDraftAfterDismissal(
     && completedRevision === pendingRevision
     && !hasActiveWork;
 }
+
+export function hasActiveTurnDraftWork(
+  hasBufferedTurn: boolean,
+  activeCaptureIds: readonly number[],
+  excludedCaptureId?: number,
+): boolean {
+  return hasBufferedTurn
+    || activeCaptureIds.some((captureId) => captureId !== excludedCaptureId);
+}
