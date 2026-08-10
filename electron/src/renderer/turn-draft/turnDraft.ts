@@ -1,9 +1,4 @@
 import type { TurnDraftView } from "../../shared/overlay";
-import {
-  isIntegratedTurnWindowDesign,
-  isTurnWindowDesign,
-  type TurnWindowDesign,
-} from "../../shared/turnWindow";
 import "./style.css";
 
 type DraftActivity =
@@ -13,7 +8,9 @@ type DraftActivity =
   | "transcribing"
   | "slow"
   | "listening"
-  | "finalizing";
+  | "finalizing"
+  | "warning"
+  | "error";
 
 type ActivityView = TurnDraftView & {
   activity?: DraftActivity;
@@ -53,7 +50,6 @@ const signalPath = requiredElement<SVGRectElement>("#signalPath");
 const discard = requiredElement<HTMLButtonElement>("#discard");
 const snap = requiredElement<HTMLButtonElement>("#snap");
 
-let currentDesign: TurnWindowDesign | null = null;
 let currentActivity: DraftActivity = "idle";
 let rendered = false;
 let envelope = 0;
@@ -61,6 +57,17 @@ let layoutFrame: number | undefined;
 let lastRequestedHeight: number | undefined;
 let dismissingRevision: number | null = null;
 let completedDismissalRevision: number | null = null;
+let listeningWakeTimer: number | undefined;
+
+function isListeningActivity(activity: DraftActivity): boolean {
+  return activity === "recording" || activity === "locked" || activity === "listening";
+}
+
+function clearListeningWake(): void {
+  if (listeningWakeTimer !== undefined) window.clearTimeout(listeningWakeTimer);
+  listeningWakeTimer = undefined;
+  draft.classList.remove("listeningWake");
+}
 
 function contentIsEmpty(): boolean {
   return draft.dataset.empty === "true";
@@ -163,6 +170,9 @@ snap.addEventListener("click", () => { window.undertoneTurnDraft?.snap(); });
 
 draft.addEventListener("animationend", (event) => {
   if (event.animationName === "surfaceReveal") draft.classList.remove("reveal");
+  if (event.animationName === "auroraListeningWake") {
+    clearListeningWake();
+  }
   if (event.animationName === "draftDismiss" && dismissingRevision !== null) {
     completeDismissal(dismissingRevision);
   }
@@ -182,9 +192,6 @@ window.undertoneTurnDraft?.onLevel((rms) => {
 
 window.undertoneTurnDraft?.onView((incoming) => {
   const view = incoming as ActivityView;
-  const candidate = view.design;
-  const design = isTurnWindowDesign(candidate) ? candidate : "smoked-glass";
-  const integrated = isIntegratedTurnWindowDesign(design);
   const empty = view.text.trim().length === 0;
   const fallbackActivity = view.liveState === "listening"
     ? "listening"
@@ -194,6 +201,8 @@ window.undertoneTurnDraft?.onView((incoming) => {
   const revision = Number.isSafeInteger(view.revision) ? (view.revision ?? 0) : 0;
   const reveal = !rendered;
   const activityChanged = nextActivity !== currentActivity;
+  const wakeListening = isListeningActivity(nextActivity)
+    && !isListeningActivity(currentActivity);
 
   draft.dataset.presentation = presentation;
   draft.dataset.revision = String(revision);
@@ -203,23 +212,27 @@ window.undertoneTurnDraft?.onView((incoming) => {
   }
   cancelDismissal();
 
-  currentDesign = design;
   currentActivity = nextActivity;
   rendered = true;
-  draft.dataset.design = design;
-  draft.dataset.integrated = String(integrated);
   draft.dataset.empty = String(empty);
   draft.dataset.activity = nextActivity;
   draft.dataset.liveState = view.liveState ?? "idle";
   draftText.textContent = view.text;
   draft.setAttribute(
     "aria-label",
-    empty ? "Undertone voice activity" : "Open turn",
+    view.statusText ?? (empty ? "Undertone voice activity" : "Open turn"),
   );
 
   if (activityChanged) {
     envelope = 0;
     draft.style.setProperty("--voice-level", "0");
+  }
+  if (!isListeningActivity(nextActivity)) clearListeningWake();
+  if (wakeListening) {
+    clearListeningWake();
+    void draft.offsetWidth;
+    draft.classList.add("listeningWake");
+    listeningWakeTimer = window.setTimeout(clearListeningWake, 450);
   }
   scheduleLayout();
   if (reveal) {

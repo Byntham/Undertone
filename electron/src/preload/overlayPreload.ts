@@ -11,11 +11,4 @@ contextBridge.exposeInMainWorld("undertoneOverlay", {
     ipcRenderer.on("overlay:state", handler);
     return () => ipcRenderer.removeListener("overlay:state", handler);
   },
-  onLevel: (listener: (level: number) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, level: number): void => {
-      listener(level);
-    };
-    ipcRenderer.on("overlay:level", handler);
-    return () => ipcRenderer.removeListener("overlay:level", handler);
-  },
 });

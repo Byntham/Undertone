@@ -1,5 +1,3 @@
-import { isTurnWindowDesign, type TurnWindowDesign } from "../shared/turnWindow";
-
 export type ProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
 export type OpenTurnCleanupStrategy = "live-full" | "commit-full";
 export type CleanupReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -34,7 +32,6 @@ export interface UndertoneConfig extends ConfigRecord {
   live_transcription: boolean;
   // Keep the persisted key for compatibility with existing config files.
   stack_cleanup_strategy: OpenTurnCleanupStrategy;
-  turn_window_design: TurnWindowDesign;
   local_loaded: boolean;
   local_idle_minutes: number;
   cleanup_timeout: number;
@@ -69,7 +66,6 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   discard_hotkey: "ctrl+alt+shift+backspace",
   live_transcription: false,
   stack_cleanup_strategy: "live-full",
-  turn_window_design: "smoked-glass",
   local_loaded: false,
   local_idle_minutes: 0,
   cleanup_timeout: 2.5,
@@ -112,9 +108,6 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   if (config.stack_cleanup_strategy !== "live-full"
     && config.stack_cleanup_strategy !== "commit-full") {
     config.stack_cleanup_strategy = DEFAULT_CONFIG.stack_cleanup_strategy;
-  }
-  if (!isTurnWindowDesign(config.turn_window_design)) {
-    config.turn_window_design = DEFAULT_CONFIG.turn_window_design;
   }
   if (!CLEANUP_REASONING_EFFORTS.has(config.cleanup_reasoning_effort)) {
     config.cleanup_reasoning_effort = DEFAULT_CONFIG.cleanup_reasoning_effort;

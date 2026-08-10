@@ -24,7 +24,6 @@ import {
   DEFAULT_STT_MODELS,
   LIVE_STT_MODELS,
 } from "../shared/models";
-import { isTurnWindowDesign } from "../shared/turnWindow";
 import "./style.css";
 
 type Section = "general" | "speechAi" | "dictionary" | "history";
@@ -277,29 +276,6 @@ function General({
       <div>
         <h2>Dictation</h2>
         <div className="card">
-          <SettingRow
-            title="Open-turn design (temporary)"
-            description="Compare visual options while building an open turn."
-          >
-            <select
-              aria-label="Open-turn design"
-              value={settings.turnWindowDesign}
-              onChange={(event) => {
-                const turnWindowDesign = event.target.value;
-                if (isTurnWindowDesign(turnWindowDesign)) {
-                  void update({ turnWindowDesign });
-                }
-              }}
-            >
-              <option value="smoked-glass">Smoked Glass</option>
-              <option value="quiet-slate">Quiet Slate</option>
-              <option value="center-rail">Center Rail</option>
-              <option value="aurora-film">Aurora Film</option>
-              <option value="smoked-rim">Smoked Rim</option>
-              <option value="slate-pulse">Slate Pulse</option>
-              <option value="aurora-rim">Aurora Rim</option>
-            </select>
-          </SettingRow>
           <SettingRow title="Open-turn cleanup" description="Choose when AI cleanup runs while building an open turn.">
             <select
               aria-label="Cleanup timing"
@@ -1161,7 +1137,6 @@ function settingsApiForRenderer(): Window["undertoneSettings"] {
     shortcutWarning: null,
     liveTranscription: false,
     openTurnCleanupStrategy: "live-full",
-    turnWindowDesign: "smoked-glass",
     inputDevice: "",
     microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
     appVersion: "1.8.1",

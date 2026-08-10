@@ -28,10 +28,8 @@ body {
 }
 
 .pill {
-  --bar-color: 180 186 197;
   --text-color: 226 229 233;
   box-sizing: border-box;
-  min-width: 54px;
   max-width: 400px;
   height: 36px;
   padding: 0 11px;
@@ -45,87 +43,9 @@ body {
   transition: opacity 120ms ease;
 }
 
-.pill.hidden {
-  opacity: 0;
-}
-
-.bars {
-  width: 28px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.bars i {
-  flex: 0 0 4px;
-  width: 4px;
-  height: 3px;
-  border-radius: 999px;
-  background-color: rgb(var(--bar-color) / 0.92);
-  transition: background-color 120ms ease;
-}
-
-.recording .bars i,
-.locked .bars i {
-  transition: height 70ms linear, background-color 120ms ease;
-}
-
-.locked,
-.transcribing { --bar-color: 97 175 239; }
-
-.transcribing .bars i,
-.slow .bars i {
-  height: 5px;
-  animation: processing 900ms ease-in-out infinite;
-}
-
-.transcribing .bars i:nth-child(2),
-.slow .bars i:nth-child(2) { animation-delay: 90ms; }
-.transcribing .bars i:nth-child(3),
-.slow .bars i:nth-child(3) { animation-delay: 180ms; }
-.transcribing .bars i:nth-child(4),
-.slow .bars i:nth-child(4) { animation-delay: 270ms; }
-.transcribing .bars i:nth-child(5),
-.slow .bars i:nth-child(5) { animation-delay: 360ms; }
-
-.slow { --bar-color: 216 173 92; }
-
-.signal .bars i {
-  height: 5px;
-  animation: signal 480ms ease-out 1;
-}
-
-.signal.warning { --bar-color: 229 189 106; }
-.signal.error { --bar-color: 240 111 124; }
-.signal.success { --bar-color: 152 195 121; }
-.signal .bars i:nth-child(2) { animation-delay: 35ms; }
-.signal .bars i:nth-child(3) { animation-delay: 70ms; }
-.signal .bars i:nth-child(4) { animation-delay: 105ms; }
-.signal .bars i:nth-child(5) { animation-delay: 140ms; }
-
+.pill.hidden { opacity: 0; }
 .message.warning { --text-color: 237 201 125; }
 .message.error { --text-color: 243 154 162; }
-
-.message .bars,
-.recording .check,
-.locked .check,
-.recording #label,
-.locked #label,
-.transcribing .check,
-.transcribing #label,
-.slow .check,
-.slow #label,
-.signal .check,
-.signal #label {
-  display: none;
-}
-
-.recording,
-.locked,
-.transcribing,
-.slow,
-.signal { width: 54px; }
 
 .check {
   font-size: 16px;
@@ -138,21 +58,6 @@ body {
   white-space: nowrap;
 }
 
-@keyframes processing {
-  0%, 55%, 100% { opacity: 0.35; transform: translateY(0); }
-  25% { opacity: 1; transform: translateY(-2px); }
-}
-
-@keyframes signal {
-  0% { opacity: 0.25; transform: scaleY(0.5); }
-  45% { opacity: 1; transform: scaleY(1.8); }
-  100% { opacity: 1; transform: scaleY(1); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .pill,
-  .bars i { transition: none; }
-  .transcribing .bars i,
-  .slow .bars i,
-  .signal .bars i { animation: none; opacity: 0.8; }
+  .pill { transition: none; }
 }

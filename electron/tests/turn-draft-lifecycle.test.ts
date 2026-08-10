@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   canHideTurnDraftAfterDismissal,
   hasActiveTurnDraftWork,
+  isBarOnlyFeedback,
+  nextTurnDraftMode,
 } from "../src/shared/overlay";
-import { turnFeedbackFamily } from "../src/shared/turnWindow";
 
 describe("turn draft dismissal", () => {
   it("allows the matching completion when no work remains", () => {
@@ -39,9 +40,18 @@ describe("turn draft dismissal", () => {
     expect(hasActiveTurnDraftWork(true, [], undefined)).toBe(true);
   });
 
-  it("keeps each dictation in one feedback family", () => {
-    expect(turnFeedbackFamily("smoked-glass", false)).toBe("five-bar");
-    expect(turnFeedbackFamily("smoked-glass", true)).toBe("turn-window");
-    expect(turnFeedbackFamily("smoked-rim", false)).toBe("turn-window");
+  it("recognizes outcomes rendered by the Aurora rim", () => {
+    expect(isBarOnlyFeedback("No speech detected", "error")).toBe(true);
+    expect(isBarOnlyFeedback(
+      "Recording too short — speak a little longer",
+      "warning",
+    )).toBe(true);
+    expect(isBarOnlyFeedback("AI cleanup failed", "error")).toBe(false);
+  });
+
+  it("keeps the current native size throughout dismissal", () => {
+    expect(nextTurnDraftMode("text", false, false, "dismissing")).toBe("text");
+    expect(nextTurnDraftMode("compact", false, false, "dismissing")).toBe("compact");
+    expect(nextTurnDraftMode("text", false, false, "visible")).toBe("compact");
   });
 });

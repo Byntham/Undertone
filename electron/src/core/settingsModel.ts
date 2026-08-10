@@ -19,7 +19,6 @@ import type {
   SettingsSnapshot,
   TranscriptionProviderId,
 } from "../shared/settings";
-import { isTurnWindowDesign } from "../shared/turnWindow";
 import {
   actionShortcutsOverlap,
   KEEP_OPEN_SHORTCUT,
@@ -42,7 +41,6 @@ const PATCH_FIELDS = new Set([
   "discardHotkey",
   "liveTranscription",
   "openTurnCleanupStrategy",
-  "turnWindowDesign",
   "inputDevice",
   "provider",
   "cleanupProvider",
@@ -96,7 +94,6 @@ export function settingsSnapshot(
     shortcutWarning: shortcutWarning(config),
     liveTranscription: config.live_transcription,
     openTurnCleanupStrategy: config.stack_cleanup_strategy,
-    turnWindowDesign: config.turn_window_design,
     inputDevice: config.input_device,
     microphones: [...microphones],
     appVersion,
@@ -217,12 +214,6 @@ export function applySettingsPatch(
       throw new Error("openTurnCleanupStrategy is invalid");
     }
     next.stack_cleanup_strategy = value.openTurnCleanupStrategy;
-  }
-  if (value.turnWindowDesign !== undefined) {
-    if (!isTurnWindowDesign(value.turnWindowDesign)) {
-      throw new Error("turnWindowDesign is invalid");
-    }
-    next.turn_window_design = value.turnWindowDesign;
   }
   if (value.inputDevice !== undefined) {
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);

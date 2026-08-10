@@ -11,7 +11,6 @@ import {
   providerKey,
 } from "../src/core/config";
 import { ConfigStore, type SecretCipher } from "../src/main/configStore";
-import { TURN_WINDOW_DESIGNS } from "../src/shared/turnWindow";
 
 const temporaryDirectories: string[] = [];
 const cipher: SecretCipher = {
@@ -39,7 +38,6 @@ describe("configuration", () => {
     expect(second.provider).toBe("local");
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
-    expect(second.turn_window_design).toBe("smoked-glass");
     expect(second.live_transcription).toBe(false);
     expect(second.cleanup_reasoning_effort).toBe("none");
     expect(second.cleanup_service_tier).toBe("priority");
@@ -62,12 +60,9 @@ describe("configuration", () => {
       .toBe("live-full");
   });
 
-  it("keeps supported turn-window designs and repairs invalid values", () => {
-    for (const design of TURN_WINDOW_DESIGNS) {
-      expect(normalizeConfig({ turn_window_design: design }).turn_window_design).toBe(design);
-    }
-    expect(normalizeConfig({ turn_window_design: "unknown" }).turn_window_design)
-      .toBe("smoked-glass");
+  it("drops the removed experimental turn-window design setting", () => {
+    expect(normalizeConfig({ turn_window_design: "smoked-glass" }))
+      .not.toHaveProperty("turn_window_design");
   });
 
   it("repairs a malformed live-transcription flag", () => {

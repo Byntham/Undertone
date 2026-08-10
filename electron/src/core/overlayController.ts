@@ -63,30 +63,6 @@ export class OverlayController {
     return revision;
   }
 
-  signal(
-    accessibleText: string,
-    tone: "success" | "warning" | "error",
-    durationMs = this.durationFor(tone),
-  ): number {
-    this.clearTimers();
-    const revision = this.publish("signal", accessibleText, tone);
-    this.hideTimer = setTimeout(() => {
-      this.hideTimer = undefined;
-      if (revision === this.revision) this.hide();
-    }, durationMs);
-    return revision;
-  }
-
-  confirm(
-    accessibleText = "Text pasted",
-    durationMs = 1_000,
-    expectedRevision?: number,
-  ): boolean {
-    if (expectedRevision !== undefined && expectedRevision !== this.revision) return false;
-    this.signal(accessibleText, "success", durationMs);
-    return true;
-  }
-
   hide(expectedRevision?: number): boolean {
     if (expectedRevision !== undefined && expectedRevision !== this.revision) return false;
     this.clearTimers();

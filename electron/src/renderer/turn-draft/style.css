@@ -18,11 +18,13 @@ body {
 }
 
 .draft {
-  --surface: linear-gradient(145deg, rgb(82 87 96 / 0.3), rgb(34 37 43 / 0.82) 38%, rgb(18 20 24 / 0.9));
-  --rim: rgb(255 255 255 / 0.16);
+  --surface:
+    radial-gradient(95% 135% at 12% 14%, rgb(80 164 178 / 0.22), transparent 52%),
+    radial-gradient(86% 130% at 88% 84%, rgb(126 91 172 / 0.22), transparent 56%),
+    linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
+  --rim: rgb(214 227 240 / 0.12);
   --text: rgb(244 246 249 / 0.98);
-  --scrollbar: rgb(204 211 221 / 0.3);
-  --signal-rim-color: 178 220 246;
+  --scrollbar: rgb(191 207 224 / 0.31);
   --voice-level: 0;
   box-sizing: border-box;
   position: relative;
@@ -47,78 +49,6 @@ body {
   background: var(--surface);
   pointer-events: none;
   transform-origin: center;
-}
-
-.draft::after {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  left: 50%;
-  bottom: 1px;
-  width: 104px;
-  height: 2px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, rgb(116 188 242 / 0.9), transparent);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%) scaleX(0.35);
-  transition: opacity 180ms ease, transform 220ms ease;
-}
-
-.draft[data-design="smoked-glass"] {
-  --surface:
-    radial-gradient(120% 95% at 50% -25%, rgb(255 255 255 / 0.16), transparent 53%),
-    linear-gradient(145deg, rgb(74 79 88 / 0.31), rgb(31 34 40 / 0.84) 42%, rgb(17 19 23 / 0.91));
-  --rim: rgb(255 255 255 / 0.18);
-}
-
-.draft[data-design="quiet-slate"] {
-  --surface: linear-gradient(180deg, rgb(46 51 60 / 0.92), rgb(26 30 36 / 0.94));
-  --rim: rgb(210 219 232 / 0.13);
-  --text: rgb(236 239 244 / 0.98);
-  --scrollbar: rgb(183 194 208 / 0.27);
-}
-
-.draft[data-design="center-rail"] {
-  --surface:
-    radial-gradient(55% 105% at 50% 115%, rgb(71 133 176 / 0.2), transparent 61%),
-    linear-gradient(150deg, rgb(58 64 73 / 0.42), rgb(23 27 33 / 0.9) 48%, rgb(16 19 24 / 0.93));
-  --rim: rgb(174 202 225 / 0.16);
-}
-
-.draft[data-design="center-rail"]::after {
-  opacity: 0.42;
-  transform: translateX(-50%) scaleX(0.62);
-}
-
-.draft[data-design="aurora-film"] {
-  --surface:
-    radial-gradient(95% 135% at 12% 14%, rgb(80 164 178 / 0.22), transparent 52%),
-    radial-gradient(86% 130% at 88% 84%, rgb(126 91 172 / 0.22), transparent 56%),
-    linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
-  --rim: rgb(214 227 240 / 0.2);
-  --scrollbar: rgb(191 207 224 / 0.31);
-}
-
-.draft[data-design="smoked-rim"] {
-  --surface:
-    radial-gradient(120% 95% at 50% -25%, rgb(255 255 255 / 0.16), transparent 53%),
-    linear-gradient(145deg, rgb(74 79 88 / 0.31), rgb(31 34 40 / 0.84) 42%, rgb(17 19 23 / 0.91));
-  --rim: rgb(255 255 255 / 0.11);
-}
-
-.draft[data-design="slate-pulse"] {
-  --surface: linear-gradient(180deg, rgb(46 51 60 / 0.92), rgb(26 30 36 / 0.94));
-  --rim: rgb(210 219 232 / 0.08);
-  --signal-rim-color: 139 197 235;
-}
-
-.draft[data-design="aurora-rim"] {
-  --surface:
-    radial-gradient(95% 135% at 12% 14%, rgb(80 164 178 / 0.22), transparent 52%),
-    radial-gradient(86% 130% at 88% 84%, rgb(126 91 172 / 0.22), transparent 56%),
-    linear-gradient(135deg, rgb(45 52 62 / 0.76), rgb(20 24 31 / 0.91));
-  --rim: rgb(214 227 240 / 0.1);
 }
 
 .draftHeader {
@@ -232,24 +162,34 @@ body {
   overflow: visible;
   opacity: 0;
   pointer-events: none;
+  transform-origin: center;
 }
 
 .signalPath {
   fill: none;
-  stroke: rgb(var(--signal-rim-color));
+  stroke: url("#auroraSignalGradient");
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
-.draft[data-design="aurora-film"],
-.draft[data-design="aurora-rim"] { --signal-rim-color: 170 199 242; }
-
-.draft[data-design="slate-pulse"] { --signal-rim-color: 139 197 235; }
-
 .draft[data-activity="recording"] .signalRim,
 .draft[data-activity="listening"] .signalRim,
 .draft[data-activity="locked"] .signalRim {
-  opacity: calc(0.14 + var(--voice-level) * 0.86);
+  opacity: calc(0.58 + var(--voice-level) * 0.42);
+  filter: drop-shadow(0 0 calc(2px + var(--voice-level) * 3px) rgb(139 205 242 / 0.42));
+}
+
+.draft[data-activity="recording"] .signalPath,
+.draft[data-activity="listening"] .signalPath,
+.draft[data-activity="locked"] .signalPath {
+  stroke-width: calc(1.6px + var(--voice-level) * 0.9px);
+  animation: auroraListeningBreath 1.8s ease-in-out infinite;
+}
+
+.draft.listeningWake .signalPath {
+  stroke-dasharray: 18 82;
+  stroke-linecap: round;
+  animation: auroraListeningWake 420ms ease-out 1;
 }
 
 .draft[data-activity="transcribing"] .signalRim,
@@ -271,6 +211,28 @@ body {
 
 .draft[data-activity="slow"] .signalPath { stroke: rgb(235 193 111); }
 
+.draft[data-activity="warning"] .signalRim,
+.draft[data-activity="error"] .signalRim {
+  opacity: 0.96;
+}
+
+.draft[data-activity="warning"] .signalPath,
+.draft[data-activity="error"] .signalPath {
+  stroke-width: 2px;
+  stroke-dasharray: none;
+  animation: outcomePulse 520ms ease-in-out 2;
+}
+
+.draft[data-activity="warning"] .signalPath {
+  stroke: rgb(238 192 101);
+  filter: drop-shadow(0 0 3px rgb(238 192 101 / 0.42));
+}
+
+.draft[data-activity="error"] .signalPath {
+  stroke: rgb(244 119 136);
+  filter: drop-shadow(0 0 3px rgb(244 119 136 / 0.44));
+}
+
 .draft.reveal { animation: surfaceReveal 160ms ease-out both; }
 .draft.dismissing { animation: draftDismiss 160ms ease-in both; }
 
@@ -288,15 +250,38 @@ body {
   to { stroke-dashoffset: -100; }
 }
 
+@keyframes auroraListeningWake {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -100; }
+}
+
+@keyframes auroraListeningBreath {
+  0%, 100% { stroke-opacity: 0.72; }
+  50% { stroke-opacity: 1; }
+}
+
+@keyframes outcomePulse {
+  0%, 100% { stroke-opacity: 0.62; }
+  50% { stroke-opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .draft::after,
   .windowActions,
   .signalRim { transition: none; }
   .draft.reveal,
   .draft.dismissing,
   .draft[data-activity="transcribing"] .signalPath,
   .draft[data-activity="finalizing"] .signalPath,
-  .draft[data-activity="slow"] .signalPath {
+  .draft[data-activity="slow"] .signalPath,
+  .draft[data-activity="recording"] .signalPath,
+  .draft[data-activity="listening"] .signalPath,
+  .draft[data-activity="locked"] .signalPath,
+  .draft[data-activity="warning"] .signalPath,
+  .draft[data-activity="error"] .signalPath {
     animation: none;
+  }
+
+  .draft.listeningWake .signalPath {
+    stroke-dasharray: none;
   }
 }

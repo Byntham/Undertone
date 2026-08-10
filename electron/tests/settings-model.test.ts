@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { normalizeConfig } from "../src/core/config";
 import { applySettingsPatch, settingsSnapshot } from "../src/core/settingsModel";
-import { TURN_WINDOW_DESIGNS } from "../src/shared/turnWindow";
 
 describe("settings model", () => {
   it("exposes only the initial renderer-safe settings surface", () => {
@@ -21,7 +20,6 @@ describe("settings model", () => {
       shortcutWarning: null,
       liveTranscription: false,
       openTurnCleanupStrategy: "live-full",
-      turnWindowDesign: "smoked-glass",
       inputDevice: "",
       microphones: [],
       appVersion: "1.3.0",
@@ -162,7 +160,6 @@ describe("settings model", () => {
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
       openTurnCleanupStrategy: "commit-full",
-      turnWindowDesign: "aurora-film",
       liveTranscription: true,
     });
     expect(next).not.toBe(config);
@@ -179,17 +176,8 @@ describe("settings model", () => {
     expect(next.cleanup_reasoning_effort).toBe("none");
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
-    expect(next.turn_window_design).toBe("aurora-film");
     expect(next.live_transcription).toBe(true);
     expect(config.language).toBe("en");
-  });
-
-  it("applies every supported turn-window design", () => {
-    const config = normalizeConfig(undefined);
-    for (const turnWindowDesign of TURN_WINDOW_DESIGNS) {
-      expect(applySettingsPatch(config, { turnWindowDesign }).turn_window_design)
-        .toBe(turnWindowDesign);
-    }
   });
 
   it("normalizes shortcut updates and rejects collisions", () => {
@@ -276,7 +264,7 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { openTurnCleanupStrategy: "sometimes" }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { turnWindowDesign: "unknown" }))
-      .toThrow(/invalid/u);
+      .toThrow(/Unsupported/u);
     expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { corrections: { heard: "" } }))

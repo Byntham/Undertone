@@ -40,38 +40,16 @@ describe("overlay controller", () => {
     expect(controller.current().state).toBe("recording");
   });
 
-  it("publishes an accessible icon-only failure signal and hides it", () => {
+  it("publishes a text paste confirmation and hides it", () => {
     const states: OverlayState[] = [];
     const controller = new OverlayController((state) => states.push(state));
-    controller.signal("No speech detected", "error", 100);
+    controller.feedback("Text pasted", "normal", 100);
     expect(controller.current()).toEqual({
-      state: "signal",
-      text: "No speech detected",
-      tone: "error",
-    });
-    vi.advanceTimersByTime(100);
-    expect(states.map(({ state }) => state)).toEqual(["signal", "hidden"]);
-  });
-
-  it("publishes a guarded icon-only paste confirmation and hides it", () => {
-    const states: OverlayState[] = [];
-    const controller = new OverlayController((state) => states.push(state));
-    const revision = controller.transcribing();
-    expect(controller.confirm("Text pasted", 100, revision)).toBe(true);
-    expect(controller.current()).toEqual({
-      state: "signal",
+      state: "message",
       text: "Text pasted",
-      tone: "success",
+      tone: "normal",
     });
     vi.advanceTimersByTime(100);
-    expect(states.map(({ state }) => state)).toEqual(["transcribing", "signal", "hidden"]);
-  });
-
-  it("does not let an older paste confirmation replace a newer overlay state", () => {
-    const controller = new OverlayController(() => undefined);
-    const oldRevision = controller.transcribing();
-    controller.recording();
-    expect(controller.confirm("Text pasted", 100, oldRevision)).toBe(false);
-    expect(controller.current().state).toBe("recording");
+    expect(states.map(({ state }) => state)).toEqual(["message", "hidden"]);
   });
 });
