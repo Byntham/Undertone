@@ -115,7 +115,7 @@ body {
 .draftViewport {
   position: absolute;
   z-index: 2;
-  inset: 8px 64px 8px 18px;
+  inset: 8px 18px;
   min-width: 0;
   min-height: 0;
   display: grid;

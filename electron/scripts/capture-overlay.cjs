@@ -71,11 +71,10 @@ async function captureMessageOverlay() {
 }
 
 async function captureTurnDraft() {
-  const shortText = "A clean open turn grows with the words.";
+  const shortText = "A clean turn grows.";
   const mediumText = [
-    "This open turn starts small and expands upward as the transcript develops.",
-    "Its controls stay quiet until they are needed, while every dictated word remains visible.",
-    "Voice activity stays connected to the same Aurora surface.",
+    "Now, when the text wraps, the edges of the pill are significantly outside the edges of the text.",
+    "We should fit the pill size to the width of the text so there aren't these big borders on the edges.",
   ].join(" ");
   const cappedText = Array.from(
     { length: 24 },
@@ -86,7 +85,7 @@ async function captureTurnDraft() {
   let compactCapture = false;
   const completedDismissals = [];
   const win = new BrowserWindow({
-    width: 400,
+    width: 320,
     height: 68,
     show: false,
     frame: false,
@@ -166,6 +165,8 @@ async function captureTurnDraft() {
       const text = document.querySelector("#draftText");
       const path = document.querySelector("#signalPath");
       const rim = document.querySelector("#signalRim");
+      const draftRect = draft.getBoundingClientRect();
+      const viewportRect = document.querySelector("#draftViewport").getBoundingClientRect();
       return {
         activity: draft.dataset.activity,
         presentation: draft.dataset.presentation,
@@ -185,6 +186,8 @@ async function captureTurnDraft() {
           getComputedStyle(draft).getPropertyValue("--voice-level"),
         ),
         listeningWake: draft.classList.contains("listeningWake"),
+        leftInset: viewportRect.left - draftRect.left,
+        rightInset: draftRect.right - viewportRect.right,
         opacity: Number.parseFloat(getComputedStyle(draft).opacity),
         shadow: getComputedStyle(draft).boxShadow,
       };
@@ -219,7 +222,7 @@ async function captureTurnDraft() {
       throw new Error(`Compact Aurora ignition did not settle: ${JSON.stringify(compactListening)}`);
     }
     compactCapture = false;
-    win.setBounds({ ...win.getBounds(), width: 400, height: 68 });
+    win.setBounds({ ...win.getBounds(), width: 320, height: 68 });
 
     await sendDraft(shortText, "idle");
     await waitForHeight((height) => height === 68);
@@ -285,7 +288,8 @@ async function captureTurnDraft() {
     await sendDraft(mediumText, "idle");
     const expandedHeight = await waitForHeight((height) => height > 68 && height < 360);
     const expanded = await inspect(mediumText);
-    if (expanded.overflow || expanded.verticalOverflow || !expanded.continuousText) {
+    if (expanded.overflow || expanded.verticalOverflow || !expanded.continuousText
+        || Math.abs(expanded.leftInset - expanded.rightInset) > 0.5) {
       throw new Error(`Aurora growth is invalid: ${JSON.stringify(expanded)}`);
     }
     await capture("open-turn-aurora-expanded");
