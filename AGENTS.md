@@ -34,8 +34,7 @@ Opt-in tests (idle desktop only; they steal focus or the mouse):
 
 ## Release
 
-- Keep `electron/package.json`, its lockfile, and the renderer preview version
-  in sync.
+- Keep `electron/package.json` and its lockfile in sync.
 - `npm run package` builds an x64 NSIS installer (unsigned unless a cert is
   supplied externally).
 - Never commit `electron/node_modules`, `electron/dist`, `electron/release`,

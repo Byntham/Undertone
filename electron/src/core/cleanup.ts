@@ -2,9 +2,10 @@ import { isRecord } from "./config";
 import { SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
 import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
+import type { CleanupProviderId, CloudProviderId } from "../shared/settings";
 import { DEFAULT_CLEANUP_MODELS } from "../shared/models";
 
-export const CLEANUP_API_URLS: Readonly<Record<string, string>> = {
+export const CLEANUP_API_URLS: Readonly<Record<CloudProviderId, string>> = {
   xai: "https://api.x.ai/v1/chat/completions",
   openai: "https://api.openai.com/v1/chat/completions",
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
@@ -29,8 +30,11 @@ const JSON_OBJECT_RESPONSE_FORMAT = { type: "json_object" } as const;
 type ResponseFormat = "json_schema" | "json_object";
 
 export interface LocalCleanupRuntime {
-  baseUrl(model: string): string | null;
-  loadAsync(model: string): void;
+  withServer<T>(
+    policy: "fallback",
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T | null>;
+  warm(): void;
 }
 
 export interface SubscriptionCleanupRuntime {
@@ -45,14 +49,19 @@ export interface SubscriptionCleanupRuntime {
 
 export interface CleanupOptions {
   transcript: string;
-  corrections: Readonly<Record<string, string>>;
   apiKey: string;
-  model?: string;
-  provider?: string;
+  provider: CleanupProviderId;
   timeoutSeconds?: number;
   reasoningEffort?: CleanupReasoningEffort;
   serviceTier?: CleanupServiceTier;
-  throwOnError?: boolean;
+}
+
+/** A safe, user-facing cleanup failure. `null` is reserved for a cold local model. */
+export class CleanupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CleanupError";
+  }
 }
 
 export class CleanupClient {
@@ -65,58 +74,27 @@ export class CleanupClient {
   ) {}
 
   async cleanup(options: CleanupOptions): Promise<string | null> {
-    const provider = options.provider ?? "xai";
-    const model = options.model ?? "";
-    const effectiveModel = model || defaultCleanupModel(provider);
-    const user = JSON.stringify({
-      dictionary: options.corrections ?? {},
-      transcript: options.transcript,
-    });
+    const provider = options.provider;
+    const effectiveModel = DEFAULT_CLEANUP_MODELS[provider];
+    const user = JSON.stringify({ transcript: options.transcript });
     if (provider === "openai-subscription") {
       if (this.subscription === null) {
-        return failure(options, "OpenAI Subscription cleanup is not available.");
+        throw new CleanupError("OpenAI Subscription cleanup is not available.");
       }
       try {
         const content = await this.subscription.complete({
-          model,
+          model: effectiveModel,
           reasoningEffort: options.reasoningEffort ?? "none",
           serviceTier: options.serviceTier ?? "priority",
           userPrompt: user,
           timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
         });
-        return validateCleanupContent(content, options);
+        return validateCleanupContent(content, options.transcript);
       } catch (error) {
-        if (options.throwOnError) {
-          if (error instanceof CleanupFailure) throw error;
-          throw new CleanupFailure(error instanceof Error ? error.message : "Cleanup request failed.");
-        }
-        return null;
+        throw cleanupError(error);
       }
     }
-    let url: string;
-    let headers: Readonly<Record<string, string>>;
-    if (provider === "local") {
-      const baseUrl = this.local.baseUrl(model);
-      if (baseUrl === null) {
-        this.local.loadAsync(model);
-        return null;
-      }
-      url = `${baseUrl}/v1/chat/completions`;
-      headers = { "Content-Type": "application/json" };
-    } else {
-      const cloudUrl = CLEANUP_API_URLS[provider];
-      if (cloudUrl === undefined) {
-        return failure(options, `Unsupported cleanup provider: ${provider}`);
-      }
-      url = cloudUrl;
-      headers = {
-        Authorization: `Bearer ${options.apiKey}`,
-        "Content-Type": "application/json",
-      };
-    }
-
     const formatKey = `${provider}:${effectiveModel}`;
-    let responseFormat = this.responseFormats.get(formatKey) ?? "json_schema";
     const modelOptions = provider === "openai" && effectiveModel === "gpt-5.6-luna"
       ? {
           reasoning_effort: options.reasoningEffort ?? "none",
@@ -130,23 +108,27 @@ export class CleanupClient {
         : provider === "xai" && effectiveModel === "grok-4.3"
           ? { reasoning_effort: "none" }
           : {};
-    const request = (format: ResponseFormat) => this.http.post(url, {
-      headers,
-      body: JSON.stringify({
-        model: effectiveModel,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: user },
-        ],
-        response_format: format === "json_schema"
-          ? JSON_SCHEMA_RESPONSE_FORMAT
-          : JSON_OBJECT_RESPONSE_FORMAT,
-        ...modelOptions,
-      }),
-      timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
-    });
+    const requestCleanup = async (
+      url: string,
+      headers: Readonly<Record<string, string>>,
+    ): Promise<string | null> => {
+      let responseFormat = this.responseFormats.get(formatKey) ?? "json_schema";
+      const request = (format: ResponseFormat) => this.http.post(url, {
+        headers,
+        body: JSON.stringify({
+          model: effectiveModel,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: user },
+          ],
+          response_format: format === "json_schema"
+            ? JSON_SCHEMA_RESPONSE_FORMAT
+            : JSON_OBJECT_RESPONSE_FORMAT,
+          ...modelOptions,
+        }),
+        timeoutMs: Math.max(1, (options.timeoutSeconds ?? 2.5) * 1_000),
+      });
 
-    try {
       let response = await request(responseFormat);
       let usedFallback = false;
       if (responseFormat === "json_schema" && rejectsResponseFormat(response)) {
@@ -158,58 +140,65 @@ export class CleanupClient {
         if (responseFormat === "json_object" && rejectsResponseFormat(response)) {
           this.responseFormats.delete(formatKey);
         }
-        return failure(options, providerFailure(response.status, response.body));
+        throw new CleanupError(providerFailure(response.status, response.body));
       }
       const payload = JSON.parse(response.body) as unknown;
       const content = responseContent(payload);
       if (content === null) {
-        return failure(options, "Cleanup provider returned no text.");
+        throw new CleanupError("Cleanup provider returned no text.");
       }
       if (usedFallback) this.responseFormats.set(formatKey, "json_object");
-      return validateCleanupContent(content, options);
-    } catch (error) {
-      if (provider === "local") this.local.loadAsync(model);
-      if (options.throwOnError) {
-        if (error instanceof CleanupFailure) throw error;
-        throw new CleanupFailure(
-          error instanceof SyntaxError
-            ? "Cleanup provider returned invalid JSON."
-            : error instanceof Error && error.name === "AbortError"
-              ? "Cleanup request timed out."
-              : "Cleanup request failed.",
-        );
+      return validateCleanupContent(content, options.transcript);
+    };
+
+    try {
+      if (provider === "local") {
+        return await this.local.withServer("fallback", async (baseUrl) =>
+          await requestCleanup(`${baseUrl}/v1/chat/completions`, {
+            "Content-Type": "application/json",
+          }));
       }
-      return null;
+      const url = provider === "xai" || provider === "openai" || provider === "openrouter"
+        ? CLEANUP_API_URLS[provider]
+        : undefined;
+      if (url === undefined) {
+        throw new CleanupError(`Unsupported cleanup provider: ${provider}`);
+      }
+      return await requestCleanup(url, {
+        Authorization: `Bearer ${options.apiKey}`,
+        "Content-Type": "application/json",
+      });
+    } catch (error) {
+      if (provider === "local") this.local.warm();
+      throw cleanupError(error);
     }
   }
 }
 
-function defaultCleanupModel(provider: string): string {
-  return Object.prototype.hasOwnProperty.call(DEFAULT_CLEANUP_MODELS, provider)
-    ? DEFAULT_CLEANUP_MODELS[provider as keyof typeof DEFAULT_CLEANUP_MODELS]
-    : "";
-}
-
-class CleanupFailure extends Error {}
-
-function validateCleanupContent(content: string, options: CleanupOptions): string | null {
+function validateCleanupContent(content: string, transcript: string): string {
   const structured = JSON.parse(content) as unknown;
   if (!isRecord(structured) || typeof structured.text !== "string") {
-    return failure(options, "Cleanup provider returned an invalid structured response.");
+    throw new CleanupError("Cleanup provider returned an invalid structured response.");
   }
   const rawText = structured.text.trim();
   if (rawText.length === 0) {
-    return failure(options, "Cleanup provider returned empty text.");
+    throw new CleanupError("Cleanup provider returned empty text.");
   }
-  if (!plausibleLength(rawText, options.transcript)) {
-    return failure(options, "Cleanup response failed the safety checks.");
+  if (!plausibleLength(rawText, transcript)) {
+    throw new CleanupError("Cleanup response failed the safety checks.");
   }
   return rawText;
 }
 
-function failure(options: CleanupOptions, message: string): null {
-  if (options.throwOnError) throw new CleanupFailure(message);
-  return null;
+function cleanupError(error: unknown): CleanupError {
+  if (error instanceof CleanupError) return error;
+  if (error instanceof SyntaxError) {
+    return new CleanupError("Cleanup provider returned invalid JSON.");
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    return new CleanupError("Cleanup request timed out.");
+  }
+  return new CleanupError("Cleanup request failed.");
 }
 
 function providerFailure(status: number, body: string): string {

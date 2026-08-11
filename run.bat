@@ -2,19 +2,17 @@
 setlocal
 rem Build and launch the primary Electron desktop app without a console window.
 cd /d "%~dp0electron"
+set "UNDERTONE_INSTALL_NEEDED="
 call npm ls --depth=0 >nul 2>&1
-if errorlevel 1 (
+if errorlevel 1 set "UNDERTONE_INSTALL_NEEDED=1"
+if not exist "node_modules\electron\dist\electron.exe" set "UNDERTONE_INSTALL_NEEDED=1"
+if defined UNDERTONE_INSTALL_NEEDED (
     call npm ci
     if errorlevel 1 exit /b 1
 )
 if not exist "node_modules\electron\dist\electron.exe" (
-    rem Electron 43 downloads its runtime lazily when the package is loaded.
-    node -e "require('electron')"
-    if errorlevel 1 exit /b 1
-    if not exist "node_modules\electron\dist\electron.exe" (
-        echo Electron runtime installation did not produce electron.exe. 1>&2
-        exit /b 1
-    )
+    echo Electron runtime installation did not produce electron.exe. 1>&2
+    exit /b 1
 )
 call npm run build
 if errorlevel 1 exit /b 1

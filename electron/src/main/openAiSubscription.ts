@@ -15,6 +15,7 @@ const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const REDIRECT_URI = "http://localhost:1455/auth/callback";
+const CALLBACK_URL = new URL(REDIRECT_URI);
 const CALLBACK_PORT = 1455;
 const TOKEN_TIMEOUT_MS = 30_000;
 const LOGIN_TIMEOUT_MS = 3 * 60_000;
@@ -43,6 +44,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
   private refreshOperation: Promise<OpenAiSubscriptionCredentials> | null = null;
   private connectOperation: Promise<void> | null = null;
   private cancelConnect: (() => void) | null = null;
+  private credentialGeneration = 0;
+  private persistOperation: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: OpenAiSubscriptionOptions) {
     this.credentials = options.credentials;
@@ -55,18 +58,22 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
 
   async connect(): Promise<void> {
     if (this.connectOperation !== null) return await this.connectOperation;
-    this.connectOperation = this.performConnect().finally(() => {
+    const generation = ++this.credentialGeneration;
+    this.connectOperation = this.performConnect(generation).finally(() => {
       this.connectOperation = null;
     });
     return await this.connectOperation;
   }
 
   async disconnect(): Promise<void> {
-    await this.options.persist(null);
+    const generation = ++this.credentialGeneration;
     this.credentials = null;
+    this.cancelConnect?.();
+    await this.persistCredentials(null, generation);
   }
 
   dispose(): void {
+    this.credentialGeneration += 1;
     this.cancelConnect?.();
   }
 
@@ -118,7 +125,7 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
     return parseResponseText(response.body);
   }
 
-  private async performConnect(): Promise<void> {
+  private async performConnect(generation: number): Promise<void> {
     const verifier = randomBytes(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
     const state = randomBytes(16).toString("hex");
@@ -135,6 +142,10 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
     authorization.searchParams.set("originator", "undertone");
 
     const callback = await listenForAuthorizationCode(state);
+    if (generation !== this.credentialGeneration) {
+      callback.cancel();
+      throw new Error("OpenAI sign-in was superseded by another account action.");
+    }
     this.cancelConnect = callback.cancel;
     try {
       await this.options.openExternal(authorization.toString());
@@ -144,8 +155,9 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
         "OpenAI sign-in timed out. Try Connect again.",
       );
       const credentials = await this.exchangeCode(code, verifier);
-      await this.options.persist(credentials);
-      this.credentials = credentials;
+      if (!await this.persistCredentials(credentials, generation)) {
+        throw new Error("OpenAI sign-in was superseded by another account action.");
+      }
     } finally {
       this.cancelConnect = null;
       closeServer(callback.server);
@@ -172,6 +184,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
     if (current === null) throw new Error("Connect your OpenAI account before using subscription cleanup.");
     if (!force && current.expiresAt > this.now() + REFRESH_SKEW_MS) return current;
     if (this.refreshOperation !== null) return await this.refreshOperation;
+    if (this.connectOperation !== null) throw new Error("OpenAI sign-in is already in progress.");
+    const generation = this.credentialGeneration;
     this.refreshOperation = (async () => {
       const response = await this.options.http.post(TOKEN_URL, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -183,13 +197,38 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
         timeoutMs: TOKEN_TIMEOUT_MS,
       });
       const next = tokenCredentials(response, this.now());
-      await this.options.persist(next);
-      this.credentials = next;
+      if (generation !== this.credentialGeneration) {
+        throw new Error("OpenAI token refresh was superseded by another account action.");
+      }
+      const replacementGeneration = ++this.credentialGeneration;
+      if (!await this.persistCredentials(next, replacementGeneration)) {
+        throw new Error("OpenAI token refresh was superseded by another account action.");
+      }
       return next;
     })().finally(() => {
       this.refreshOperation = null;
     });
     return await this.refreshOperation;
+  }
+
+  private async persistCredentials(
+    credentials: OpenAiSubscriptionCredentials | null,
+    generation: number,
+  ): Promise<boolean> {
+    let committed = false;
+    const operation = this.persistOperation.then(async () => {
+      // A disconnect must still clear persisted credentials if a newer connect
+      // starts before this queued write runs. A later successful connect is
+      // queued after it and will replace the cleared value.
+      if (credentials !== null && generation !== this.credentialGeneration) return;
+      await this.options.persist(credentials);
+      if (generation !== this.credentialGeneration) return;
+      this.credentials = credentials;
+      committed = true;
+    });
+    this.persistOperation = operation.catch(() => undefined);
+    await operation;
+    return committed;
   }
 
   private async authorizedPost(url: string, body: string, timeoutMs: number): Promise<HttpResponse> {
@@ -342,42 +381,63 @@ async function listenForAuthorizationCode(state: string): Promise<{
     resolveCode = resolve;
     rejectCode = reject;
   });
+  void code.catch(() => undefined);
   const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "", "http://localhost");
     response.setHeader("Connection", "close");
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     response.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
-    if (url.pathname !== "/auth/callback") {
-      response.statusCode = 404;
-      response.end(authPage("OpenAI sign-in callback was not recognized."));
-      return;
-    }
-    if (url.searchParams.get("state") !== state) {
-      response.statusCode = 400;
-      response.end(authPage("OpenAI sign-in could not be verified."));
-      if (!settled) {
-        settled = true;
-        rejectCode?.(new Error("OpenAI sign-in state did not match."));
-      }
-      return;
-    }
-    const error = url.searchParams.get("error");
-    const authorizationCode = url.searchParams.get("code");
-    if (error !== null || authorizationCode === null) {
-      response.statusCode = 400;
-      response.end(authPage("OpenAI sign-in was cancelled or failed."));
-      if (!settled) {
-        settled = true;
-        rejectCode?.(new Error(error === null ? "OpenAI sign-in returned no code." : `OpenAI sign-in failed: ${error}`));
-      }
-      return;
-    }
-    response.statusCode = 200;
-    response.end(authPage("OpenAI sign-in received. Return to Undertone to finish."));
-    if (!settled) {
+    const finish = (status: number, message: string, result?: { code: string } | { error: string }): void => {
+      response.statusCode = status;
+      response.end(authPage(message));
+      if (settled || result === undefined) return;
       settled = true;
-      resolveCode?.(authorizationCode);
+      if ("code" in result) resolveCode?.(result.code);
+      else rejectCode?.(new Error(result.error));
+    };
+    const fail = (status: number, message: string): void => {
+      finish(status, message, { error: message });
+    };
+
+    if (!isLoopbackAddress(request.socket.remoteAddress)) {
+      fail(403, "OpenAI sign-in callback did not come from this computer.");
+      return;
     }
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "", CALLBACK_URL);
+    } catch {
+      finish(404, "OpenAI sign-in callback was not recognized.");
+      return;
+    }
+    if (url.origin !== CALLBACK_URL.origin || url.pathname !== CALLBACK_URL.pathname) {
+      finish(404, "OpenAI sign-in callback was not recognized.");
+      return;
+    }
+    if (request.method !== "GET") {
+      finish(405, "OpenAI sign-in callback method was not recognized.");
+      return;
+    }
+    const states = url.searchParams.getAll("state");
+    const codes = url.searchParams.getAll("code");
+    const errors = url.searchParams.getAll("error");
+    if (states.length > 1 || codes.length > 1 || errors.length > 1 || (codes.length > 0 && errors.length > 0)) {
+      fail(400, "OpenAI sign-in callback was ambiguous.");
+      return;
+    }
+    if (states.length !== 1 || states[0] !== state) {
+      fail(400, "OpenAI sign-in state did not match.");
+      return;
+    }
+    if (errors.length === 1) {
+      fail(400, "OpenAI sign-in returned an error.");
+      return;
+    }
+    const authorizationCode = codes[0];
+    if (codes.length !== 1 || authorizationCode === undefined || authorizationCode.trim().length === 0) {
+      fail(400, "OpenAI sign-in returned no code.");
+      return;
+    }
+    finish(200, "OpenAI sign-in received. Return to Undertone to finish.", { code: authorizationCode });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -401,6 +461,15 @@ async function listenForAuthorizationCode(state: string): Promise<{
       closeServer(server);
     },
   };
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === "::1") return true;
+  const ipv4 = address?.startsWith("::ffff:") === true ? address.slice(7) : address;
+  const octets = ipv4?.split(".");
+  return octets?.length === 4
+    && octets.every((octet) => /^\d{1,3}$/u.test(octet) && Number(octet) <= 255)
+    && Number(octets[0]) === 127;
 }
 
 function closeServer(server: Server): void {

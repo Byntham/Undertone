@@ -18,6 +18,11 @@ const api: SettingsApi = {
   update: async (patch: SettingsPatch) => (
     await ipcRenderer.invoke("settings:update", patch) as Awaited<ReturnType<SettingsApi["update"]>>
   ),
+  setStartWithWindows: async (enabled: boolean) => (
+    await ipcRenderer.invoke("autostart:set", enabled) as Awaited<
+      ReturnType<SettingsApi["setStartWithWindows"]>
+    >
+  ),
   captureShortcut: async (field: ShortcutSetting) => (
     await ipcRenderer.invoke("shortcut:capture", { field }) as Awaited<
       ReturnType<SettingsApi["captureShortcut"]>

@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 6;
+    private const int ProtocolVersion = 8;
     private const int WhKeyboardLl = 13;
     private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
@@ -22,7 +22,6 @@ internal static class Program
     private const int WmMButtonDown = 0x0207;
     private const int WmXButtonDown = 0x020B;
     private const uint WmQuit = 0x0012;
-    private const uint LlkhfExtended = 0x01;
     private const uint LlkhfInjected = 0x10;
 
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
@@ -41,7 +40,56 @@ internal static class Program
     private static ProcessSupervisor _supervisor;
     private static long _inputGeneration;
 
-    public static int Main()
+    public static int Main(string[] args)
+    {
+        if (args.Length == 1 && args[0] == "--extract-subset")
+            return ExtractSubset();
+        if (args.Length != 0)
+            return 2;
+        return RunResidentHost();
+    }
+
+    private static int ExtractSubset()
+    {
+        try
+        {
+            var line = Console.In.ReadLine();
+            if (string.IsNullOrEmpty(line))
+                throw new InvalidOperationException("Extraction payload is missing");
+            var payload = Json.Deserialize<Dictionary<string, object>>(line);
+            if (BoundedInt(payload, "protocol", 0, 0, int.MaxValue) != ProtocolVersion)
+                throw new InvalidOperationException("Extraction protocol is unsupported");
+            var cancellation = new ExtractionCancellation();
+            var parentMonitor = new Thread(new ThreadStart(delegate
+            {
+                try { Console.In.ReadLine(); }
+                finally { cancellation.IsCancelled = true; }
+            })) { IsBackground = true, Name = "extraction-parent" };
+            parentMonitor.Start();
+            var count = ArchiveInstaller.ExtractSubset(
+                StringList(payload, "zipFiles"),
+                StringList(payload, "patterns"),
+                StringValue(payload, "targetDirectory"),
+                delegate { return cancellation.IsCancelled; });
+            Console.Out.WriteLine(Json.Serialize(new Dictionary<string, object>
+            {
+                { "protocol", ProtocolVersion },
+                { "fileCount", count }
+            }));
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.Out.WriteLine(Json.Serialize(new Dictionary<string, object>
+            {
+                { "protocol", ProtocolVersion },
+                { "message", error.Message }
+            }));
+            return 1;
+        }
+    }
+
+    private static int RunResidentHost()
     {
         _mainThreadId = GetCurrentThreadId();
         var writer = new Thread(WriteOutput) { IsBackground = true, Name = "stdout" };
@@ -140,27 +188,20 @@ internal static class Program
 
         try
         {
-            if (type == "startInput")
+            object rawProtocol;
+            if (!command.TryGetValue("protocol", out rawProtocol)
+                || !(rawProtocol is int)
+                || (int)rawProtocol != ProtocolVersion)
+                throw new InvalidOperationException("Protocol is unsupported");
+
+            if (type == "setInputMode")
             {
-                _captureInput = true;
-                Respond(requestId, "inputStarted");
-            }
-            else if (type == "stopInput")
-            {
-                _captureInput = false;
-                _suppressKeyboard = false;
-                Respond(requestId, "inputStopped");
-            }
-            else if (type == "startShortcutCapture")
-            {
-                _captureInput = true;
-                _suppressKeyboard = true;
-                Respond(requestId, "shortcutCaptureStarted");
-            }
-            else if (type == "stopShortcutCapture")
-            {
-                _suppressKeyboard = false;
-                Respond(requestId, "shortcutCaptureStopped");
+                var mode = RequiredString(command, "mode");
+                SetInputMode(mode);
+                Respond(requestId, "inputModeSet", new Dictionary<string, object>
+                {
+                    { "mode", mode }
+                });
             }
             else if (type == "getForeground")
             {
@@ -170,7 +211,8 @@ internal static class Program
                 {
                     { "window", foreground.Window },
                     { "focus", foreground.Focus },
-                    { "focusIdentity", foreground.FocusIdentity },
+                    { "focusIdentityState", FocusIdentityStateName(foreground.FocusIdentity.State) },
+                    { "focusIdentity", foreground.FocusIdentity.Value },
                     { "generation", generation }
                 });
             }
@@ -183,15 +225,14 @@ internal static class Program
             }
             else if (type == "guardedPaste")
             {
+                var expected = GuardedPasteTarget(command);
                 bool focusMatched;
                 bool sent = false;
                 lock (InputGate)
                 {
-                    var focusIdentity = _focusReader.QueryIdentity(150);
-                    var foreground = Desktop.GetForeground(focusIdentity);
-                    focusMatched = FocusMatches(command, foreground)
-                        && StringValue(command, "generation")
-                            == Interlocked.Read(ref _inputGeneration).ToString();
+                    var foreground = Desktop.GetForeground(_focusReader.QueryIdentity(150));
+                    focusMatched = FocusMatches(expected, foreground)
+                        && expected.Generation == Interlocked.Read(ref _inputGeneration).ToString();
                     if (focusMatched)
                         sent = Desktop.SendPaste();
                 }
@@ -221,8 +262,7 @@ internal static class Program
                     StringValue(command, "file"),
                     StringValue(command, "arguments"),
                     StringValue(command, "workingDirectory"),
-                    StringValue(command, "logFile"),
-                    StringMap(command, "environment"));
+                    StringValue(command, "logFile"));
                 Respond(requestId, "processStarted", new Dictionary<string, object>
                 {
                     { "processId", processId }
@@ -239,29 +279,14 @@ internal static class Program
             else if (type == "isSupervisedRunning")
             {
                 var processId = BoundedInt(command, "processId", 0, 1, int.MaxValue);
-                int exitCode;
-                var hasExitCode = _supervisor.TryGetExitCode(processId, out exitCode);
-                Respond(requestId, "processStatus", new Dictionary<string, object>
+                Respond(requestId, "processRunning", new Dictionary<string, object>
                 {
-                    { "running", _supervisor.IsRunning(processId) },
-                    { "exitCode", hasExitCode ? (object)exitCode : null }
-                });
-            }
-            else if (type == "extractSubset")
-            {
-                var count = ArchiveInstaller.ExtractSubset(
-                    StringList(command, "zipFiles"),
-                    StringList(command, "patterns"),
-                    StringValue(command, "targetDirectory"));
-                Respond(requestId, "subsetExtracted", new Dictionary<string, object>
-                {
-                    { "fileCount", count }
+                    { "running", _supervisor.IsRunning(processId) }
                 });
             }
             else if (type == "shutdown")
             {
-                _captureInput = false;
-                _suppressKeyboard = false;
+                SetInputMode("off");
                 Respond(requestId, "shuttingDown");
                 PostThreadMessage(_mainThreadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
             }
@@ -311,22 +336,94 @@ internal static class Program
             }
         }
         generation = Interlocked.Read(ref _inputGeneration).ToString();
-        return Desktop.GetForeground(null);
+        return Desktop.GetForeground(FocusIdentityResult.Degraded());
+    }
+
+    private static void SetInputMode(string mode)
+    {
+        if (mode == "off")
+        {
+            _captureInput = false;
+            _suppressKeyboard = false;
+        }
+        else if (mode == "listen")
+        {
+            _captureInput = true;
+            _suppressKeyboard = false;
+        }
+        else if (mode == "shortcut-capture")
+        {
+            _captureInput = true;
+            _suppressKeyboard = true;
+        }
+        else
+        {
+            throw new InvalidOperationException("Input mode is invalid");
+        }
+    }
+
+    private static GuardedTarget GuardedPasteTarget(Dictionary<string, object> values)
+    {
+        var state = RequiredString(values, "focusIdentityState");
+        object rawIdentity;
+        if (!values.TryGetValue("focusIdentity", out rawIdentity))
+            throw new InvalidOperationException("focusIdentity is required");
+
+        string identity = null;
+        if (state == "available")
+        {
+            identity = rawIdentity as string;
+            if (string.IsNullOrEmpty(identity))
+                throw new InvalidOperationException("Available focus identity is invalid");
+        }
+        else if (state == "unavailable")
+        {
+            if (rawIdentity != null)
+                throw new InvalidOperationException("Unavailable focus identity must be null");
+        }
+        else
+        {
+            throw new InvalidOperationException("Focus identity state is invalid");
+        }
+
+        return new GuardedTarget
+        {
+            Window = RequiredString(values, "window"),
+            Focus = RequiredString(values, "focus"),
+            FocusIdentityState = state,
+            FocusIdentity = identity,
+            Generation = RequiredString(values, "generation")
+        };
     }
 
     private static bool FocusMatches(
-        Dictionary<string, object> expected,
+        GuardedTarget expected,
         ForegroundInfo actual)
     {
-        if (StringValue(expected, "window") != actual.Window)
+        if (actual.FocusIdentity.State == FocusIdentityState.Degraded
+            || expected.Window != actual.Window
+            || expected.Focus != actual.Focus)
             return false;
-        var focus = StringValue(expected, "focus");
-        if (focus.Length > 0 && focus != "0" && focus != actual.Focus)
-            return false;
-        var identity = StringValue(expected, "focusIdentity");
-        return identity.Length > 0
-            ? identity == actual.FocusIdentity
-            : string.IsNullOrEmpty(actual.FocusIdentity);
+        if (expected.FocusIdentityState == "available")
+            return actual.FocusIdentity.State == FocusIdentityState.Available
+                && expected.FocusIdentity == actual.FocusIdentity.Value;
+        return actual.FocusIdentity.State == FocusIdentityState.Unavailable;
+    }
+
+    private static string FocusIdentityStateName(FocusIdentityState state)
+    {
+        if (state == FocusIdentityState.Available) return "available";
+        if (state == FocusIdentityState.Unavailable) return "unavailable";
+        return "degraded";
+    }
+
+    private static string RequiredString(Dictionary<string, object> values, string key)
+    {
+        object value;
+        var text = values.TryGetValue(key, out value) ? value as string : null;
+        if (string.IsNullOrEmpty(text))
+            throw new InvalidOperationException(key + " is required");
+        return text;
     }
 
     private static string StringValue(Dictionary<string, object> values, string key)
@@ -372,24 +469,6 @@ internal static class Program
         return result;
     }
 
-    private static Dictionary<string, string> StringMap(
-        Dictionary<string, object> values,
-        string key)
-    {
-        object value;
-        var result = new Dictionary<string, string>();
-        if (!values.TryGetValue(key, out value) || value == null)
-            return result;
-        var dictionary = value as Dictionary<string, object>;
-        if (dictionary == null)
-            return result;
-        foreach (var pair in dictionary)
-        {
-            result[pair.Key] = pair.Value == null ? null : Convert.ToString(pair.Value);
-        }
-        return result;
-    }
-
     private static IntPtr OnKeyboard(int code, IntPtr wParam, IntPtr lParam)
     {
         if (code >= 0 && _captureInput)
@@ -412,10 +491,8 @@ internal static class Program
                     { "protocol", ProtocolVersion },
                     { "type", "keyboard" },
                     { "eventType", eventType },
-                    { "scanCode", data.ScanCode },
                     { "virtualKey", data.VirtualKey },
-                    { "injected", (data.Flags & LlkhfInjected) != 0 },
-                    { "extended", (data.Flags & LlkhfExtended) != 0 }
+                    { "injected", (data.Flags & LlkhfInjected) != 0 }
                 });
             }
         }
@@ -429,27 +506,13 @@ internal static class Program
         if (code >= 0 && _captureInput)
         {
             var message = wParam.ToInt32();
-            string button = null;
-            if (message == WmLButtonDown) button = "left";
-            else if (message == WmRButtonDown) button = "right";
-            else if (message == WmMButtonDown) button = "middle";
-            else if (message == WmXButtonDown)
-            {
-                var data = (MouseData)Marshal.PtrToStructure(lParam, typeof(MouseData));
-                button = ((data.MouseDataValue >> 16) & 0xffff) == 1 ? "x1" : "x2";
-            }
-
-            if (button != null)
+            if (message == WmLButtonDown
+                || message == WmRButtonDown
+                || message == WmMButtonDown
+                || message == WmXButtonDown)
             {
                 lock (InputGate)
                     Interlocked.Increment(ref _inputGeneration);
-                Emit(new Dictionary<string, object>
-                {
-                    { "protocol", ProtocolVersion },
-                    { "type", "mouse" },
-                    { "eventType", "down" },
-                    { "button", button }
-                });
             }
         }
         return CallNextHookEx(_mouseHook, code, wParam, lParam);
@@ -483,7 +546,21 @@ internal static class Program
         }
     }
 
+    private sealed class GuardedTarget
+    {
+        public string Window;
+        public string Focus;
+        public string FocusIdentityState;
+        public string FocusIdentity;
+        public string Generation;
+    }
+
     private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+
+    private sealed class ExtractionCancellation
+    {
+        public volatile bool IsCancelled;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KeyboardData
@@ -500,16 +577,6 @@ internal static class Program
     {
         public int X;
         public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MouseData
-    {
-        public Point Location;
-        public uint MouseDataValue;
-        public uint Flags;
-        public uint Time;
-        public UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]

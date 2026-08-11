@@ -1,15 +1,19 @@
-name: Release Undertone
+name: Verify and release Undertone
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "v*.*.*"
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  verify:
+    if: github.ref_type != 'tag'
     runs-on: windows-latest
     defaults:
       run:
@@ -23,6 +27,47 @@ jobs:
           cache-dependency-path: electron/package-lock.json
       - run: npm ci
       - run: npm run verify
-      - run: npm run release
+
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: electron
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - name: Check release version
+        id: version
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match package version $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run package:built
+      - run: npm run smoke:package
+      - name: Upload tested release assets to a draft
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          fail_on_unmatched_files: true
+          files: |
+            electron/release/Undertone-Setup-${{ steps.version.outputs.version }}-x64.exe
+            electron/release/Undertone-Setup-${{ steps.version.outputs.version }}-x64.exe.blockmap
+            electron/release/latest.yml
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false

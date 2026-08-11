@@ -11,6 +11,7 @@ app.on("window-all-closed", () => {});
 const outputDir = path.resolve(__dirname, `../test-output/overlay/${Math.round(scale * 100)}pct`);
 app.setPath("userData", path.join(outputDir, `profile-${process.pid}`));
 const overlayFile = path.resolve(__dirname, "../dist/renderer/overlay/index.html");
+const overlayPreload = path.resolve(__dirname, "../dist/main/preload/overlayPreload.js");
 const turnDraftFile = path.resolve(__dirname, "../dist/renderer/turn-draft/index.html");
 const turnDraftPreload = path.resolve(__dirname, "../dist/main/preload/turnDraftPreload.js");
 
@@ -36,7 +37,12 @@ async function captureMessageOverlay() {
     show: false,
     frame: false,
     transparent: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: overlayPreload,
+    },
   });
   try {
     await win.loadFile(overlayFile);
@@ -47,12 +53,8 @@ async function captureMessageOverlay() {
       ["warning", "Couldn't paste — the text is on your clipboard"],
       ["error", "Audio service is not ready"],
     ]) {
-      await win.webContents.executeJavaScript(`(() => {
-        const pill = document.querySelector("#pill");
-        pill.className = "pill message ${tone}";
-        document.querySelector("#label").textContent = ${JSON.stringify(text)};
-        document.querySelector("#check").textContent = ${JSON.stringify(tone === "error" ? "×" : tone === "warning" ? "!" : "")};
-      })()`);
+      win.webContents.send("overlay:state", { state: "message", tone, text });
+      await new Promise((resolve) => setTimeout(resolve, 30));
       const layout = await win.webContents.executeJavaScript(`(() => ({
         hasBars: document.querySelector("#bars") !== null,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -133,11 +135,6 @@ async function captureTurnDraft() {
     ) => {
       win.webContents.send("turnDraft:view", {
         text,
-        fragmentCount: text.length === 0 ? 0 : 1,
-        charCount: text.length,
-        liveState: activity === "listening"
-          ? "listening"
-          : activity === "finalizing" ? "finalizing" : null,
         activity,
         statusText,
         presentation,
@@ -169,7 +166,6 @@ async function captureTurnDraft() {
       const viewportRect = document.querySelector("#draftViewport").getBoundingClientRect();
       return {
         activity: draft.dataset.activity,
-        presentation: draft.dataset.presentation,
         ariaLabel: draft.getAttribute("aria-label"),
         hasBars: document.querySelector("#bars") !== null,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -296,6 +292,10 @@ async function captureTurnDraft() {
       throw new Error(`Aurora growth is invalid: ${JSON.stringify(expanded)}`);
     }
     await capture("open-turn-aurora-expanded");
+
+    win.setBounds({ ...win.getBounds(), height: 68 });
+    await sendDraft(mediumText, "idle");
+    await waitForHeight((height) => height === expandedHeight);
 
     await sendDraft(cappedText, "idle");
     await waitForHeight((height) => height === 360);

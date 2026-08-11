@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_CONFIG,
-  modelOverride,
   normalizeConfig,
   providerKey,
+  xaiVocabularyHints,
 } from "../src/core/config";
 import { ConfigStore, type SecretCipher } from "../src/main/configStore";
 
@@ -53,6 +53,88 @@ describe("configuration", () => {
     expect(DEFAULT_CONFIG.vocabulary).toEqual([]);
   });
 
+  it("repairs every malformed persisted scalar and drops unknown fields", () => {
+    const config = normalizeConfig({
+      api_key: 1,
+      openai_api_key: false,
+      openai_oauth_access_token: [],
+      openai_oauth_refresh_token: {},
+      openai_oauth_expires_at: Number.POSITIVE_INFINITY,
+      openai_oauth_account_id: null,
+      openrouter_api_key: "bad\nkey",
+      hotkey: "x".repeat(257),
+      language: "../bad",
+      restore_clipboard: "true",
+      input_device: "bad\0device",
+      provider: "openai-subscription",
+      ai_cleanup: 1,
+      cleanup_provider: "unknown",
+      sound_cues: null,
+      vocabulary: {},
+      corrections: [],
+      stt_vocab_hints: "false",
+      repaste_hotkey: false,
+      commit_hotkey: null,
+      scratch_hotkey: 42,
+      discard_hotkey: [],
+      live_transcription: "true",
+      stack_cleanup_strategy: "sometimes",
+      local_loaded: "false",
+      local_idle_minutes: 7,
+      cleanup_timeout: Number.NaN,
+      cleanup_reasoning_effort: "minimal",
+      cleanup_service_tier: "turbo",
+      unknown: "drop me",
+    });
+
+    expect(config).toEqual(DEFAULT_CONFIG);
+    expect(config).not.toHaveProperty("unknown");
+  });
+
+  it("canonicalizes persisted strings, lists, maps, and bounded numbers", () => {
+    const config = normalizeConfig({
+      api_key: "  x-key  ",
+      language: "  fr-CA  ",
+      input_device: "  USB Mic  ",
+      openai_oauth_expires_at: 123_456,
+      local_idle_minutes: 15,
+      cleanup_timeout: 0.5,
+      vocabulary: [" Undertone ", 42, "Undertone", "bad\nterm", "Kubernetes"],
+      corrections: {
+        " under tone ": " Undertone ",
+        invalid: false,
+        multiline: "bad\nvalue",
+      },
+    });
+
+    expect(config.api_key).toBe("x-key");
+    expect(config.language).toBe("fr-CA");
+    expect(config.input_device).toBe("USB Mic");
+    expect(config.openai_oauth_expires_at).toBe(123_456);
+    expect(config.local_idle_minutes).toBe(15);
+    expect(config.cleanup_timeout).toBe(0.5);
+    expect(config.vocabulary).toEqual(["Undertone", "Kubernetes"]);
+    expect(config.corrections).toEqual({ "under tone": "Undertone" });
+  });
+
+  it("defaults overlarge persisted containers and out-of-range numbers", () => {
+    expect(normalizeConfig({
+      openai_oauth_expires_at: -1,
+      local_idle_minutes: 60.5,
+      cleanup_timeout: 30.1,
+      vocabulary: Array.from({ length: 201 }, (_, index) => `term-${index}`),
+      corrections: Object.fromEntries(
+        Array.from({ length: 201 }, (_, index) => [`heard-${index}`, `written-${index}`]),
+      ),
+    })).toMatchObject({
+      openai_oauth_expires_at: 0,
+      local_idle_minutes: 0,
+      cleanup_timeout: 2.5,
+      vocabulary: [],
+      corrections: {},
+    });
+  });
+
   it("migrates the removed hybrid stack cleanup strategy to the default", () => {
     expect(normalizeConfig({
       stack_cleanup_strategy: "live-delta-commit-full",
@@ -87,7 +169,7 @@ describe("configuration", () => {
     expect(normalizeConfig({ cleanup_timeout: "slow" }).cleanup_timeout).toBe(2.5);
   });
 
-  it("keeps only current fields and repairs model override containers", () => {
+  it("keeps only current fields and drops removed model overrides", () => {
     const config = normalizeConfig({
       language: "fr",
       sample_rate: 48_000,
@@ -106,20 +188,8 @@ describe("configuration", () => {
     expect(config).not.toHaveProperty("stt_model");
     expect(config).not.toHaveProperty("cleanup_prompt");
     expect(config).not.toHaveProperty("cleanup_prompts");
-    expect(config.stt_models).toEqual({});
-    expect(config.cleanup_models).toEqual({});
-    expect(modelOverride(config, "stt", "openai")).toBe("");
-  });
-
-  it("removes obsolete local model overrides", () => {
-    const config = normalizeConfig({
-      stt_models: { local: "other.bin", openai: "whisper-1" },
-      cleanup_models: { local: "other.gguf", xai: "grok-latest" },
-    });
-    expect(config.stt_models).toEqual({ openai: "whisper-1" });
-    expect(config.cleanup_models).toEqual({ xai: "grok-latest" });
-    expect(modelOverride(config, "stt", "local")).toBe("");
-    expect(modelOverride(config, "cleanup", "local")).toBe("");
+    expect(config).not.toHaveProperty("stt_models");
+    expect(config).not.toHaveProperty("cleanup_models");
   });
 
   it("maps provider keys without an implicit xAI fallback", () => {
@@ -135,13 +205,49 @@ describe("configuration", () => {
     expect(providerKey(config, "unknown")).toBe("");
   });
 
-  it("falls back safely for missing or corrupt files", async () => {
+  it("defaults a missing file and moves a corrupt file aside", async () => {
     const directory = await makeTemporaryDirectory();
     const configPath = path.join(directory, "Undertone", "config.json");
-    const store = new ConfigStore({ configPath, cipher });
+    const warnings: string[] = [];
+    const store = new ConfigStore({
+      configPath,
+      cipher,
+      onWarning: (message) => { warnings.push(message); },
+    });
     expect((await store.load()).language).toBe("en");
     await writeFile(configPath, "not-json", "utf8");
     expect((await store.load()).language).toBe("en");
+    const files = await readdir(path.dirname(configPath));
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^config\.json\.corrupt-/u);
+    expect(await readFile(path.join(path.dirname(configPath), files[0]!), "utf8"))
+      .toBe("not-json");
+    expect(warnings).toEqual([expect.stringContaining(files[0]!)]);
+  });
+
+  it("builds deduplicated vocabulary hints for xAI only", () => {
+    const values = {
+      vocabulary: ["Undertone", "Kubernetes"],
+      corrections: { kubernetes: "Kubernetes", codex: "Codex" },
+      stt_vocab_hints: true,
+    };
+    expect(xaiVocabularyHints(normalizeConfig({ ...values, provider: "xai" })))
+      .toEqual(["Undertone", "Kubernetes", "Codex"]);
+    expect(xaiVocabularyHints(normalizeConfig({ ...values, provider: "openai" })))
+      .toEqual([]);
+    expect(xaiVocabularyHints(normalizeConfig({
+      ...values,
+      provider: "xai",
+      stt_vocab_hints: false,
+    }))).toEqual([]);
+  });
+
+  it("does not hide config filesystem failures", async () => {
+    const directory = await makeTemporaryDirectory();
+    const configPath = path.join(directory, "Undertone", "config.json");
+    await mkdir(configPath, { recursive: true });
+    const store = new ConfigStore({ configPath, cipher });
+    await expect(store.load()).rejects.toMatchObject({ code: expect.any(String) });
   });
 
   it("encrypts keys and OAuth tokens, preserves memory, and replaces atomically", async () => {

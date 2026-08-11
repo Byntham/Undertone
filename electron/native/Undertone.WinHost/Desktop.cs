@@ -5,7 +5,7 @@ internal sealed class ForegroundInfo
 {
     public string Window;
     public string Focus;
-    public string FocusIdentity;
+    public FocusIdentityResult FocusIdentity;
 }
 
 internal static class Desktop
@@ -15,7 +15,7 @@ internal static class Desktop
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
 
-    public static ForegroundInfo GetForeground(string focusIdentity = null)
+    public static ForegroundInfo GetForeground(FocusIdentityResult focusIdentity)
     {
         var window = GetForegroundWindow();
         var focus = GetFocusedWindow(window);

@@ -72,4 +72,15 @@ describe("turn buffer", () => {
     buffer.clear();
     expect(buffer.activeCleanupStrategy()).toBeNull();
   });
+
+  it("rejects blank fragments and replacement text", () => {
+    const buffer = new TurnBuffer();
+    expect(() => buffer.append("  ", "Text", "live-full")).toThrow(/raw fragment/u);
+    expect(() => buffer.append("raw", "\r\n", "live-full")).toThrow(/display text/u);
+    expect(buffer.snapshot()).toBeNull();
+
+    buffer.append("raw", "Text", "live-full");
+    expect(() => buffer.replaceText("  ")).toThrow(/display text/u);
+    expect(buffer.peekText()).toBe("Text");
+  });
 });

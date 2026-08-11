@@ -1,22 +1,19 @@
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, rename, rm, statfs } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
 
-import {
-  LOCAL_CLEANUP_MODEL,
-  LOCAL_STT_MODEL,
-  LOCAL_VAD_MODEL,
-} from "./localRuntime";
 import type { LocalEngineKind } from "../shared/settings";
-
-export interface InstallArtifact {
-  url: string;
-  sha256: string;
-  size: number;
-}
+import {
+  componentOutputsExist,
+  createLocalArtifactPlan,
+  isComponentCurrent,
+  writeComponentReceipt,
+  type InstallArtifact,
+  type LocalArtifactComponent,
+} from "./localArtifacts";
 
 interface LocalInstallHost {
   extractSubset(
@@ -34,121 +31,61 @@ export interface InstallProgress {
 export type InstallProgressListener = (progress: InstallProgress) => void;
 export type InstallFetch = typeof fetch;
 
-const WHISPER_RELEASE = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1";
-const LLAMA_RELEASE = "https://github.com/ggml-org/llama.cpp/releases/download/b10064";
+const INSTALL_SAFETY_RESERVE_BYTES = 200 * 1024 * 1024;
 
-export const STT_ARTIFACTS = {
-  cpu_runtime: {
-    url: `${WHISPER_RELEASE}/whisper-bin-x64.zip`,
-    sha256: "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539",
-    size: 7_982_101,
-  },
-  cuda_runtime: {
-    url: `${WHISPER_RELEASE}/whisper-cublas-12.4.0-bin-x64.zip`,
-    sha256: "106a2030eff8998e4ef320fe72e263a78449e9040386ee27c41ea80b001b601b",
-    size: 677_887_125,
-  },
-  model: {
-    url: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${LOCAL_STT_MODEL}`,
-    sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
-    size: 1_624_555_275,
-  },
-  vad_model: {
-    url: `https://huggingface.co/ggml-org/whisper-vad/resolve/main/${LOCAL_VAD_MODEL}`,
-    sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
-    size: 885_098,
-  },
-} as const satisfies Record<string, InstallArtifact>;
+interface InstallSpaceEstimate {
+  downloadBytes: number;
+  extractionWorkspaceBytes: number;
+}
 
-export const CLEANUP_ARTIFACTS = {
-  cpu_runtime: {
-    url: `${LLAMA_RELEASE}/llama-b10064-bin-win-cpu-x64.zip`,
-    sha256: "c9b770b584a007a1aeea1b729e0e4724fb79a2cb136ece46be92704aaee5099e",
-    size: 18_007_056,
-  },
-  cuda_runtime: {
-    url: `${LLAMA_RELEASE}/llama-b10064-bin-win-cuda-12.4-x64.zip`,
-    sha256: "d3df8c73874d9bf00cb3631a902a6afea556d57f11cb226e165689be9aa9e34b",
-    size: 249_038_000,
-  },
-  cudart: {
-    url: `${LLAMA_RELEASE}/cudart-llama-bin-win-cuda-12.4-x64.zip`,
-    sha256: "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
-    size: 391_443_627,
-  },
-  model: {
-    url: `https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/${LOCAL_CLEANUP_MODEL}`,
-    sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-    size: 2_497_281_120,
-  },
-} as const satisfies Record<string, InstallArtifact>;
-
-const STT_SUBSET = {
-  cpu: ["whisper-server.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu-*.dll"],
-  cuda: [
-    "whisper-server.exe", "whisper.dll", "ggml.dll", "ggml-base.dll",
-    "ggml-cpu-*.dll", "ggml-cuda.dll", "cublas64_12.dll", "cublasLt64_12.dll",
-    "cudart64_12.dll", "nvrtc64_120_0.dll", "nvrtc-builtins64_124.dll",
-  ],
-} as const;
-
-const CLEANUP_SUBSET = {
-  cpu: [
-    "llama-server.exe", "llama-server-impl.dll", "llama-common.dll", "llama.dll",
-    "mtmd.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu-*.dll", "libomp140*.dll",
-  ],
-  cuda: [
-    "llama-server.exe", "llama-server-impl.dll", "llama-common.dll", "llama.dll",
-    "mtmd.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu-*.dll", "libomp140*.dll",
-    "ggml-cuda.dll", "cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll",
-  ],
-} as const;
 
 export class LocalInstaller {
   private readonly installs = new Map<LocalEngineKind, Promise<void>>();
+  private readonly components: readonly LocalArtifactComponent[];
+  private preparation: Promise<void> | null = null;
 
   constructor(
     private readonly host: LocalInstallHost,
     private readonly root: string,
     private readonly fetcher: InstallFetch = fetch,
     private readonly systemRoot = process.env.SystemRoot ?? "C:\\Windows",
-  ) {}
+    components?: readonly LocalArtifactComponent[],
+  ) {
+    this.components = components
+      ?? createLocalArtifactPlan(root, this.hasNvidiaGpu());
+  }
 
   installSize(kind: LocalEngineKind): number {
-    const runtime = path.join(this.root, "runtime");
-    const models = path.join(this.root, "models");
-    const gpu = this.hasNvidiaGpu();
-    if (kind === "stt") {
-      let bytes = 0;
-      if (!existsSync(path.join(runtime, "cpu", "whisper-server.exe"))) {
-        bytes += STT_ARTIFACTS.cpu_runtime.size;
-      }
-      if (gpu && !existsSync(path.join(runtime, "cuda", "whisper-server.exe"))) {
-        bytes += STT_ARTIFACTS.cuda_runtime.size;
-      }
-      if (!existsSync(path.join(models, LOCAL_STT_MODEL))) bytes += STT_ARTIFACTS.model.size;
-      if (!existsSync(path.join(models, LOCAL_VAD_MODEL))) bytes += STT_ARTIFACTS.vad_model.size;
-      return bytes;
+    return this.estimateInstallSpace(kind).downloadBytes;
+  }
+
+  isInstalled(kind: LocalEngineKind): boolean {
+    return this.componentsFor(kind).every((component) =>
+      isComponentCurrent(this.root, component));
+  }
+
+  requiredInstallSpace(kind: LocalEngineKind): number {
+    const estimate = this.estimateInstallSpace(kind);
+    return estimate.downloadBytes
+      + estimate.extractionWorkspaceBytes
+      + INSTALL_SAFETY_RESERVE_BYTES;
+  }
+
+  private estimateInstallSpace(kind: LocalEngineKind): InstallSpaceEstimate {
+    let downloadBytes = 0;
+    let extractionWorkspaceBytes = 0;
+    for (const component of this.componentsFor(kind)) {
+      if (isComponentCurrent(this.root, component)) continue;
+      downloadBytes += component.artifacts.reduce((total, artifact) => total + artifact.size, 0);
+      extractionWorkspaceBytes += component.workspaceBytes;
     }
-    let bytes = 0;
-    if (!existsSync(path.join(runtime, "llm-cpu", "llama-server.exe"))) {
-      bytes += CLEANUP_ARTIFACTS.cpu_runtime.size;
-    }
-    if (gpu && !existsSync(path.join(runtime, "llm-cuda", "llama-server.exe"))) {
-      bytes += CLEANUP_ARTIFACTS.cuda_runtime.size + CLEANUP_ARTIFACTS.cudart.size;
-    }
-    if (!existsSync(path.join(models, LOCAL_CLEANUP_MODEL))) {
-      bytes += CLEANUP_ARTIFACTS.model.size;
-    }
-    return bytes;
+    return { downloadBytes, extractionWorkspaceBytes };
   }
 
   async install(kind: LocalEngineKind, progress: InstallProgressListener): Promise<void> {
     const existing = this.installs.get(kind);
     if (existing !== undefined) return await existing;
-    const operation = kind === "stt"
-      ? this.installStt(progress)
-      : this.installCleanup(progress);
+    const operation = this.installMissing(kind, progress);
     this.installs.set(kind, operation);
     try {
       await operation;
@@ -157,92 +94,21 @@ export class LocalInstaller {
     }
   }
 
-  private async installStt(progress: InstallProgressListener): Promise<void> {
-    await this.prepare("stt");
-    const runtime = path.join(this.root, "runtime");
-    const models = path.join(this.root, "models");
-    await this.installBuild(
-      STT_ARTIFACTS.cpu_runtime,
-      path.join(runtime, "cpu.zip"),
-      path.join(runtime, "cpu"),
-      STT_SUBSET.cpu,
-      progress,
-    );
-    const wantCuda = this.hasNvidiaGpu();
-    if (wantCuda) {
-      await this.installBuild(
-        STT_ARTIFACTS.cuda_runtime,
-        path.join(runtime, "cuda.zip"),
-        path.join(runtime, "cuda"),
-        STT_SUBSET.cuda,
-        progress,
-      );
+  private async installMissing(
+    kind: LocalEngineKind,
+    progress: InstallProgressListener,
+  ): Promise<void> {
+    await this.prepare(kind);
+    for (const component of this.componentsFor(kind)) {
+      if (isComponentCurrent(this.root, component)) continue;
+      await this.installComponent(component, progress);
     }
-    await this.installModel(
-      STT_ARTIFACTS.model,
-      path.join(models, LOCAL_STT_MODEL),
-      progress,
-    );
-    await this.installModel(
-      STT_ARTIFACTS.vad_model,
-      path.join(models, LOCAL_VAD_MODEL),
-      progress,
-    );
-  }
-
-  private async installCleanup(progress: InstallProgressListener): Promise<void> {
-    await this.prepare("cleanup");
-    const runtime = path.join(this.root, "runtime");
-    const models = path.join(this.root, "models");
-    await this.installBuild(
-      CLEANUP_ARTIFACTS.cpu_runtime,
-      path.join(runtime, "llm-cpu_runtime.zip"),
-      path.join(runtime, "llm-cpu"),
-      CLEANUP_SUBSET.cpu,
-      progress,
-    );
-    const wantCuda = this.hasNvidiaGpu();
-    if (wantCuda && !existsSync(path.join(runtime, "llm-cuda", "llama-server.exe"))) {
-      const engineZip = path.join(runtime, "llm-cuda_runtime.zip");
-      const cudartZip = path.join(runtime, "llm-cudart.zip");
-      await downloadPinnedArtifact(CLEANUP_ARTIFACTS.cuda_runtime, engineZip, this.fetcher,
-        (fraction) => progress({ phase: "Downloading engine", fraction }));
-      await downloadPinnedArtifact(CLEANUP_ARTIFACTS.cudart, cudartZip, this.fetcher,
-        (fraction) => progress({ phase: "Downloading engine", fraction }));
-      progress({ phase: "Installing engine", fraction: 0 });
-      await this.host.extractSubset(
-        [engineZip, cudartZip],
-        CLEANUP_SUBSET.cuda,
-        path.join(runtime, "llm-cuda"),
-      );
-      progress({ phase: "Installing engine", fraction: 1 });
-      await rm(engineZip, { force: true });
-      await rm(cudartZip, { force: true });
-    }
-    await this.installModel(
-      CLEANUP_ARTIFACTS.model,
-      path.join(models, LOCAL_CLEANUP_MODEL),
-      progress,
-    );
   }
 
   private async prepare(kind: LocalEngineKind): Promise<void> {
-    await mkdir(this.root, { recursive: true });
-    await mkdir(path.join(this.root, "runtime"), { recursive: true });
-    await mkdir(path.join(this.root, "models"), { recursive: true });
-    const runtime = path.join(this.root, "runtime");
-    const pendingCudaBytes = this.hasNvidiaGpu()
-      ? kind === "stt"
-        ? existsSync(path.join(runtime, "cuda", "whisper-server.exe"))
-          ? 0
-          : STT_ARTIFACTS.cuda_runtime.size
-        : existsSync(path.join(runtime, "llm-cuda", "llama-server.exe"))
-          ? 0
-          : CLEANUP_ARTIFACTS.cuda_runtime.size + CLEANUP_ARTIFACTS.cudart.size
-      : 0;
-    const required = BigInt(this.installSize(kind))
-      + BigInt(pendingCudaBytes)
-      + BigInt(200 << 20);
+    this.preparation ??= this.recoverInterruptedInstalls();
+    await this.preparation;
+    const required = BigInt(this.requiredInstallSpace(kind));
     const disk = await statfs(this.root, { bigint: true });
     const free = disk.bavail * disk.bsize;
     if (free < required) {
@@ -251,38 +117,157 @@ export class LocalInstaller {
     }
   }
 
-  private async installBuild(
-    artifact: InstallArtifact,
-    archive: string,
-    target: string,
-    patterns: readonly string[],
-    progress: InstallProgressListener,
-  ): Promise<void> {
-    const serverName = path.basename(target).startsWith("llm-")
-      ? "llama-server.exe"
-      : "whisper-server.exe";
-    if (existsSync(path.join(target, serverName))) return;
-    await downloadPinnedArtifact(artifact, archive, this.fetcher,
-      (fraction) => progress({ phase: "Downloading engine", fraction }));
-    progress({ phase: "Installing engine", fraction: 0 });
-    await this.host.extractSubset([archive], patterns, target);
-    progress({ phase: "Installing engine", fraction: 1 });
-    await rm(archive, { force: true });
+  private async recoverInterruptedInstalls(): Promise<void> {
+    await mkdir(this.root, { recursive: true });
+    await mkdir(path.join(this.root, "runtime"), { recursive: true });
+    await mkdir(path.join(this.root, "models"), { recursive: true });
+    const work = path.join(this.root, ".install-work");
+    await rm(work, { recursive: true, force: true });
+    await mkdir(work, { recursive: true });
+    for (const component of this.components) {
+      await recoverComponentBackup(this.root, component);
+    }
   }
 
-  private async installModel(
-    artifact: InstallArtifact,
-    target: string,
+  private async installComponent(
+    component: LocalArtifactComponent,
     progress: InstallProgressListener,
   ): Promise<void> {
-    if (existsSync(target)) return;
-    await downloadPinnedArtifact(artifact, target, this.fetcher,
-      (fraction) => progress({ phase: "Downloading model", fraction }));
+    const work = path.join(
+      this.root,
+      ".install-work",
+      `${component.id}-${process.pid}-${Date.now()}`,
+    );
+    await mkdir(work, { recursive: true });
+    try {
+      const downloads: string[] = [];
+      for (const [index, artifact] of component.artifacts.entries()) {
+        const destination = path.join(work, `artifact-${index}`);
+        await downloadPinnedArtifact(artifact, destination, this.fetcher,
+          (fraction) => progress({
+            phase: component.format === "file" ? "Downloading model" : "Downloading engine",
+            fraction,
+          }));
+        downloads.push(destination);
+      }
+
+      if (component.format === "file") {
+        const downloaded = downloads[0];
+        if (downloaded === undefined) throw new Error("Local artifact plan has no download");
+        await promoteFile(downloaded, component.target);
+      } else {
+        const staged = path.join(work, "staged");
+        progress({ phase: "Installing engine", fraction: 0 });
+        await this.host.extractSubset(
+          downloads,
+          component.requiredOutputs.map((output) => output.pattern),
+          staged,
+        );
+        if (!componentOutputsExist({ ...component, target: staged })) {
+          throw new Error("The local engine archive did not contain every required file.");
+        }
+        await promoteDirectory(staged, component.target);
+        progress({ phase: "Installing engine", fraction: 1 });
+      }
+      if (!componentOutputsExist(component)) {
+        throw new Error("The installed local component failed validation.");
+      }
+      writeComponentReceipt(this.root, component);
+    } finally {
+      await rm(work, { recursive: true, force: true });
+    }
+  }
+
+  private componentsFor(kind: LocalEngineKind): readonly LocalArtifactComponent[] {
+    return this.components.filter((component) => component.kind === kind && component.applicable);
   }
 
   private hasNvidiaGpu(): boolean {
     return existsSync(path.join(this.systemRoot, "System32", "nvcuda.dll"));
   }
+}
+
+async function recoverComponentBackup(
+  root: string,
+  component: LocalArtifactComponent,
+): Promise<void> {
+  if (!isWithin(root, component.target)) {
+    throw new Error(`Local artifact target is outside the install root: ${component.id}`);
+  }
+  const parent = path.dirname(component.target);
+  const prefix = `${path.basename(component.target)}.previous-`;
+  let names: string[];
+  try {
+    names = (await readdir(parent)).filter((name) => name.startsWith(prefix));
+  } catch (error) {
+    if (isFileSystemError(error, "ENOENT")) return;
+    throw error;
+  }
+  const candidates = (await Promise.all(names.map(async (name) => {
+    const candidate = path.join(parent, name);
+    try {
+      const status = await lstat(candidate);
+      return {
+        candidate,
+        modified: status.mtimeMs,
+        restorable: !status.isSymbolicLink(),
+      };
+    } catch {
+      return null;
+    }
+  }))).filter((candidate) => candidate !== null)
+    .sort((left, right) => right.modified - left.modified);
+
+  let restored: string | null = null;
+  if (!componentOutputsExist(component)) {
+    restored = candidates.find(({ candidate, restorable }) => restorable
+      && componentOutputsExist({ ...component, target: candidate }))?.candidate ?? null;
+    if (restored !== null) {
+      await rm(component.target, { recursive: true, force: true });
+      await rename(restored, component.target);
+    }
+  }
+  await Promise.all(candidates
+    .filter(({ candidate }) => candidate !== restored)
+    .map(async ({ candidate }) => await rm(candidate, { recursive: true, force: true })));
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative !== ""
+    && !path.isAbsolute(relative)
+    && relative !== ".."
+    && !relative.startsWith(`..${path.sep}`);
+}
+
+function isFileSystemError(error: unknown, code: string): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === code;
+}
+
+async function promoteFile(staged: string, target: string): Promise<void> {
+  await mkdir(path.dirname(target), { recursive: true });
+  await promote(staged, target);
+}
+
+async function promoteDirectory(staged: string, target: string): Promise<void> {
+  await mkdir(path.dirname(target), { recursive: true });
+  await promote(staged, target);
+}
+
+async function promote(staged: string, target: string): Promise<void> {
+  const backup = `${target}.previous-${process.pid}-${Date.now()}`;
+  const hadTarget = existsSync(target);
+  if (hadTarget) await rename(target, backup);
+  try {
+    await rename(staged, target);
+  } catch (error) {
+    if (hadTarget) await rename(backup, target);
+    throw error;
+  }
+  if (hadTarget) await rm(backup, { recursive: true, force: true });
 }
 
 export async function downloadPinnedArtifact(
@@ -313,23 +298,35 @@ export async function downloadPinnedArtifact(
 
   const digest = createHash("sha256");
   const output = createWriteStream(partial, { flags: "wx" });
+  const outputFinished = finished(output);
+  let responseFinished = false;
+  const outputMonitor = outputFinished.then(() => {
+    if (!responseFinished) {
+      throw new Error("Download output closed before the response finished");
+    }
+  });
   const reader = response.body.getReader();
   let received = 0;
   try {
-    while (true) {
-      const chunk = await readWithTimeout(reader, controller, 60_000);
-      if (chunk.done) break;
-      digest.update(chunk.value);
-      received += chunk.value.byteLength;
-      if (!output.write(chunk.value)) await once(output, "drain");
-      progress(Math.min(1, received / artifact.size));
-    }
-    output.end();
-    await finished(output);
+    const transfer = (async () => {
+      while (true) {
+        const chunk = await readWithTimeout(reader, controller, 60_000);
+        if (chunk.done) break;
+        digest.update(chunk.value);
+        received += chunk.value.byteLength;
+        if (!output.write(chunk.value)) await once(output, "drain");
+        progress(Math.min(1, received / artifact.size));
+      }
+      responseFinished = true;
+      output.end();
+      await outputFinished;
+    })();
+    await Promise.all([transfer, outputMonitor]);
   } catch (error) {
     output.destroy();
     controller.abort();
-    await rm(partial, { force: true });
+    await reader.cancel().catch(() => undefined);
+    await rm(partial, { force: true }).catch(() => undefined);
     throw new Error("Download failed — check your internet connection and retry.", {
       cause: error,
     });

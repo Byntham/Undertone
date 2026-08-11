@@ -1,14 +1,20 @@
-import { normalizeConfig, type UndertoneConfig } from "./config";
-import type { DictationCompletion } from "./gestures";
+import { cloneConfig, type UndertoneConfig } from "./config";
 import type { PasteTarget } from "./clipboardPaster";
 
 export type DictationTarget = PasteTarget;
 
+export type AutomaticDictationTarget =
+  | { state: "captured"; value: DictationTarget }
+  | { state: "unavailable" };
+
+export type DictationDestination =
+  | { completion: "open-turn" }
+  | { completion: "commit"; target: AutomaticDictationTarget };
+
 export interface PendingDictation {
   input: DictationInput;
-  target: DictationTarget | null;
   overlayRevision: number | undefined;
-  completion: DictationCompletion;
+  destination: DictationDestination;
 }
 
 export type DictationInput =
@@ -18,10 +24,9 @@ export type DictationInput =
 export interface PipelineHandlers {
   dictate(
     input: DictationInput,
-    target: DictationTarget | null,
+    destination: DictationDestination,
     config: UndertoneConfig,
     overlayRevision: number | undefined,
-    completion: DictationCompletion,
   ): Promise<void>;
   repaste(text: string, config: UndertoneConfig): Promise<void>;
   commit(config: UndertoneConfig): Promise<void>;
@@ -29,26 +34,8 @@ export interface PipelineHandlers {
   scratch(): Promise<void>;
 }
 
-type PipelineJob =
-  | {
-    type: "dictate";
-    pending: Promise<PendingDictation | null>;
-  }
-  | { type: "retry"; wav: Uint8Array }
-  | { type: "repaste"; text: string }
-  | { type: "commit" }
-  | { type: "discard" }
-  | { type: "scratch" };
-
-interface QueuedJob {
-  job: PipelineJob;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-}
-
 export class DictationPipelineQueue {
-  private readonly queue: QueuedJob[] = [];
-  private running = false;
+  private tail = Promise.resolve();
 
   constructor(
     private readonly configSource: () => UndertoneConfig,
@@ -57,92 +44,48 @@ export class DictationPipelineQueue {
 
   /** Reserve queue order while the audio renderer finishes the recording. */
   enqueuePendingDictation(pending: Promise<PendingDictation | null>): Promise<void> {
-    return this.enqueue({ type: "dictate", pending });
-  }
-
-  enqueueRetry(wav: Uint8Array): Promise<void> {
-    return this.enqueue({ type: "retry", wav: wav.slice() });
-  }
-
-  enqueueRepaste(text: string): Promise<void> {
-    return this.enqueue({ type: "repaste", text });
-  }
-
-  enqueueCommit(): Promise<void> {
-    return this.enqueue({ type: "commit" });
-  }
-
-  enqueueDiscard(): Promise<void> {
-    return this.enqueue({ type: "discard" });
-  }
-
-  enqueueScratch(): Promise<void> {
-    return this.enqueue({ type: "scratch" });
-  }
-
-  private async enqueue(job: PipelineJob): Promise<void> {
-    return await new Promise<void>((resolve, reject) => {
-      this.queue.push({ job, resolve, reject });
-      void this.drain();
+    return this.enqueue(async (config) => {
+      const dictation = await pending;
+      if (dictation === null) return;
+      await this.handlers.dictate(
+        dictation.input,
+        dictation.destination,
+        config,
+        dictation.overlayRevision,
+      );
     });
   }
 
-  private async drain(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    try {
-      while (this.queue.length > 0) {
-        const queued = this.queue.shift()!;
-        try {
-          const config = normalizeConfig(this.configSource());
-          if (queued.job.type === "dictate") {
-            const pending = await queued.job.pending;
-            if (pending !== null) {
-              await this.handlers.dictate(
-                cloneInput(pending.input),
-                pending.target === null ? null : { ...pending.target },
-                config,
-                pending.overlayRevision,
-                pending.completion,
-              );
-            }
-          } else if (queued.job.type === "retry") {
-            await this.handlers.dictate(
-              { type: "audio", wav: queued.job.wav },
-              null,
-              config,
-              undefined,
-              "open-turn",
-            );
-          } else if (queued.job.type === "repaste") {
-            await this.handlers.repaste(queued.job.text, config);
-          } else if (queued.job.type === "commit") {
-            await this.handlers.commit(config);
-          } else if (queued.job.type === "discard") {
-            await this.handlers.discard();
-          } else {
-            await this.handlers.scratch();
-          }
-          queued.resolve();
-        } catch (error) {
-          queued.reject(error);
-        }
-      }
-    } finally {
-      this.running = false;
-      if (this.queue.length > 0) void this.drain();
-    }
+  enqueueRetry(wav: Uint8Array): Promise<void> {
+    return this.enqueue((config) => this.handlers.dictate(
+      { type: "audio", wav },
+      { completion: "open-turn" },
+      config,
+      undefined,
+    ));
   }
-}
 
-function cloneInput(input: DictationInput): DictationInput {
-  return input.type === "audio"
-    ? {
-      type: "audio",
-      wav: input.wav.slice(),
-      ...(input.captureId === undefined ? {} : { captureId: input.captureId }),
-    }
-    : { ...input };
+  enqueueRepaste(text: string): Promise<void> {
+    return this.enqueue((config) => this.handlers.repaste(text, config));
+  }
+
+  enqueueCommit(): Promise<void> {
+    return this.enqueue((config) => this.handlers.commit(config));
+  }
+
+  enqueueDiscard(): Promise<void> {
+    return this.enqueue(() => this.handlers.discard());
+  }
+
+  enqueueScratch(): Promise<void> {
+    return this.enqueue(() => this.handlers.scratch());
+  }
+
+  private enqueue(run: (config: UndertoneConfig) => Promise<void>): Promise<void> {
+    const result = this.tail.then(() => run(cloneConfig(this.configSource())));
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
 }
 
 export interface SuccessHistoryEntry {
@@ -156,23 +99,37 @@ export interface FailureHistoryEntry {
   id: number;
   ok: false;
   error: string;
-  wav?: Uint8Array;
   timestamp: number;
+  retryable: boolean;
 }
 
 export type HistoryEntry = SuccessHistoryEntry | FailureHistoryEntry;
 
+interface StoredFailureHistoryEntry {
+  id: number;
+  ok: false;
+  error: string;
+  timestamp: number;
+  retryAudio?: Uint8Array;
+}
+
+type StoredHistoryEntry = SuccessHistoryEntry | StoredFailureHistoryEntry;
+
+const PCM16_BYTES_PER_SECOND = 16_000 * Int16Array.BYTES_PER_ELEMENT;
+const MAX_RETAINED_RETRY_AUDIO_BYTES = PCM16_BYTES_PER_SECOND * 60 * 10;
+
 export class SessionHistory {
-  private readonly entries: HistoryEntry[] = [];
+  private readonly entries: StoredHistoryEntry[] = [];
   private nextId = 1;
 
   constructor(
     private readonly maximumEntries = 20,
     private readonly maximumRetryAudio = 3,
     private readonly now: () => number = () => Date.now(),
+    private readonly maximumRetryAudioBytes = MAX_RETAINED_RETRY_AUDIO_BYTES,
   ) {}
 
-  registerSuccess(text: string): SuccessHistoryEntry {
+  registerSuccess(text: string): void {
     const entry: SuccessHistoryEntry = {
       id: this.nextId++,
       ok: true,
@@ -180,35 +137,31 @@ export class SessionHistory {
       timestamp: this.now(),
     };
     this.append(entry);
-    return { ...entry };
   }
 
-  registerFailure(error: string, wav: Uint8Array): FailureHistoryEntry {
-    const entry: FailureHistoryEntry = {
+  registerFailure(error: string, wav: Uint8Array): void {
+    const entry: StoredFailureHistoryEntry = {
       id: this.nextId++,
       ok: false,
       error,
-      wav: wav.slice(),
+      retryAudio: wav,
       timestamp: this.now(),
     };
     this.append(entry);
-    let retained = 0;
-    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
-      const candidate = this.entries[index]!;
-      if (candidate.ok || candidate.wav === undefined) continue;
-      retained += 1;
-      if (retained > this.maximumRetryAudio) delete candidate.wav;
-    }
-    return entry.wav === undefined ? { ...entry } : { ...entry, wav: entry.wav.slice() };
+    this.trimRetryAudio();
   }
 
-  consumeRetry(id: number): Uint8Array | null {
-    const index = this.entries.findIndex((entry) => !entry.ok && entry.id === id);
-    if (index < 0) return null;
-    const [entry] = this.entries.splice(index, 1);
-    return entry !== undefined && !entry.ok && entry.wav !== undefined
-      ? entry.wav
-      : null;
+  lookup(id: number): HistoryEntry | null {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    return entry === undefined ? null : historyMetadata(entry);
+  }
+
+  takeRetry(id: number): Uint8Array | null {
+    const entry = this.entries.find((candidate) => !candidate.ok && candidate.id === id);
+    if (entry === undefined || entry.ok || entry.retryAudio === undefined) return null;
+    const wav = entry.retryAudio;
+    delete entry.retryAudio;
+    return wav;
   }
 
   latestSuccessText(): string | null {
@@ -220,16 +173,39 @@ export class SessionHistory {
   }
 
   snapshot(): HistoryEntry[] {
-    return [...this.entries].reverse().map(cloneEntry);
+    return [...this.entries].reverse().map(historyMetadata);
   }
 
-  private append(entry: HistoryEntry): void {
+  private append(entry: StoredHistoryEntry): void {
     this.entries.push(entry);
     while (this.entries.length > this.maximumEntries) this.entries.shift();
   }
+
+  private trimRetryAudio(): void {
+    let retainedCount = 0;
+    let retainedBytes = 0;
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index]!;
+      if (entry.ok || entry.retryAudio === undefined) continue;
+      const fits = retainedCount < this.maximumRetryAudio
+        && retainedBytes + entry.retryAudio.byteLength <= this.maximumRetryAudioBytes;
+      if (!fits) {
+        delete entry.retryAudio;
+        continue;
+      }
+      retainedCount += 1;
+      retainedBytes += entry.retryAudio.byteLength;
+    }
+  }
 }
 
-function cloneEntry(entry: HistoryEntry): HistoryEntry {
+function historyMetadata(entry: StoredHistoryEntry): HistoryEntry {
   if (entry.ok) return { ...entry };
-  return entry.wav === undefined ? { ...entry } : { ...entry, wav: entry.wav.slice() };
+  return {
+    id: entry.id,
+    ok: false,
+    error: entry.error,
+    timestamp: entry.timestamp,
+    retryable: entry.retryAudio !== undefined,
+  };
 }

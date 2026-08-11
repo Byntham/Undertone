@@ -1,24 +1,17 @@
 import {
-  DEFAULT_CONFIG,
-  isRecord,
-  modelOverride,
   providerKey,
   type CleanupReasoningEffort,
   type CleanupServiceTier,
   type UndertoneConfig,
 } from "./config";
-import {
-  applyCorrections,
-  finalizeTranscript,
-  type Corrections,
-} from "./corrections";
+import type { CleanupProviderId } from "../shared/settings";
+import { CleanupError } from "./cleanup";
+import { finalizeTranscript } from "./corrections";
 
 export interface CleanupRequest {
   transcript: string;
-  corrections: Corrections;
   apiKey: string;
-  model: string;
-  provider: string;
+  provider: CleanupProviderId;
   timeoutSeconds: number;
   reasoningEffort: CleanupReasoningEffort;
   serviceTier: CleanupServiceTier;
@@ -38,42 +31,30 @@ export async function prepareText(
   config: UndertoneConfig,
   dependencies: TextPreparationDependencies,
 ): Promise<TextPreparationResult> {
-  const corrections = stringMap(config.corrections);
-  let final: string | null = null;
+  const corrections = config.corrections;
+  let prepared = text;
   let cleanupFailed = false;
-  if (Boolean(config.ai_cleanup)) {
-    const provider = stringValue(config.cleanup_provider, DEFAULT_CONFIG.cleanup_provider);
-    const cleaned = await dependencies.cleanup({
-      transcript: applyCorrections(text, corrections),
-      corrections,
-      apiKey: providerKey(config, provider),
-      model: modelOverride(config, "cleanup", provider),
-      provider,
-      timeoutSeconds: nonzeroNumber(config.cleanup_timeout, DEFAULT_CONFIG.cleanup_timeout),
-      reasoningEffort: config.cleanup_reasoning_effort,
-      serviceTier: config.cleanup_service_tier,
-    });
-    if (cleaned !== null) {
-      final = finalizeTranscript(cleaned, corrections);
-    } else cleanupFailed = true;
+  if (config.ai_cleanup) {
+    const provider = config.cleanup_provider;
+    try {
+      const cleaned = await dependencies.cleanup({
+        transcript: text,
+        apiKey: providerKey(config, provider),
+        provider,
+        timeoutSeconds: config.cleanup_timeout,
+        reasoningEffort: config.cleanup_reasoning_effort,
+        serviceTier: config.cleanup_service_tier,
+      });
+      // A cold local model intentionally falls back without reporting a
+      // provider failure; CleanupClient reserves null for that state.
+      if (cleaned !== null) prepared = cleaned;
+    } catch (error) {
+      if (!(error instanceof CleanupError)) throw error;
+      cleanupFailed = true;
+    }
   }
-  final ??= finalizeTranscript(text, corrections);
   return {
-    text: final,
+    text: finalizeTranscript(prepared, corrections),
     cleanupFailed,
   };
-}
-
-function stringMap(value: unknown): Record<string, string> {
-  return isRecord(value) ? value as Record<string, string> : {};
-}
-
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function nonzeroNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value !== 0
-    ? value
-    : fallback;
 }

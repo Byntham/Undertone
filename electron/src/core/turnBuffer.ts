@@ -1,4 +1,4 @@
-import type { OpenTurnCleanupStrategy } from "./config";
+import type { OpenTurnCleanupStrategy } from "../shared/settings";
 
 interface TurnFragment {
   raw: string;
@@ -6,7 +6,6 @@ interface TurnFragment {
 }
 interface OpenTurn {
   fragments: TurnFragment[];
-  text: string;
   cleanupStrategy: OpenTurnCleanupStrategy;
 }
 
@@ -30,8 +29,7 @@ export class TurnBuffer {
 
   /** Peek joined turn text without clearing. */
   peekText(): string | null {
-    if (this.open === null || this.open.text.length === 0) return null;
-    return this.open.text;
+    return this.open?.fragments.at(-1)?.text ?? null;
   }
 
   /** Raw transcriptions joined as a complete turn, including an optional next fragment. */
@@ -46,7 +44,7 @@ export class TurnBuffer {
   snapshot(): TurnDraftSnapshot | null {
     if (this.open === null || this.open.fragments.length === 0) return null;
     return {
-      text: this.open.text,
+      text: this.open.fragments.at(-1)!.text,
       fragmentCount: this.open.fragments.length,
     };
   }
@@ -57,10 +55,11 @@ export class TurnBuffer {
     text: string,
     cleanupStrategy: OpenTurnCleanupStrategy,
   ): TurnAppendResult {
+    requireNonblank(raw, "raw fragment");
+    requireNonblank(text, "display text");
     if (this.open === null) {
       this.open = {
         fragments: [],
-        text: "",
         cleanupStrategy,
       };
     }
@@ -68,10 +67,9 @@ export class TurnBuffer {
       raw,
       text,
     });
-    this.open.text = text;
     return {
       fragmentCount: this.open.fragments.length,
-      text: this.open.text,
+      text,
     };
   }
 
@@ -82,8 +80,8 @@ export class TurnBuffer {
 
   /** Replace the current display snapshot, preserving the raw fragments for later cleanup. */
   replaceText(text: string): void {
+    requireNonblank(text, "display text");
     if (this.open === null || this.open.fragments.length === 0) return;
-    this.open.text = text;
     this.open.fragments.at(-1)!.text = text;
   }
 
@@ -98,17 +96,21 @@ export class TurnBuffer {
         text: "",
       };
     }
-    this.open.text = this.open.fragments.at(-1)!.text;
+    const text = this.open.fragments.at(-1)!.text;
     return {
       fragmentCount: this.open.fragments.length,
-      text: this.open.text,
+      text,
     };
   }
 
   /** Clear open turn. Returns true if there was content. */
   clear(): boolean {
-    const had = this.open !== null && this.open.text.length > 0;
+    const had = this.open !== null;
     this.open = null;
     return had;
   }
+}
+
+function requireNonblank(value: string, label: string): void {
+  if (value.trim().length === 0) throw new Error(`${label} must not be blank`);
 }

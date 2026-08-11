@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
 import {
@@ -15,17 +15,28 @@ import type {
 
 class FakeHttp implements HttpClient {
   readonly posts: Array<{ url: string; request: HttpRequest }> = [];
-  readonly postResponses: HttpResponse[] = [];
+  readonly postResponses: Array<HttpResponse | Promise<HttpResponse>> = [];
 
   async post(url: string, request: HttpRequest): Promise<HttpResponse> {
     this.posts.push({ url, request });
     const response = this.postResponses.shift();
     if (response === undefined) throw new Error("No fake POST response configured");
-    return response;
+    return await response;
   }
 }
 
 describe("OpenAI Subscription", () => {
+  it("ignores other local routes and rejects ambiguous callbacks", async () => {
+    const subscription = createSubscription(new FakeHttp(), null, [], async (authorizationUrl) => {
+      const state = new URL(authorizationUrl).searchParams.get("state");
+      expect((await fetch("http://localhost:1455/not-the-callback")).status).toBe(404);
+      await fetch(
+        `http://localhost:1455/auth/callback?state=${encodeURIComponent(state ?? "")}&code=one&code=two`,
+      );
+    });
+    await expect(subscription.connect()).rejects.toThrow("callback was ambiguous");
+  });
+
   it("extracts the account identity and parses streamed response text", () => {
     const token = jwt("account-123");
     expect(accountIdFromAccessToken(token)).toBe("account-123");
@@ -64,6 +75,69 @@ describe("OpenAI Subscription", () => {
       reasoning: { effort: "none" },
       service_tier: "priority",
     });
+  });
+
+  it("does not let an in-flight refresh undo disconnect or disposal", async () => {
+    for (const invalidate of ["disconnect", "dispose"] as const) {
+      const http = new FakeHttp();
+      const token = deferred<HttpResponse>();
+      http.postResponses.push(token.promise);
+      const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
+      const subscription = createSubscription(http, expiredCredentials(), persisted);
+      const completion = subscription.complete(completionOptions());
+      expect(http.posts).toHaveLength(1);
+
+      if (invalidate === "disconnect") await subscription.disconnect();
+      else subscription.dispose();
+      token.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+
+      await expect(completion).rejects.toThrow("superseded by another account action");
+      expect(persisted).toEqual(invalidate === "disconnect" ? [null] : []);
+      expect(subscription.connected()).toBe(invalidate === "dispose");
+    }
+  });
+
+  it("does not let an in-flight refresh overwrite a replacement sign-in", async () => {
+    const http = new FakeHttp();
+    const staleToken = deferred<HttpResponse>();
+    http.postResponses.push(
+      staleToken.promise,
+      tokenResponse("replacement", "replacement-access", "replacement-refresh"),
+    );
+    const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
+    const subscription = createSubscription(
+      http,
+      expiredCredentials(),
+      persisted,
+      completeBrowserCallback,
+    );
+    const completion = subscription.complete(completionOptions());
+    expect(http.posts).toHaveLength(1);
+
+    await subscription.connect();
+    staleToken.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+
+    await expect(completion).rejects.toThrow("superseded by another account action");
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ accountId: "replacement" });
+    expect(subscription.connected()).toBe(true);
+  });
+
+  it("does not let an in-flight sign-in undo disconnect", async () => {
+    const http = new FakeHttp();
+    const token = deferred<HttpResponse>();
+    http.postResponses.push(token.promise);
+    const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
+    const subscription = createSubscription(http, null, persisted, completeBrowserCallback);
+    const connection = subscription.connect();
+    await vi.waitFor(() => { expect(http.posts).toHaveLength(1); });
+
+    await subscription.disconnect();
+    token.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+
+    await expect(connection).rejects.toThrow("superseded by another account action");
+    expect(persisted).toEqual([null]);
+    expect(subscription.connected()).toBe(false);
   });
 
   it("sends a direct structured Responses request and disconnects locally", async () => {
@@ -129,17 +203,49 @@ describe("OpenAI Subscription", () => {
 
 function createSubscription(
   http: FakeHttp,
-  credentials: OpenAiSubscriptionCredentials,
+  credentials: OpenAiSubscriptionCredentials | null,
   persisted: Array<OpenAiSubscriptionCredentials | null>,
+  openExternal: (url: string) => Promise<void> = async () => {},
 ): OpenAiSubscription {
   return new OpenAiSubscription({
     http,
     credentials,
     async persist(value) { persisted.push(value); },
-    async openExternal() {},
+    openExternal,
     appVersion: "1.8.0",
     now: () => 1_000_000,
   });
+}
+
+function completionOptions(): Parameters<OpenAiSubscription["complete"]>[0] {
+  return {
+    model: "",
+    reasoningEffort: "none",
+    serviceTier: "default",
+    userPrompt: "raw",
+    timeoutMs: 2_500,
+  };
+}
+
+async function completeBrowserCallback(authorizationUrl: string): Promise<void> {
+  const state = new URL(authorizationUrl).searchParams.get("state");
+  if (state === null) throw new Error("Authorization URL had no state");
+  const response = await fetch(
+    `http://localhost:1455/auth/callback?state=${encodeURIComponent(state)}&code=test-code`,
+  );
+  if (!response.ok) throw new Error(`Callback failed (${response.status})`);
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
+  return {
+    promise,
+    resolve(value) { resolvePromise?.(value); },
+  };
 }
 
 function expiredCredentials(): OpenAiSubscriptionCredentials {

@@ -1,7 +1,10 @@
 import { isRecord } from "./config";
 import type { HttpClient, HttpRequest, HttpResponse } from "../platform/http";
+import {
+  isTranscriptionProvider,
+  type TranscriptionProviderId,
+} from "../shared/settings";
 import { DEFAULT_STT_MODELS } from "../shared/models";
-import type { TranscriptionProviderId } from "../shared/settings";
 
 const STT_TIMEOUT_MS = 120_000;
 
@@ -13,16 +16,18 @@ export class TranscriptionError extends Error {
 }
 
 export interface LocalSttRuntime {
-  ensureReady(model: string): Promise<string> | string;
+  withServer<T>(
+    policy: "wait",
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T>;
 }
 
 export interface TranscribeOptions {
   wav: Uint8Array;
   apiKey: string;
-  language?: string;
-  vocabulary?: readonly unknown[];
-  provider?: string;
-  model?: string;
+  language: string;
+  vocabulary: readonly string[];
+  provider: TranscriptionProviderId;
 }
 
 export class Transcriber {
@@ -32,9 +37,9 @@ export class Transcriber {
   ) {}
 
   async transcribe(options: TranscribeOptions): Promise<string> {
-    const provider = options.provider ?? "xai";
+    const provider = options.provider;
     const apiKey = options.apiKey.trim();
-    if (!isProvider(provider)) {
+    if (!isTranscriptionProvider(provider)) {
       throw new TranscriptionError(
         `Unknown transcription provider '${provider}' in the config. `
         + "Pick a provider in Settings → Speech & AI.",
@@ -46,13 +51,7 @@ export class Transcriber {
         + "Open Settings → Speech & AI and enter one.",
       );
     }
-    const normalized = {
-      ...options,
-      apiKey,
-      language: options.language ?? "en",
-      vocabulary: options.vocabulary ?? [],
-      model: options.model ?? "",
-    };
+    const normalized = { ...options, apiKey };
     switch (provider) {
       case "xai": return await this.transcribeXai(normalized);
       case "openai": return await this.transcribeOpenAi(normalized);
@@ -66,7 +65,7 @@ export class Transcriber {
     form.append("language", options.language);
     form.append("format", "true");
     for (const rawTerm of options.vocabulary.slice(0, 100)) {
-      const term = String(rawTerm).trim().slice(0, 50);
+      const term = rawTerm.trim().slice(0, 50);
       if (term.length > 0) form.append("keyterm", term);
     }
     const response = await this.post(
@@ -90,7 +89,7 @@ export class Transcriber {
 
   private async transcribeOpenAi(options: NormalizedOptions): Promise<string> {
     const form = audioForm(options.wav);
-    form.append("model", options.model || DEFAULT_STT_MODELS.openai);
+    form.append("model", DEFAULT_STT_MODELS.openai);
     form.append("language", options.language);
     const payload = await this.postJson(
       "https://api.openai.com/v1/audio/transcriptions",
@@ -106,7 +105,7 @@ export class Transcriber {
 
   private async transcribeOpenRouter(options: NormalizedOptions): Promise<string> {
     const body = JSON.stringify({
-      model: options.model || DEFAULT_STT_MODELS.openrouter,
+      model: DEFAULT_STT_MODELS.openrouter,
       input_audio: {
         data: Buffer.from(options.wav).toString("base64"),
         format: "wav",
@@ -129,22 +128,23 @@ export class Transcriber {
   }
 
   private async transcribeLocal(options: NormalizedOptions): Promise<string> {
-    let baseUrl: string;
     try {
-      baseUrl = await this.local.ensureReady(options.model);
+      return await this.local.withServer("wait", async (baseUrl) => {
+        const form = audioForm(options.wav);
+        form.append("response_format", "json");
+        form.append("language", options.language);
+        const payload = await this.postJson(`${baseUrl}/inference`, "Local", {
+          body: form,
+          timeoutMs: STT_TIMEOUT_MS,
+        }, "The local transcription engine stopped responding — try Eject then Load "
+          + "in Settings → Speech & AI.");
+        const text = textFromPayload(payload);
+        return text.split(/\s+/u).filter(Boolean).join(" ");
+      });
     } catch (error) {
+      if (error instanceof TranscriptionError) throw error;
       throw new TranscriptionError(errorMessage(error), { cause: error });
     }
-    const form = audioForm(options.wav);
-    form.append("response_format", "json");
-    form.append("language", options.language);
-    const payload = await this.postJson(`${baseUrl}/inference`, "Local", {
-      body: form,
-      timeoutMs: STT_TIMEOUT_MS,
-    }, "The local transcription engine stopped responding — try Eject then Load "
-      + "in Settings → Speech & AI.");
-    const text = textFromPayload(payload);
-    return text.split(/\s+/u).filter(Boolean).join(" ");
   }
 
   private async postJson(
@@ -179,8 +179,7 @@ export class Transcriber {
 interface NormalizedOptions extends TranscribeOptions {
   apiKey: string;
   language: string;
-  vocabulary: readonly unknown[];
-  model: string;
+  vocabulary: readonly string[];
 }
 
 function audioForm(wav: Uint8Array): FormData {
@@ -223,11 +222,6 @@ function textFromPayload(payload: unknown): string {
   return isRecord(payload) && typeof payload.text === "string"
     ? payload.text.trim()
     : "";
-}
-
-function isProvider(provider: string): provider is TranscriptionProviderId {
-  return provider === "xai" || provider === "openai"
-    || provider === "openrouter" || provider === "local";
 }
 
 function errorMessage(error: unknown): string {

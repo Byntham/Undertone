@@ -14,12 +14,13 @@ export interface OverlayState {
   tone: OverlayTone;
 }
 
+export interface OverlayBridge {
+  onState: (listener: (state: OverlayState) => void) => () => void;
+}
+
 /** Live open-turn draft shown while recording or composing fragments. */
 export interface TurnDraftView {
   text: string;
-  fragmentCount: number;
-  charCount: number;
-  liveState: "listening" | "finalizing" | null;
   presentation: "visible" | "dismissing";
   statusText: string | null;
   /** Monotonic token used to reject stale dismissal completions. */
@@ -36,6 +37,15 @@ export interface TurnDraftView {
     | "error";
 }
 
+export interface TurnDraftBridge {
+  discard: () => void;
+  snap: () => void;
+  reportContentHeight: (height: number) => void;
+  completeDismiss: (revision: number) => void;
+  onView: (listener: (draft: TurnDraftView) => void) => () => void;
+  onLevel: (listener: (level: number) => void) => () => void;
+}
+
 export type TurnDraftMode = "hidden" | "compact" | "text";
 
 export function nextTurnDraftMode(
@@ -46,11 +56,6 @@ export function nextTurnDraftMode(
 ): TurnDraftMode {
   if (presentation === "dismissing") return current;
   return !hasText && !fullWindow ? "compact" : "text";
-}
-
-export function isBarOnlyFeedback(text: string, tone: OverlayTone): boolean {
-  return (text.startsWith("Recording too short") && tone === "warning")
-    || (text === "No speech detected" && tone === "error");
 }
 
 export function canHideTurnDraftAfterDismissal(

@@ -19,15 +19,11 @@ import type {
   SystemAction,
   TranscriptionProviderId,
 } from "../shared/settings";
-import {
-  DEFAULT_CLEANUP_MODELS,
-  DEFAULT_STT_MODELS,
-  LIVE_STT_MODELS,
-} from "../shared/models";
 import "./style.css";
 
 type Section = "general" | "speechAi" | "dictionary" | "history";
-const settingsApi = settingsApiForRenderer();
+const settingsApi = window.undertoneSettings;
+if (settingsApi === undefined) throw new Error("Settings preload is unavailable");
 
 function SettingsApp(): React.JSX.Element {
   const [section, setSection] = useState<Section>("general");
@@ -36,47 +32,136 @@ function SettingsApp(): React.JSX.Element {
   const [history, setHistory] = useState<HistorySnapshotEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef<HTMLElement>(null);
+  const mounted = useRef(true);
+  const activeSection = useRef<Section>(section);
+  const settingsActionRequest = useRef(0);
+  const localActionRequest = useRef<Record<LocalEngineKind, number>>({ stt: 0, cleanup: 0 });
+  const settingsPollBlockers = useRef(0);
+  const settingsPollEpoch = useRef(0);
+  const settingsPollRequest = useRef(0);
+  const historyActions = useRef(0);
+  const historyRequest = useRef(0);
+
+  const refreshSettings = (allowHidden = false): void => {
+    if ((!allowHidden && document.hidden) || settingsPollBlockers.current > 0) return;
+    const epoch = settingsPollEpoch.current;
+    const request = ++settingsPollRequest.current;
+    void settingsApi.load()
+      .then((snapshot) => {
+        if (mounted.current
+          && (allowHidden || !document.hidden)
+          && settingsPollBlockers.current === 0
+          && settingsPollEpoch.current === epoch
+          && settingsPollRequest.current === request) {
+          setSettings(snapshot);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (mounted.current
+          && (allowHidden || !document.hidden)
+          && settingsPollBlockers.current === 0
+          && settingsPollEpoch.current === epoch
+          && settingsPollRequest.current === request) {
+          setError(errorMessage(reason));
+        }
+      });
+  };
+
+  const refreshHistory = (): void => {
+    if (document.hidden || activeSection.current !== "history" || historyActions.current > 0) return;
+    const request = ++historyRequest.current;
+    void settingsApi.history()
+      .then((entries) => {
+        if (mounted.current
+          && !document.hidden
+          && activeSection.current === "history"
+          && historyActions.current === 0
+          && historyRequest.current === request) {
+          setHistory(entries);
+        }
+      })
+      .catch(() => undefined);
+  };
 
   useEffect(() => {
-    let active = true;
-    const refresh = (): void => {
-      void settingsApi.load()
-        .then((snapshot) => { if (active) setSettings(snapshot); })
-        .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
-      void settingsApi.history()
-        .then((entries) => { if (active) setHistory(entries); })
-        .catch(() => undefined);
+    mounted.current = true;
+    refreshSettings(true);
+    const refreshVisible = (): void => {
+      if (document.hidden) return;
+      refreshSettings();
+      refreshHistory();
     };
-    refresh();
-    const timer = setInterval(refresh, 1_000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    const timer = setInterval(refreshVisible, 1_000);
     return () => {
-      active = false;
+      mounted.current = false;
+      document.removeEventListener("visibilitychange", refreshVisible);
       clearInterval(timer);
     };
   }, []);
 
   useEffect(() => {
+    activeSection.current = section;
     contentRef.current?.scrollTo({ top: 0 });
+    if (section === "history") refreshHistory();
   }, [section]);
 
-  const update = async (patch: SettingsPatch): Promise<boolean> => {
+  const settingsAction = async (
+    action: () => Promise<SettingsSnapshot>,
+    localChannel?: LocalEngineKind,
+  ): Promise<boolean> => {
+    const request = ++settingsActionRequest.current;
+    const channelRequest = localChannel === undefined
+      ? 0
+      : ++localActionRequest.current[localChannel];
+    settingsPollEpoch.current += 1;
+    if (localChannel === undefined) settingsPollBlockers.current += 1;
     setError(null);
     try {
-      setSettings(await settingsApi.update(patch));
+      const snapshot = await action();
+      if (mounted.current && settingsActionRequest.current === request) {
+        settingsPollEpoch.current += 1;
+        setSettings(snapshot);
+      }
       return true;
     } catch (reason) {
-      setError(errorMessage(reason));
+      const latestError = localChannel === undefined
+        ? settingsActionRequest.current === request
+        : localActionRequest.current[localChannel] === channelRequest;
+      if (mounted.current && latestError) {
+        settingsPollEpoch.current += 1;
+        setError(errorMessage(reason));
+      }
       return false;
+    } finally {
+      if (localChannel === undefined) settingsPollBlockers.current -= 1;
     }
   };
 
+  const update = async (patch: SettingsPatch): Promise<boolean> => (
+    settingsAction(() => settingsApi.update(patch))
+  );
+
+  const setStartWithWindows = async (enabled: boolean): Promise<boolean> => (
+    settingsAction(() => settingsApi.setStartWithWindows(enabled))
+  );
+
   const historyAction = async (id: number, action: HistoryAction): Promise<void> => {
+    const request = ++historyRequest.current;
+    historyActions.current += 1;
     setError(null);
     try {
       await settingsApi.historyAction(id, action);
-      setHistory(await settingsApi.history());
+      const entries = await settingsApi.history();
+      if (mounted.current && historyRequest.current === request) {
+        setHistory(entries);
+      }
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (mounted.current && historyRequest.current === request) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      historyActions.current -= 1;
     }
   };
 
@@ -93,36 +178,20 @@ function SettingsApp(): React.JSX.Element {
     kind: LocalEngineKind,
     action: LocalEngineAction,
   ): Promise<boolean> => {
-    setError(null);
-    try {
-      setSettings(await settingsApi.localAction(kind, action));
-      return true;
-    } catch (reason) {
-      setError(errorMessage(reason));
-      return false;
-    }
+    return settingsAction(() => settingsApi.localAction(kind, action), kind);
   };
 
   const openAiSubscriptionAction = async (
     action: OpenAiSubscriptionAction,
   ): Promise<boolean> => {
-    setError(null);
-    try {
-      setSettings(await settingsApi.openAiSubscriptionAction(action));
-      return true;
-    } catch (reason) {
-      setError(errorMessage(reason));
-      return false;
-    }
+    return settingsAction(() => settingsApi.openAiSubscriptionAction(action));
   };
 
   const captureShortcut = async (field: ShortcutSetting): Promise<void> => {
     setError(null);
     setCapturing(field);
     try {
-      setSettings(await settingsApi.captureShortcut(field));
-    } catch (reason) {
-      setError(errorMessage(reason));
+      await settingsAction(() => settingsApi.captureShortcut(field));
     } finally {
       setCapturing(null);
     }
@@ -168,6 +237,7 @@ function SettingsApp(): React.JSX.Element {
           ? <General
               settings={settings}
               update={update}
+              setStartWithWindows={setStartWithWindows}
               capturing={capturing}
               captureShortcut={captureShortcut}
               systemAction={systemAction}
@@ -190,12 +260,14 @@ function SettingsApp(): React.JSX.Element {
 function General({
   settings,
   update,
+  setStartWithWindows,
   capturing,
   captureShortcut,
   systemAction,
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
+  setStartWithWindows: (enabled: boolean) => Promise<boolean>;
   capturing: ShortcutSetting | null;
   captureShortcut: (field: ShortcutSetting) => Promise<void>;
   systemAction: (action: SystemAction) => Promise<void>;
@@ -357,7 +429,7 @@ function General({
             <Toggle
               label="Start with Windows"
               checked={settings.startWithWindows}
-              onChange={(startWithWindows) => { void update({ startWithWindows }); }}
+              onChange={(enabled) => { void setStartWithWindows(enabled); }}
             />
           </SettingRow>
           <AppUpdates appVersion={settings.appVersion} />
@@ -543,7 +615,7 @@ function Dictionary({
       />
     </div>
     <p className="supportNote">Corrections run locally and always use the exact replacement.</p>
-    {settings.provider === "xai" && <div className="card localPolicy">
+    {settings.provider === "xai" && <div className="card">
       <SettingRow title="Send recognition hints" description="xAI receives these terms as key-term hints; other providers do not.">
         <Toggle label="Send recognition hints" checked={settings.sttVocabHints} onChange={(sttVocabHints) => {
           void update({ sttVocabHints });
@@ -585,9 +657,7 @@ function History({
       {entries.length === 0 && <div className="card emptyList">Nothing dictated yet this session.</div>}
       {entries.map((entry) => <article key={entry.id} className="historyEntry" data-ok={entry.ok}>
         <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
-        <div>
-          <p>{entry.ok ? entry.text : entry.error}</p>
-        </div>
+        <p>{entry.ok ? entry.text : entry.error}</p>
         <div className="historyActions">
           {entry.ok && <button type="button" className="smallButton" onClick={() => { void action(entry.id, "copy"); }}>Copy</button>}
           {entry.ok && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "repaste"); }}>Re-paste</button>}
@@ -628,16 +698,32 @@ function SpeechAi({
 }): React.JSX.Element {
   const [testing, setTesting] = useState<ProviderTestKind | null>(null);
   const [testResults, setTestResults] = useState<Partial<Record<ProviderTestKind, string>>>({});
+  const testRequests = useRef<Record<ProviderTestKind, number>>({ stt: 0, cleanup: 0 });
+  useEffect(() => {
+    testRequests.current.stt += 1;
+    setTesting((current) => current === "stt" ? null : current);
+    setTestResults(({ stt: _stt, ...current }) => current);
+  }, [settings.provider]);
+  useEffect(() => {
+    testRequests.current.cleanup += 1;
+    setTesting((current) => current === "cleanup" ? null : current);
+    setTestResults(({ cleanup: _cleanup, ...current }) => current);
+  }, [settings.cleanupProvider]);
   const test = async (kind: ProviderTestKind): Promise<void> => {
+    const request = ++testRequests.current[kind];
     setTesting(kind);
     setTestResults((current) => ({ ...current, [kind]: "" }));
     try {
       const message = `✓ ${await settingsApi.providerTest(kind)}`;
-      setTestResults((current) => ({ ...current, [kind]: message }));
+      if (testRequests.current[kind] === request) {
+        setTestResults((current) => ({ ...current, [kind]: message }));
+      }
     } catch (reason) {
-      setTestResults((current) => ({ ...current, [kind]: errorMessage(reason) }));
+      if (testRequests.current[kind] === request) {
+        setTestResults((current) => ({ ...current, [kind]: errorMessage(reason) }));
+      }
     } finally {
-      setTesting(null);
+      if (testRequests.current[kind] === request) setTesting(null);
     }
   };
   const cleanupSubscriptionActive = settings.aiCleanup
@@ -650,7 +736,7 @@ function SpeechAi({
   ));
   return <section>
     <header className="pageHeader"><h1>Speech &amp; AI</h1></header>
-    <div className="settingsColumns speechColumns">
+    <div className="settingsColumns">
       <div>
         <h2>Services</h2>
         <div className="card">
@@ -1106,185 +1192,6 @@ function NavIcon({ icon }: { icon: Section }): React.JSX.Element {
 
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
-}
-
-function previewSttModel(provider: TranscriptionProviderId, live: boolean): string {
-  if (live && (provider === "openai" || provider === "xai")) {
-    return LIVE_STT_MODELS[provider] ?? "";
-  }
-  return DEFAULT_STT_MODELS[provider];
-}
-
-function settingsApiForRenderer(): Window["undertoneSettings"] {
-  if (window.undertoneSettings !== undefined) return window.undertoneSettings;
-  const loopback = location.hostname === "localhost"
-    || location.hostname === "127.0.0.1"
-    || location.hostname === "[::1]";
-  if (location.protocol !== "http:" || !loopback) {
-    throw new Error("Settings preload is unavailable");
-  }
-  let preview: SettingsSnapshot = {
-    language: "en",
-    aiCleanup: true,
-    restoreClipboard: true,
-    soundCues: true,
-    startWithWindows: false,
-    hotkey: "left ctrl+left windows",
-    repasteHotkey: "left alt+v",
-    commitHotkey: "left ctrl+left alt",
-    scratchHotkey: "left ctrl+left alt+backspace",
-    discardHotkey: "ctrl+alt+shift+backspace",
-    shortcutWarning: null,
-    liveTranscription: false,
-    openTurnCleanupStrategy: "live-full",
-    inputDevice: "",
-    microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],
-    appVersion: "1.8.1",
-    preview: true,
-    provider: "openai",
-    cleanupProvider: "openai-subscription",
-    keyConfigured: { xai: false, openai: true, openrouter: false },
-    openAiSubscriptionConnected: true,
-    sttModel: "gpt-transcribe",
-    cleanupModel: "gpt-5.6-luna",
-    localLoaded: false,
-    localIdleMinutes: 0,
-    sttVocabHints: true,
-    vocabulary: ["Undertone", "Kubernetes"],
-    corrections: { "under tone": "Undertone" },
-    localEngines: {
-      stt: {
-        installed: true,
-        loaded: false,
-        loading: false,
-        build: null,
-        installing: false,
-        installPhase: "",
-        installFraction: 0,
-        installBytes: 0,
-      },
-      cleanup: {
-        installed: false,
-        loaded: false,
-        loading: false,
-        build: null,
-        installing: false,
-        installPhase: "",
-        installFraction: 0,
-        installBytes: 3_155_769_803,
-      },
-    },
-  };
-  const previewUpdate: AppUpdateSnapshot = {
-    supported: false,
-    phase: "unavailable",
-    currentVersion: "1.8.1",
-    availableVersion: null,
-    progress: null,
-    message: "Update checks are available in the installed app.",
-  };
-  return {
-    async load() { return preview; },
-    async update(patch) {
-      if (patch.providerKey !== undefined) {
-        preview = {
-          ...preview,
-          keyConfigured: {
-            ...preview.keyConfigured,
-            [patch.providerKey.provider]: patch.providerKey.value.trim().length > 0,
-          },
-        };
-      }
-      if (patch.provider !== undefined || patch.liveTranscription !== undefined) {
-        preview = {
-          ...preview,
-          sttModel: previewSttModel(
-            patch.provider ?? preview.provider,
-            patch.liveTranscription ?? preview.liveTranscription,
-          ),
-        };
-      }
-      if (patch.cleanupProvider !== undefined
-        && patch.cleanupProvider !== preview.cleanupProvider) {
-        preview = {
-          ...preview,
-          cleanupModel: DEFAULT_CLEANUP_MODELS[patch.cleanupProvider],
-        };
-      }
-      const { providerKey: _providerKey, ...plain } = patch;
-      preview = { ...preview, ...plain };
-      return preview;
-    },
-    async captureShortcut(field) {
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
-      preview = {
-        ...preview,
-        [field]: field === "hotkey"
-          ? "f13"
-          : field === "commitHotkey"
-            ? "left ctrl+left alt+enter"
-            : field === "scratchHotkey"
-              ? "left ctrl+left alt+backspace"
-              : field === "discardHotkey"
-                ? "left ctrl+left alt+left shift+backspace"
-                : "left ctrl+left shift+v",
-      };
-      return preview;
-    },
-    async localAction(kind, action) {
-      if (action === "install") {
-        preview = {
-          ...preview,
-          localEngines: {
-            ...preview.localEngines,
-            [kind]: {
-              ...preview.localEngines[kind],
-              installing: true,
-              installPhase: "Downloading model",
-              installFraction: 0.42,
-            },
-          },
-        };
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-      }
-      preview = {
-        ...preview,
-        localEngines: {
-          ...preview.localEngines,
-          [kind]: {
-            ...preview.localEngines[kind],
-            installed: action === "install" || preview.localEngines[kind].installed,
-            loaded: action === "load",
-            loading: false,
-            build: action === "load" ? "cuda" : null,
-            installing: false,
-            installPhase: "",
-            installFraction: 0,
-            installBytes: action === "install" ? 0 : preview.localEngines[kind].installBytes,
-          },
-        },
-      };
-      return preview;
-    },
-    async history() {
-      return [
-        { id: 2, ok: true, text: "Undertone is ready.", error: null, timestamp: Date.now(), retryable: false },
-        { id: 1, ok: false, text: "", error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
-      ];
-    },
-    async historyAction() {},
-    async systemAction() {},
-    async providerTest(kind) { return `${kind} works`; },
-    async openAiSubscriptionAction(action) {
-      preview = { ...preview, openAiSubscriptionConnected: action === "connect" };
-      return preview;
-    },
-    async microphoneTest() { return 0.18; },
-    async updateStatus() { return previewUpdate; },
-    async checkForUpdates() { return previewUpdate; },
-    async installUpdate() { throw new Error(previewUpdate.message); },
-    onUpdateStatus() { return () => undefined; },
-  };
 }
 
 const root = document.getElementById("root");

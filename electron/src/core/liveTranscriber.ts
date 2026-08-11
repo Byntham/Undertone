@@ -9,7 +9,7 @@ export interface LiveTranscriptionOptions {
   provider: LiveTranscriptionProvider;
   apiKey: string;
   language: string;
-  vocabulary: readonly unknown[];
+  vocabulary: readonly string[];
 }
 
 export interface LiveTranscriptionCallbacks {
@@ -368,8 +368,8 @@ function apiError(value: Record<string, unknown>, fallback: string): string {
   return fallback;
 }
 
-function vocabularyTerms(values: readonly unknown[]): string[] {
-  return values.slice(0, 100).map((value) => String(value).trim().slice(0, 50)).filter(Boolean);
+function vocabularyTerms(values: readonly string[]): string[] {
+  return values.slice(0, 100).map((value) => value.trim().slice(0, 50)).filter(Boolean);
 }
 
 function joinText(parts: readonly string[]): string {

@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   canHideTurnDraftAfterDismissal,
   hasActiveTurnDraftWork,
-  isBarOnlyFeedback,
   nextTurnDraftMode,
 } from "../src/shared/overlay";
 
@@ -38,15 +37,6 @@ describe("turn draft dismissal", () => {
 
   it("keeps buffered text active even when no capture remains", () => {
     expect(hasActiveTurnDraftWork(true, [], undefined)).toBe(true);
-  });
-
-  it("recognizes outcomes rendered by the Aurora rim", () => {
-    expect(isBarOnlyFeedback("No speech detected", "error")).toBe(true);
-    expect(isBarOnlyFeedback(
-      "Recording too short — speak a little longer",
-      "warning",
-    )).toBe(true);
-    expect(isBarOnlyFeedback("AI cleanup failed", "error")).toBe(false);
   });
 
   it("keeps the current native size throughout dismissal", () => {

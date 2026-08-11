@@ -4,10 +4,11 @@ import path from "node:path";
 
 import type { LocalCleanupRuntime } from "../core/cleanup";
 import type { LocalSttRuntime } from "../core/transcriber";
-
-export const LOCAL_STT_MODEL = "ggml-large-v3-turbo.bin";
-export const LOCAL_VAD_MODEL = "ggml-silero-v6.2.0.bin";
-export const LOCAL_CLEANUP_MODEL = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+import {
+  LOCAL_CLEANUP_MODEL,
+  LOCAL_STT_MODEL,
+  LOCAL_VAD_MODEL,
+} from "../shared/models";
 
 export type LocalBuild = "cpu" | "cuda";
 
@@ -27,7 +28,6 @@ interface LocalRuntimeStatus {
   loaded: boolean;
   loading: boolean;
   build: LocalBuild | null;
-  model: string;
 }
 
 interface ReadyResponse {
@@ -42,14 +42,16 @@ export type LocalFetch = (
 export interface LocalRuntimeOptions {
   fetch?: LocalFetch;
   onNotice?: (message: string) => void;
+  isInstalled?: () => boolean;
 }
 
+type LocalServerUsePolicy = "wait" | "fallback";
+
 interface EngineSpec {
-  defaultModel: string;
   logFile: string;
   serverFile(build: LocalBuild): string;
-  requiredFiles(model: string): readonly string[];
-  arguments(build: LocalBuild, model: string, port: number): readonly string[];
+  requiredFiles(): readonly string[];
+  arguments(build: LocalBuild, port: number): readonly string[];
   readyUrl(port: number): string;
   ready(response: ReadyResponse): boolean;
   readyTimeoutMs: number;
@@ -62,19 +64,26 @@ interface ActiveServer {
   processId: number;
   port: number;
   build: LocalBuild;
-  model: string;
 }
+
+const STOP_TIMEOUT_MS = 5_000;
 
 export class LocalServerRuntime {
   private readonly fetcher: LocalFetch;
   private readonly notice: ((message: string) => void) | undefined;
+  private readonly installed: (() => boolean) | undefined;
   private active: ActiveServer | null = null;
   private startingProcessId: number | null = null;
-  private loadingPromise: Promise<string> | null = null;
+  private readonly pendingStopIds = new Set<number>();
+  private loadingPromise: Promise<ActiveServer> | null = null;
   private generation = 0;
   private idleSeconds = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastUsed = 0;
+  private activeCallbacks = 0;
+  private callbacksDrained: Promise<void> | null = null;
+  private resolveCallbacksDrained: (() => void) | null = null;
+  private ejectPromise: Promise<void> | null = null;
+  private shuttingDown = false;
   private cudaUnavailable = false;
 
   constructor(
@@ -84,85 +93,177 @@ export class LocalServerRuntime {
   ) {
     this.fetcher = options.fetch ?? (async (url, init) => await fetch(url, init));
     this.notice = options.onNotice;
+    this.installed = options.isInstalled;
   }
 
-  isInstalled(requestedModel = ""): boolean {
-    const model = this.modelName(requestedModel);
-    return this.spec.requiredFiles(model).every((file) => existsSync(file));
+  isInstalled(): boolean {
+    if (this.installed !== undefined) return this.installed();
+    return this.spec.requiredFiles().every((file) => existsSync(file));
   }
 
-  status(requestedModel = ""): LocalRuntimeStatus {
-    const model = this.modelName(requestedModel);
+  async status(): Promise<LocalRuntimeStatus> {
+    const active = await this.liveActive();
     return {
-      installed: this.isInstalled(model),
-      loaded: this.active?.model === model && this.loadingPromise === null,
+      installed: this.isInstalled(),
+      loaded: active !== null && this.loadingPromise === null,
       loading: this.loadingPromise !== null,
-      build: this.active?.build ?? null,
-      model,
+      build: active?.build ?? null,
     };
   }
 
-  baseUrl(requestedModel = ""): string | null {
-    const model = this.modelName(requestedModel);
-    if (this.loadingPromise !== null || this.active?.model !== model) return null;
-    this.touch();
-    return this.url(this.active.port);
+  async load(): Promise<void> {
+    await this.ensureReady();
   }
 
-  loadAsync(requestedModel = ""): void {
-    if (!this.isInstalled(requestedModel)) return;
-    void this.ensureReady(requestedModel).catch(() => undefined);
+  warm(): void {
+    if (this.shuttingDown || this.ejectPromise !== null || !this.isInstalled()) return;
+    void this.ensureReady().catch(() => undefined);
   }
 
-  async ensureReady(requestedModel = ""): Promise<string> {
-    const model = this.modelName(requestedModel);
-    while (this.loadingPromise !== null) {
-      const pending = this.loadingPromise;
-      try { await pending; } catch { /* The next attempt may fall back or retry. */ }
-      if (this.loadingPromise === pending) await Promise.resolve();
-    }
+  async withServer<T>(
+    policy: "wait",
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T>;
+  async withServer<T>(
+    policy: "fallback",
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T | null>;
+  async withServer<T>(
+    policy: LocalServerUsePolicy,
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T | null> {
+    while (true) {
+      if (this.shuttingDown) {
+        if (policy === "fallback") return null;
+        throw new Error("Local model runtime is shutting down");
+      }
+      if (this.ejectPromise !== null) {
+        if (policy === "fallback") return null;
+        await this.ejectPromise;
+        continue;
+      }
 
-    if (this.active?.model === model
-      && await this.host.isSupervisedRunning(this.active.processId)) {
-      this.touch();
-      return this.url(this.active.port);
-    }
-    if (!this.isInstalled(model)) throw new Error(this.spec.unavailableMessage);
+      const generation = this.generation;
+      let active: ActiveServer | null;
+      if (policy === "wait") {
+        active = await this.ensureReady();
+      } else {
+        active = await this.liveActive();
+        if (active === null || this.loadingPromise !== null) {
+          this.warm();
+          return null;
+        }
+      }
+      if (this.ejectPromise !== null
+        || generation !== this.generation
+        || this.active !== active) {
+        if (policy === "fallback") return null;
+        continue;
+      }
 
-    const generation = this.generation;
-    const operation = this.startServer(model, generation);
-    this.loadingPromise = operation;
-    try {
-      return await operation;
-    } finally {
-      if (this.loadingPromise === operation) this.loadingPromise = null;
+      if (this.activeCallbacks === 0) {
+        this.callbacksDrained = new Promise<void>((resolve) => {
+          this.resolveCallbacksDrained = resolve;
+        });
+      }
+      this.activeCallbacks += 1;
+      this.cancelIdleTimer();
+      try {
+        return await callback(this.url(active.port));
+      } finally {
+        this.activeCallbacks -= 1;
+        if (this.activeCallbacks === 0) {
+          this.resolveCallbacksDrained?.();
+          this.resolveCallbacksDrained = null;
+          this.callbacksDrained = null;
+          if (this.active !== null && this.idleSeconds > 0) this.armIdleTimer();
+        }
+      }
     }
   }
 
   setIdleTimeout(seconds: number): void {
-    this.idleSeconds = Math.max(0, Math.floor(seconds));
+    this.idleSeconds = Math.max(0, seconds);
     this.cancelIdleTimer();
-    if (this.idleSeconds > 0 && this.active !== null) this.armIdleTimer();
+    if (this.idleSeconds > 0 && this.active !== null && this.activeCallbacks === 0) {
+      this.armIdleTimer();
+    }
   }
 
   async eject(): Promise<void> {
-    this.generation += 1;
-    this.cancelIdleTimer();
-    const processIds = new Set<number>();
-    if (this.startingProcessId !== null) processIds.add(this.startingProcessId);
-    if (this.active !== null) processIds.add(this.active.processId);
-    this.startingProcessId = null;
-    this.active = null;
-    await Promise.all([...processIds].map(async (processId) => {
-      try { await this.host.stopSupervised(processId); } catch { /* Host shutdown wins. */ }
-    }));
+    if (this.ejectPromise !== null) return await this.ejectPromise;
+    const operation = this.finishEject();
+    this.ejectPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.ejectPromise === operation) this.ejectPromise = null;
+    }
   }
 
   async shutdown(): Promise<void> {
-    await this.eject();
+    this.shuttingDown = true;
+    try { await this.eject(); } catch { /* The host shutdown will terminate its job. */ }
   }
 
-  private async startServer(model: string, generation: number): Promise<string> {
+  private async finishEject(): Promise<void> {
+    this.generation += 1;
+    this.cancelIdleTimer();
+    const pendingCallbacks = this.callbacksDrained;
+    if (pendingCallbacks !== null) await pendingCallbacks;
+    if (this.startingProcessId !== null) this.pendingStopIds.add(this.startingProcessId);
+    if (this.active !== null) this.pendingStopIds.add(this.active.processId);
+    this.startingProcessId = null;
+    this.active = null;
+    await this.stopPendingProcesses();
+  }
+
+  private async ensureReady(): Promise<ActiveServer> {
+    while (true) {
+      if (this.shuttingDown) throw new Error("Local model runtime is shutting down");
+      if (this.ejectPromise !== null) {
+        await this.ejectPromise;
+        continue;
+      }
+      const pending = this.loadingPromise;
+      if (pending !== null) {
+        try { await pending; } catch { /* The next attempt may fall back or retry. */ }
+        continue;
+      }
+
+      const active = await this.liveActive();
+      if (this.loadingPromise !== null) continue;
+      if (active !== null) return active;
+      if (!this.isInstalled()) throw new Error(this.spec.unavailableMessage);
+
+      const generation = this.generation;
+      const operation = this.startServer(generation);
+      this.loadingPromise = operation;
+      try {
+        return await operation;
+      } finally {
+        if (this.loadingPromise === operation) {
+          this.loadingPromise = null;
+        }
+      }
+    }
+  }
+
+  private async liveActive(): Promise<ActiveServer | null> {
+    const active = this.active;
+    if (active === null) return null;
+    if (await this.host.isSupervisedRunning(active.processId)) return active;
+    if (this.active === active) {
+      this.active = null;
+      this.cancelIdleTimer();
+    }
+    return null;
+  }
+
+  private async startServer(generation: number): Promise<ActiveServer> {
+    if (this.callbacksDrained !== null) await this.callbacksDrained;
+    if (generation !== this.generation) throw new Error("Local model load was cancelled");
+    await this.stopPendingProcesses();
     await this.stopActive();
     const builds: LocalBuild[] = ["cpu"];
     if (!this.cudaUnavailable && existsSync(this.spec.serverFile("cuda"))) {
@@ -173,11 +274,12 @@ export class LocalServerRuntime {
     for (const build of builds) {
       if (generation !== this.generation) throw new Error("Local model load was cancelled");
       try {
-        const active = await this.spawn(build, model, generation);
+        await this.stopPendingProcesses();
+        const active = await this.spawn(build, generation);
         this.active = active;
         this.startingProcessId = null;
-        this.touch();
-        return this.url(active.port);
+        if (this.idleSeconds > 0 && this.activeCallbacks === 0) this.armIdleTimer();
+        return active;
       } catch (error) {
         lastError = error;
         if (generation !== this.generation) throw error;
@@ -191,14 +293,13 @@ export class LocalServerRuntime {
 
   private async spawn(
     build: LocalBuild,
-    model: string,
     generation: number,
   ): Promise<ActiveServer> {
     const port = await pickPort();
     const executable = this.spec.serverFile(build);
     const processId = await this.host.spawnSupervised(
       executable,
-      this.spec.arguments(build, model, port).map(quoteWindowsArgument).join(" "),
+      this.spec.arguments(build, port).map(quoteWindowsArgument).join(" "),
       path.dirname(executable),
       this.spec.logFile,
     );
@@ -212,13 +313,13 @@ export class LocalServerRuntime {
           this.spec.readyUrl(port),
           1_000,
         );
-        if (this.spec.ready(response)) return { processId, port, build, model };
+        if (this.spec.ready(response)) return { processId, port, build };
       } catch {
         // Server is still loading or has not bound the loopback port yet.
       }
       await delay(250);
     }
-    try { await this.host.stopSupervised(processId); } catch { /* Best effort. */ }
+    await this.stopTrackedProcess(processId);
     if (this.startingProcessId === processId) this.startingProcessId = null;
     throw new Error(this.spec.failedMessage);
   }
@@ -226,37 +327,49 @@ export class LocalServerRuntime {
   private async stopActive(): Promise<void> {
     const active = this.active;
     this.active = null;
-    if (active !== null) {
-      try { await this.host.stopSupervised(active.processId); } catch { /* Best effort. */ }
-    }
+    if (active !== null) await this.stopTrackedProcess(active.processId);
   }
 
-  private modelName(requested: string): string {
-    const model = requested.trim() || this.spec.defaultModel;
-    if (path.basename(model) !== model || /[\\/\0]/u.test(model)) {
-      throw new Error("Local model override must be a filename in Undertone's models folder");
+  private async stopTrackedProcess(processId: number): Promise<void> {
+    this.pendingStopIds.add(processId);
+    await this.stopProcess(processId);
+    this.pendingStopIds.delete(processId);
+  }
+
+  private async stopPendingProcesses(): Promise<void> {
+    await Promise.all([...this.pendingStopIds].map(async (processId) => {
+      await this.stopTrackedProcess(processId);
+    }));
+  }
+
+  private async stopProcess(processId: number): Promise<void> {
+    await this.host.stopSupervised(processId);
+    const deadline = Date.now() + STOP_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        if (!await this.host.isSupervisedRunning(processId)) return;
+      } catch {
+        // Unknown liveness is not proof of exit. Retry until the same bound.
+      }
+      await delay(50);
     }
-    return model;
+    throw new Error("Local engine process did not stop");
   }
 
   private url(port: number): string {
     return `http://127.0.0.1:${port}`;
   }
 
-  private touch(): void {
-    this.lastUsed = Date.now();
-    if (this.idleSeconds > 0) this.armIdleTimer();
-  }
-
   private armIdleTimer(): void {
     this.cancelIdleTimer();
-    const delayMs = Math.max(50, this.idleSeconds * 1_000 - (Date.now() - this.lastUsed));
+    if (this.activeCallbacks > 0 || this.active === null || this.idleSeconds === 0) return;
+    const active = this.active;
+    const delayMs = Math.max(50, this.idleSeconds * 1_000);
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (this.active === null || this.idleSeconds === 0) return;
-      const remaining = this.idleSeconds * 1_000 - (Date.now() - this.lastUsed);
-      if (remaining <= 0) void this.eject();
-      else this.armIdleTimer();
+      if (this.active === active && this.activeCallbacks === 0 && this.idleSeconds > 0) {
+        void this.eject().catch(() => undefined);
+      }
     }, delayMs);
   }
 
@@ -274,16 +387,15 @@ export function createLocalSttRuntime(
   const runtime = path.join(root, "runtime");
   const models = path.join(root, "models");
   return new LocalServerRuntime(host, {
-    defaultModel: LOCAL_STT_MODEL,
     logFile: path.join(runtime, "server.log"),
     serverFile: (build) => path.join(runtime, build, "whisper-server.exe"),
-    requiredFiles: (model) => [
+    requiredFiles: () => [
       path.join(runtime, "cpu", "whisper-server.exe"),
-      path.join(models, model),
+      path.join(models, LOCAL_STT_MODEL),
       path.join(models, LOCAL_VAD_MODEL),
     ],
-    arguments: (build, model, port) => [
-      "-m", path.join(models, model),
+    arguments: (build, port) => [
+      "-m", path.join(models, LOCAL_STT_MODEL),
       "--vad",
       "--vad-model", path.join(models, LOCAL_VAD_MODEL),
       "--host", "127.0.0.1",
@@ -307,15 +419,14 @@ export function createLocalCleanupRuntime(
   const runtime = path.join(root, "runtime");
   const models = path.join(root, "models");
   return new LocalServerRuntime(host, {
-    defaultModel: LOCAL_CLEANUP_MODEL,
     logFile: path.join(runtime, "llm-server.log"),
     serverFile: (build) => path.join(runtime, `llm-${build}`, "llama-server.exe"),
-    requiredFiles: (model) => [
+    requiredFiles: () => [
       path.join(runtime, "llm-cpu", "llama-server.exe"),
-      path.join(models, model),
+      path.join(models, LOCAL_CLEANUP_MODEL),
     ],
-    arguments: (build, model, port) => [
-      "-m", path.join(models, model),
+    arguments: (build, port) => [
+      "-m", path.join(models, LOCAL_CLEANUP_MODEL),
       "--host", "127.0.0.1",
       "--port", String(port),
       "-c", "8192",

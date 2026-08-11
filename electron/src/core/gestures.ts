@@ -8,7 +8,7 @@ export const GestureState = {
 export type GestureState = (typeof GestureState)[keyof typeof GestureState];
 export type DictationCompletion = "commit" | "open-turn";
 
-export const DEFAULT_TAP_MS = 300;
+const DEFAULT_TAP_MS = 300;
 
 export interface GestureCallbacks {
   onStart: () => boolean;

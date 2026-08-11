@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 8;
 const HOST_NAME = "Undertone.WinHost.exe";
+const EXTRACTION_TIMEOUT_MS = 300_000;
 
 interface HostReady {
   protocol: number;
@@ -17,17 +18,8 @@ export interface KeyboardEvent {
   protocol: number;
   type: "keyboard";
   eventType: "down" | "up";
-  scanCode: number;
   virtualKey: number;
   injected: boolean;
-  extended: boolean;
-}
-
-export interface MouseEvent {
-  protocol: number;
-  type: "mouse";
-  eventType: "down";
-  button: "left" | "right" | "middle" | "x1" | "x2";
 }
 
 interface HostResponse extends Record<string, unknown> {
@@ -36,17 +28,17 @@ interface HostResponse extends Record<string, unknown> {
   requestId: string;
 }
 
-interface ForegroundInfo {
+export type InputMode = "off" | "listen" | "shortcut-capture";
+
+type ForegroundInfo = {
   window: string;
   focus: string;
-  focusIdentity: string | null;
   generation: string;
-}
-
-export interface SupervisedProcessStatus {
-  running: boolean;
-  exitCode: number | null;
-}
+} & (
+  | { focusIdentityState: "available"; focusIdentity: string }
+  | { focusIdentityState: "unavailable"; focusIdentity: null }
+  | { focusIdentityState: "degraded"; focusIdentity: null }
+);
 
 interface PendingRequest {
   expectedType: string;
@@ -65,9 +57,10 @@ export class WindowsHost {
   private nextRequestId = 1;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly keyboardListeners = new Set<(event: KeyboardEvent) => void>();
-  private readonly mouseListeners = new Set<(event: MouseEvent) => void>();
+  private readonly extractionChildren = new Set<ChildProcessWithoutNullStreams>();
   private readonly executable: string;
   private readonly requestTimeoutMs: number;
+  private stopOperation: Promise<void> | null = null;
   private readyResolve: ((ready: HostReady) => void) | null = null;
   private readyReject: ((error: Error) => void) | null = null;
   private readyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -78,6 +71,9 @@ export class WindowsHost {
   }
 
   async start(): Promise<HostReady> {
+    if (this.stopOperation !== null) {
+      throw new Error("Windows host is stopping");
+    }
     if (this.child !== null) {
       throw new Error("Windows host is already running");
     }
@@ -118,41 +114,37 @@ export class WindowsHost {
     return () => this.keyboardListeners.delete(listener);
   }
 
-  onMouse(listener: (event: MouseEvent) => void): () => void {
-    this.mouseListeners.add(listener);
-    return () => this.mouseListeners.delete(listener);
-  }
-
-  async startInput(): Promise<void> {
-    await this.request("startInput", "inputStarted");
-  }
-
-  async stopInput(): Promise<void> {
-    await this.request("stopInput", "inputStopped");
-  }
-
-  async startShortcutCapture(): Promise<void> {
-    await this.request("startShortcutCapture", "shortcutCaptureStarted");
-  }
-
-  async stopShortcutCapture(): Promise<void> {
-    await this.request("stopShortcutCapture", "shortcutCaptureStopped");
+  async setInputMode(mode: InputMode): Promise<void> {
+    const response = await this.request("setInputMode", "inputModeSet", { mode });
+    if (response.mode !== mode) {
+      throw new Error("Windows host returned an invalid input mode");
+    }
   }
 
   async getForeground(): Promise<ForegroundInfo> {
     const response = await this.request("getForeground", "foreground");
     if (typeof response.window !== "string"
       || typeof response.focus !== "string"
-      || !isNullableString(response.focusIdentity)
+      || !isFocusIdentity(response.focusIdentityState, response.focusIdentity)
       || typeof response.generation !== "string") {
       throw new Error("Windows host returned an invalid foreground window");
     }
-    return {
+    const common = {
       window: response.window,
       focus: response.focus,
-      focusIdentity: response.focusIdentity,
       generation: response.generation,
     };
+    return response.focusIdentityState === "available"
+      ? {
+        ...common,
+        focusIdentityState: "available",
+        focusIdentity: response.focusIdentity as string,
+      }
+      : {
+        ...common,
+        focusIdentityState: response.focusIdentityState,
+        focusIdentity: null,
+      };
   }
 
   async sendPaste(): Promise<boolean> {
@@ -165,10 +157,12 @@ export class WindowsHost {
 
   async sendGuardedPaste(target: {
     window: string;
-    focus?: string;
-    focusIdentity?: string | null;
-    generation?: string;
-  }): Promise<boolean> {
+    focus: string;
+    generation: string;
+  } & (
+    | { focusIdentityState: "available"; focusIdentity: string }
+    | { focusIdentityState: "unavailable"; focusIdentity: null }
+  )): Promise<boolean> {
     const response = await this.request("guardedPaste", "guardedPasteResult", target);
     if (typeof response.sent !== "boolean" || typeof response.focusMatched !== "boolean") {
       throw new Error("Windows host returned an invalid guarded paste result");
@@ -199,14 +193,12 @@ export class WindowsHost {
     argumentsValue = "",
     workingDirectory = "",
     logFile = "",
-    environment: Readonly<Record<string, string | null>> = {},
   ): Promise<number> {
     const response = await this.request("spawnSupervised", "processStarted", {
       file,
       arguments: argumentsValue,
       workingDirectory,
       logFile,
-      environment,
     });
     if (typeof response.processId !== "number") {
       throw new Error("Windows host returned an invalid process ID");
@@ -215,21 +207,13 @@ export class WindowsHost {
   }
 
   async isSupervisedRunning(processId: number): Promise<boolean> {
-    return (await this.supervisedProcessStatus(processId)).running;
-  }
-
-  async supervisedProcessStatus(processId: number): Promise<SupervisedProcessStatus> {
-    const response = await this.request("isSupervisedRunning", "processStatus", {
+    const response = await this.request("isSupervisedRunning", "processRunning", {
       processId,
     });
-    if (typeof response.running !== "boolean"
-      || (response.exitCode !== null && typeof response.exitCode !== "number")) {
+    if (typeof response.running !== "boolean") {
       throw new Error("Windows host returned an invalid process status");
     }
-    return {
-      running: response.running,
-      exitCode: response.exitCode,
-    };
+    return response.running;
   }
 
   async extractSubset(
@@ -237,17 +221,60 @@ export class WindowsHost {
     patterns: readonly string[],
     targetDirectory: string,
   ): Promise<number> {
-    const response = await this.request(
-      "extractSubset",
-      "subsetExtracted",
-      {
-        zipFiles: [...zipFiles],
-        patterns: [...patterns],
-        targetDirectory,
-      },
-      300_000,
-    );
-    if (typeof response.fileCount !== "number") {
+    if (this.stopOperation !== null) {
+      throw new Error("Windows host is stopping");
+    }
+    if (!existsSync(this.executable)) {
+      throw new Error(`Windows host executable is missing: ${this.executable}`);
+    }
+    const child = spawn(this.executable, ["--extract-subset"], {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.extractionChildren.add(child);
+    let stdout = "";
+    let stderr = "";
+    let stdinError = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.stdin.once("error", (error) => { stdinError = error.message; });
+
+    let timedOut = false;
+    const completion = new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, EXTRACTION_TIMEOUT_MS);
+    child.stdin.write(`${JSON.stringify({
+      protocol: PROTOCOL_VERSION,
+      zipFiles: [...zipFiles],
+      patterns: [...patterns],
+      targetDirectory,
+    })}\n`);
+
+    let exitCode: number | null;
+    try {
+      exitCode = await completion;
+    } finally {
+      clearTimeout(timer);
+      this.extractionChildren.delete(child);
+    }
+    if (timedOut) {
+      throw new Error("Windows host extraction timed out");
+    }
+    const response = parseOneShotResponse(stdout);
+    if (exitCode !== 0) {
+      const detail = typeof response?.message === "string"
+        ? response.message
+        : stderr.trim() || stdinError;
+      throw new Error(`Windows host extraction failed${detail.length > 0 ? `: ${detail}` : ""}`);
+    }
+    if (response?.protocol !== PROTOCOL_VERSION || typeof response.fileCount !== "number") {
       throw new Error("Windows host returned an invalid extraction result");
     }
     return response.fileCount;
@@ -264,6 +291,23 @@ export class WindowsHost {
   }
 
   async stop(): Promise<void> {
+    if (this.stopOperation !== null) return await this.stopOperation;
+    const operation = this.stopOwnedProcesses();
+    this.stopOperation = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.stopOperation === operation) this.stopOperation = null;
+    }
+  }
+
+  private async stopOwnedProcesses(): Promise<void> {
+    const extractions = [...this.extractionChildren];
+    for (const extraction of extractions) {
+      if (isRunning(extraction)) extraction.kill();
+    }
+    await Promise.all(extractions.map(waitForClose));
+
     const child = this.child;
     if (child === null) return;
     try {
@@ -338,10 +382,6 @@ export class WindowsHost {
       for (const listener of this.keyboardListeners) listener(message);
       return;
     }
-    if (isMouse(message)) {
-      for (const listener of this.mouseListeners) listener(message);
-      return;
-    }
     if (typeof message.requestId === "string") {
       const pending = this.pending.get(message.requestId);
       if (pending === undefined) return;
@@ -388,10 +428,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isNullableString(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
 function isReady(value: unknown): value is HostReady {
   return isRecord(value)
     && value.type === "ready"
@@ -405,18 +441,26 @@ function isKeyboard(
 ): value is Record<string, unknown> & KeyboardEvent {
   return value.type === "keyboard"
     && (value.eventType === "down" || value.eventType === "up")
-    && typeof value.scanCode === "number"
     && typeof value.virtualKey === "number"
-    && typeof value.injected === "boolean"
-    && typeof value.extended === "boolean";
+    && typeof value.injected === "boolean";
 }
 
-function isMouse(
-  value: Record<string, unknown>,
-): value is Record<string, unknown> & MouseEvent {
-  return value.type === "mouse"
-    && value.eventType === "down"
-    && ["left", "right", "middle", "x1", "x2"].includes(String(value.button));
+function isFocusIdentity(
+  state: unknown,
+  value: unknown,
+): state is ForegroundInfo["focusIdentityState"] {
+  return state === "available"
+    ? typeof value === "string" && value.length > 0
+    : (state === "unavailable" || state === "degraded") && value === null;
+}
+
+function parseOneShotResponse(output: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(output.trim());
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 async function waitForExit(
@@ -431,4 +475,13 @@ async function waitForExit(
       resolve();
     });
   });
+}
+
+async function waitForClose(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (!isRunning(child)) return;
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+}
+
+function isRunning(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode === null && child.signalCode === null;
 }

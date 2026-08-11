@@ -5,7 +5,7 @@ import { applySettingsPatch, settingsSnapshot } from "../src/core/settingsModel"
 
 describe("settings model", () => {
   it("exposes only the initial renderer-safe settings surface", () => {
-    const snapshot = settingsSnapshot(normalizeConfig({ api_key: "secret" }), "1.3.0", true);
+    const snapshot = settingsSnapshot(normalizeConfig({ api_key: "secret" }), "1.3.0");
     expect(snapshot).toEqual({
       language: "en",
       aiCleanup: true,
@@ -23,7 +23,6 @@ describe("settings model", () => {
       inputDevice: "",
       microphones: [],
       appVersion: "1.3.0",
-      preview: true,
       provider: "local",
       cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
@@ -61,12 +60,10 @@ describe("settings model", () => {
     expect(snapshot).not.toHaveProperty("api_key");
   });
 
-  it("updates providers and write-only keys while exposing config model overrides", () => {
+  it("updates providers and write-only keys while exposing fixed supported models", () => {
     let config = normalizeConfig({
       api_key: "x-secret",
       openai_api_key: "old-secret",
-      stt_models: { openai: "custom-stt" },
-      cleanup_models: { openrouter: "custom-cleanup" },
     });
     config = applySettingsPatch(config, {
       provider: "openai",
@@ -77,22 +74,20 @@ describe("settings model", () => {
     expect(config.cleanup_provider).toBe("openrouter");
     expect(config.openai_api_key).toBe("replacement");
     expect(config.api_key).toBe("x-secret");
-    expect(config.stt_models).toEqual({ openai: "custom-stt" });
-    expect(config.cleanup_models).toEqual({ openrouter: "custom-cleanup" });
-    const snapshot = settingsSnapshot(config, "1.3.0", true);
+    const snapshot = settingsSnapshot(config, "1.3.0");
     expect(snapshot.keyConfigured).toEqual({ xai: true, openai: true, openrouter: false });
     expect(JSON.stringify(snapshot)).not.toContain("secret");
-    expect(snapshot.sttModel).toBe("custom-stt");
-    expect(snapshot.cleanupModel).toBe("custom-cleanup");
+    expect(snapshot.sttModel).toBe("gpt-transcribe");
+    expect(snapshot.cleanupModel).toBe("openai/gpt-5.6-luna");
   });
 
   it("reports the model used by live transcription", () => {
     const openAi = normalizeConfig({ provider: "openai", live_transcription: true });
-    expect(settingsSnapshot(openAi, "1.8.1", true).sttModel)
+    expect(settingsSnapshot(openAi, "1.8.1").sttModel)
       .toBe("gpt-live-transcribe");
 
     const xai = normalizeConfig({ provider: "xai", live_transcription: true });
-    expect(settingsSnapshot(xai, "1.8.1", true).sttModel).toBe("");
+    expect(settingsSnapshot(xai, "1.8.1").sttModel).toBe("");
   });
 
   it("allows subscription cleanup without exposing it as transcription", () => {
@@ -103,7 +98,7 @@ describe("settings model", () => {
     }), {
       cleanupProvider: "openai-subscription",
     });
-    const snapshot = settingsSnapshot(config, "1.8.0", true);
+    const snapshot = settingsSnapshot(config, "1.8.0");
     expect(snapshot.cleanupProvider).toBe("openai-subscription");
     expect(snapshot.cleanupModel).toBe("gpt-5.6-luna");
     expect(snapshot.openAiSubscriptionConnected).toBe(true);
@@ -115,13 +110,11 @@ describe("settings model", () => {
     })).toThrow(/Unsupported settings field/u);
   });
 
-  it("keeps model selection config-only and rejects malformed provider updates", () => {
+  it("uses fixed models and rejects malformed provider updates", () => {
     const config = normalizeConfig({
       provider: "xai",
-      stt_models: { xai: "custom" },
-      cleanup_models: { openai: "custom-cleanup" },
     });
-    expect(settingsSnapshot(config, "1.8.0", true).sttModel).toBe("custom");
+    expect(settingsSnapshot(config, "1.8.0").sttModel).toBe("");
     expect(() => applySettingsPatch(config, {
       sttModel: { provider: "xai", value: "" },
     })).toThrow(/Unsupported settings field/u);
@@ -140,9 +133,25 @@ describe("settings model", () => {
 
   it("falls back to local when a corrupt config contains unknown providers", () => {
     const config = normalizeConfig({ provider: "broken", cleanup_provider: 42 });
-    const snapshot = settingsSnapshot(config, "1.3.0", true);
+    const snapshot = settingsSnapshot(config, "1.3.0");
     expect(snapshot.provider).toBe("local");
     expect(snapshot.cleanupProvider).toBe("local");
+  });
+
+  it("never exposes malformed persisted values through the settings snapshot", () => {
+    const snapshot = settingsSnapshot(normalizeConfig({
+      language: 42,
+      restore_clipboard: "false",
+      local_idle_minutes: Number.NaN,
+      vocabulary: [" valid ", null, "bad\nterm"],
+      corrections: { " heard ": " written ", invalid: [] },
+    }), "1.8.1");
+
+    expect(snapshot.language).toBe("en");
+    expect(snapshot.restoreClipboard).toBe(true);
+    expect(snapshot.localIdleMinutes).toBe(0);
+    expect(snapshot.vocabulary).toEqual(["valid"]);
+    expect(snapshot.corrections).toEqual({ heard: "written" });
   });
 
   it("applies supported fields without mutating the existing config", () => {
@@ -155,7 +164,6 @@ describe("settings model", () => {
       localLoaded: true,
       localIdleMinutes: 15,
       soundCues: false,
-      startWithWindows: true,
       sttVocabHints: false,
       vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
@@ -223,13 +231,13 @@ describe("settings model", () => {
       scratch_hotkey: "ctrl+alt+backspace",
       discard_hotkey: "ctrl+alt+shift+backspace",
     });
-    expect(settingsSnapshot(legacy, "1.8.0", true).shortcutWarning)
+    expect(settingsSnapshot(legacy, "1.8.0").shortcutWarning)
       .toMatch(/Re-paste, Commit, Scratch, and Discard/u);
     const repaired = applySettingsPatch(legacy, {
       commitHotkey: "left ctrl+left alt+enter",
     });
     expect(repaired.commit_hotkey).toBe("left ctrl+left alt+enter");
-    expect(settingsSnapshot(repaired, "1.8.0", true).shortcutWarning)
+    expect(settingsSnapshot(repaired, "1.8.0").shortcutWarning)
       .toMatch(/Re-paste, Scratch, and Discard/u);
   });
 
@@ -238,6 +246,8 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { api_key: "steal-me" }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { onboarded: true }))
+      .toThrow(/Unsupported settings field/u);
+    expect(() => applySettingsPatch(config, { startWithWindows: true }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { liveTranscription: "yes" }))
       .toThrow(/must be boolean/u);

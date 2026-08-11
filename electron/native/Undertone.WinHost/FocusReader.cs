@@ -5,6 +5,38 @@ using System.Threading;
 using System.Windows.Automation;
 
 // Reads only UI Automation's opaque runtime ID. It never reads control text.
+internal enum FocusIdentityState
+{
+    Available,
+    Unavailable,
+    Degraded
+}
+
+internal sealed class FocusIdentityResult
+{
+    public FocusIdentityState State;
+    public string Value;
+
+    public static FocusIdentityResult Available(string value)
+    {
+        return new FocusIdentityResult
+        {
+            State = FocusIdentityState.Available,
+            Value = value
+        };
+    }
+
+    public static FocusIdentityResult Unavailable()
+    {
+        return new FocusIdentityResult { State = FocusIdentityState.Unavailable };
+    }
+
+    public static FocusIdentityResult Degraded()
+    {
+        return new FocusIdentityResult { State = FocusIdentityState.Degraded };
+    }
+}
+
 internal sealed class FocusReader : IDisposable
 {
     private readonly object _lock = new object();
@@ -12,14 +44,16 @@ internal sealed class FocusReader : IDisposable
     private Thread _worker;
     private bool _busy;
 
-    public string QueryIdentity(int timeoutMs)
+    public FocusIdentityResult QueryIdentity(int timeoutMs)
     {
         var job = new Job();
         lock (_lock)
         {
             EnsureWorker();
+            // A busy UIA worker is not replaced. If it hangs, focus validation
+            // stays degraded until the host is restarted.
             if (_busy)
-                return null;
+                return FocusIdentityResult.Degraded();
             _busy = true;
             try
             {
@@ -28,13 +62,12 @@ internal sealed class FocusReader : IDisposable
             catch
             {
                 _busy = false;
-                return null;
+                return FocusIdentityResult.Degraded();
             }
         }
         if (job.Done.Wait(timeoutMs))
-            return job.Identity;
-        job.Cancelled = true;
-        return null;
+            return job.Result;
+        return FocusIdentityResult.Degraded();
     }
 
     public void Dispose()
@@ -68,12 +101,11 @@ internal sealed class FocusReader : IDisposable
         {
             try
             {
-                if (!job.Cancelled)
-                    job.Identity = FocusIdentity();
+                job.Result = FocusIdentity();
             }
             catch
             {
-                job.Identity = null;
+                job.Result = FocusIdentityResult.Degraded();
             }
             finally
             {
@@ -84,24 +116,23 @@ internal sealed class FocusReader : IDisposable
         }
     }
 
-    private static string FocusIdentity()
+    private static FocusIdentityResult FocusIdentity()
     {
         var element = AutomationElement.FocusedElement;
         if (element == null)
-            return null;
+            return FocusIdentityResult.Unavailable();
         var runtimeId = element.GetRuntimeId();
         if (runtimeId == null || runtimeId.Length == 0)
-            return null;
+            return FocusIdentityResult.Unavailable();
         var identity = new StringBuilder("uia");
         foreach (var value in runtimeId)
             identity.Append(':').Append(value);
-        return identity.ToString();
+        return FocusIdentityResult.Available(identity.ToString());
     }
 
     private sealed class Job
     {
         public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
-        public volatile bool Cancelled;
-        public string Identity;
+        public FocusIdentityResult Result = FocusIdentityResult.Degraded();
     }
 }

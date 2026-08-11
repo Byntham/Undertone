@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -12,25 +12,91 @@ describe("Windows host", () => {
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     const ready = await host.start();
-    expect(ready.protocol).toBe(6);
+    expect(ready.protocol).toBe(8);
     expect(ready.keyboardHook).toBe(true);
     expect(ready.mouseHook).toBe(true);
     const foreground = await host.getForeground();
     expect(typeof foreground.window).toBe("string");
     expect(typeof foreground.focus).toBe("string");
-    expect(foreground.focusIdentity === null
-      || typeof foreground.focusIdentity === "string").toBe(true);
+    expect(foreground.focusIdentityState).toMatch(/^(available|unavailable|degraded)$/u);
+    expect(foreground.focusIdentityState === "available"
+      ? typeof foreground.focusIdentity === "string"
+      : foreground.focusIdentity === null).toBe(true);
     expect(typeof foreground.generation).toBe("string");
     const protectedValue = await host.protectSecret("test-only-secret");
     expect(protectedValue).toMatch(/^dpapi:/);
     expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
     expect(await host.unprotectSecret("plaintext")).toBe("");
     expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
-    await host.startInput();
-    await host.startShortcutCapture();
-    await host.stopShortcutCapture();
-    await host.stopInput();
+    await host.setInputMode("listen");
+    await host.setInputMode("shortcut-capture");
+    await host.setInputMode("off");
     await host.stop();
+  });
+
+  it("requires guarded target identity fields and accepts only explicit input modes", async () => {
+    const child = spawn(resolveWindowsHost(), [], {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const lines = readline.createInterface({ input: child.stdout });
+    let requestId = 0;
+    const command = async (
+      type: string,
+      values: Record<string, unknown> = {},
+    ): Promise<Record<string, unknown>> => {
+      const id = String(++requestId);
+      child.stdin.write(`${JSON.stringify({
+        ...values,
+        protocol: 8,
+        type,
+        requestId: id,
+      })}\n`);
+      return await nextResponse(lines, id);
+    };
+    try {
+      await nextLine(lines);
+      for (const mode of ["off", "listen", "shortcut-capture", "off"]) {
+        await expect(command("setInputMode", { mode })).resolves.toMatchObject({
+          type: "inputModeSet",
+          mode,
+        });
+      }
+      await expect(command("setInputMode", { mode: "invalid" })).resolves.toMatchObject({
+        type: "error",
+      });
+
+      const required = {
+        window: "not-current",
+        focus: "0",
+        focusIdentityState: "unavailable",
+        focusIdentity: null,
+        generation: "0",
+      };
+      await expect(command("guardedPaste", required)).resolves.toMatchObject({
+        type: "guardedPasteResult",
+        focusMatched: false,
+        sent: false,
+      });
+      for (const invalid of [
+        { ...required, focus: undefined },
+        { ...required, generation: undefined },
+        { ...required, focusIdentityState: undefined },
+        { ...required, window: 42 },
+        { ...required, focus: 0 },
+        { ...required, generation: 0 },
+        { ...required, focusIdentityState: "available", focusIdentity: null },
+        { ...required, focusIdentityState: "unavailable", focusIdentity: "uia:1" },
+        { ...required, focusIdentityState: "degraded" },
+      ]) {
+        await expect(command("guardedPaste", invalid)).resolves.toMatchObject({ type: "error" });
+      }
+    } finally {
+      if (child.exitCode === null) {
+        child.stdin.end();
+        await waitForChildExit(child);
+      }
+    }
   });
 
   it("exits when its parent pipe closes", async () => {
@@ -66,11 +132,14 @@ describe("Windows host", () => {
     const source = path.join(temporary, "source");
     const archive = path.join(temporary, "runtime.zip");
     const target = path.join(temporary, "target");
+    const stoppedTarget = path.join(temporary, "stopped-target");
+    const disconnectedTarget = path.join(temporary, "disconnected-target");
     const host = new WindowsHost();
     try {
       await mkdir(source);
       await writeFile(path.join(source, "whisper-server.exe"), "server", "utf8");
       await writeFile(path.join(source, "unused-demo.exe"), "unused", "utf8");
+      await writeFile(path.join(source, "large-model.bin"), Buffer.alloc(16 * 1024 * 1024));
       const zipped = spawnSync("powershell", [
         "-NoProfile",
         "-Command",
@@ -78,7 +147,6 @@ describe("Windows host", () => {
       ], { windowsHide: true, encoding: "utf8" });
       if (zipped.status !== 0) throw new Error(`Could not create test ZIP: ${zipped.stderr}`);
 
-      await host.start();
       expect(await host.extractSubset(
         [archive],
         ["whisper-server.exe", "ggml-cpu-*.dll"],
@@ -88,11 +156,40 @@ describe("Windows host", () => {
         .toBe("server");
       await expect(readFile(path.join(target, "unused-demo.exe"), "utf8"))
         .rejects.toThrow();
+
+      const stoppedExtraction = host.extractSubset(
+        [archive],
+        ["large-model.bin"],
+        stoppedTarget,
+      );
+      const stoppedResult = expect(stoppedExtraction).rejects.toThrow();
+      await host.stop();
+      await stoppedResult;
+      await expect(readFile(path.join(stoppedTarget, "large-model.bin")))
+        .rejects.toThrow();
+
+      const child = spawn(resolveWindowsHost(), ["--extract-subset"], {
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      child.stdout.resume();
+      child.stderr.resume();
+      child.stdin.write(`${JSON.stringify({
+        protocol: 8,
+        zipFiles: [archive],
+        patterns: ["large-model.bin"],
+        targetDirectory: disconnectedTarget,
+      })}\n`);
+      child.stdin.end();
+      expect(await waitForChildExitCode(child)).not.toBe(0);
+      await expect(readFile(path.join(disconnectedTarget, "large-model.bin")))
+        .rejects.toThrow();
+      await expect(stat(`${disconnectedTarget}.tmp`)).rejects.toThrow();
     } finally {
       await host.stop();
       await rm(temporary, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it("terminates supervised processes when the host exits", async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-log-"));
@@ -123,16 +220,14 @@ describe("Windows host", () => {
     }
   });
 
-  it("reports exit codes and terminates an individual process tree", async () => {
+  it("tracks liveness and terminates an individual process tree", async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-tree-"));
     const scriptPath = path.join(temporary, "tree.ps1");
     const childIdPath = path.join(temporary, "child.txt");
     const host = new WindowsHost();
-    const previousRemoveValue = process.env.UNDERTONE_REMOVE_ME;
     let rootProcessId: number | undefined;
     let childProcessId: number | undefined;
     try {
-      process.env.UNDERTONE_REMOVE_ME = "present";
       await writeFile(scriptPath, [
         "Start-Sleep -Milliseconds 300",
         "$child = Start-Process ping.exe -ArgumentList '127.0.0.1 -n 30' -PassThru -WindowStyle Hidden",
@@ -154,20 +249,10 @@ describe("Windows host", () => {
       expect(isProcessAlive(rootProcessId)).toBe(false);
       expect(isProcessAlive(childProcessId)).toBe(false);
 
-      const exitProcessId = await host.spawnSupervised(
-        "cmd.exe",
-        "/d /s /c \"if defined UNDERTONE_REMOVE_ME (exit /b 9) else (exit /b %UNDERTONE_TEST_EXIT%)\"",
-        temporary,
-        "",
-        { UNDERTONE_REMOVE_ME: null, UNDERTONE_TEST_EXIT: "7" },
-      );
-      expect(await waitForProcessStatus(host, exitProcessId)).toEqual({
-        running: false,
-        exitCode: 7,
-      });
+      const exitProcessId = await host.spawnSupervised("cmd.exe", "/d /s /c \"exit /b 0\"");
+      await waitUntilHostReportsStopped(host, exitProcessId);
+      expect(await host.isSupervisedRunning(exitProcessId)).toBe(false);
     } finally {
-      if (previousRemoveValue === undefined) delete process.env.UNDERTONE_REMOVE_ME;
-      else process.env.UNDERTONE_REMOVE_ME = previousRemoveValue;
       await host.stop();
       if (rootProcessId !== undefined && isProcessAlive(rootProcessId)) {
         process.kill(rootProcessId);
@@ -191,7 +276,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 6,
+        protocol: 8,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -252,15 +337,17 @@ describe("Windows host", () => {
         const textTarget = await waitForForeground(
           host,
           (foreground) => foreground.window === targetWindow
-            && foreground.focusIdentity !== null,
+            && foreground.focusIdentityState === "available",
         );
         expect(textTarget.window).toBe(targetWindow);
-        expect(textTarget.focusIdentity).not.toBeNull();
+        if (textTarget.focusIdentityState !== "available") {
+          throw new Error("Text target focus identity was unavailable");
+        }
 
         await writeFile(target.focusOther, "", "utf8");
         const otherTarget = await waitForForeground(host, (foreground) => (
           foreground.window === targetWindow
-          && foreground.focusIdentity !== null
+          && foreground.focusIdentityState === "available"
           && foreground.focusIdentity !== textTarget.focusIdentity
         ));
         expect(otherTarget.window).toBe(textTarget.window);
@@ -270,8 +357,12 @@ describe("Windows host", () => {
         await writeFile(target.focusText, "", "utf8");
         const freshTarget = await waitForForeground(host, (foreground) => (
           foreground.window === targetWindow
+          && foreground.focusIdentityState === "available"
           && foreground.focusIdentity === textTarget.focusIdentity
         ));
+        if (freshTarget.focusIdentityState === "degraded") {
+          throw new Error("Fresh target focus identity degraded");
+        }
 
         setClipboardText("hello ");
         expect(await host.sendGuardedPaste(freshTarget)).toBe(true);
@@ -510,6 +601,16 @@ async function nextLine(lines: readline.Interface): Promise<string> {
   });
 }
 
+async function nextResponse(
+  lines: readline.Interface,
+  requestId: string,
+): Promise<Record<string, unknown>> {
+  for (;;) {
+    const value = JSON.parse(await nextLine(lines)) as Record<string, unknown>;
+    if (value.requestId === requestId) return value;
+  }
+}
+
 async function waitForChildExit(
   child: ReturnType<typeof spawn>,
   timeoutMs = 2_000,
@@ -540,15 +641,31 @@ async function waitUntilStopped(processId: number): Promise<void> {
   }
 }
 
-async function waitForProcessStatus(
+async function waitUntilHostReportsStopped(
   host: WindowsHost,
   processId: number,
-): Promise<{ running: boolean; exitCode: number | null }> {
+): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    const status = await host.supervisedProcessStatus(processId);
-    if (!status.running && status.exitCode !== null) return status;
+    if (!await host.isSupervisedRunning(processId)) return;
     await delay(25);
   }
-  throw new Error(`Process status did not settle: ${processId}`);
+  throw new Error(`Process did not stop: ${processId}`);
+}
+
+async function waitForChildExitCode(
+  child: ReturnType<typeof spawn>,
+  timeoutMs = 5_000,
+): Promise<number | null> {
+  if (child.exitCode !== null) return child.exitCode;
+  return await new Promise<number | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("Child exit timed out"));
+    }, timeoutMs);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
 }

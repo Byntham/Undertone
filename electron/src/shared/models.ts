@@ -3,11 +3,15 @@ import type {
   TranscriptionProviderId,
 } from "./settings";
 
+export const LOCAL_STT_MODEL = "ggml-large-v3-turbo.bin";
+export const LOCAL_VAD_MODEL = "ggml-silero-v6.2.0.bin";
+export const LOCAL_CLEANUP_MODEL = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+
 export const DEFAULT_STT_MODELS = {
   xai: "",
   openai: "gpt-transcribe",
   openrouter: "openai/gpt-transcribe",
-  local: "ggml-large-v3-turbo.bin",
+  local: LOCAL_STT_MODEL,
 } as const satisfies Readonly<Record<TranscriptionProviderId, string>>;
 
 export const LIVE_STT_MODELS = {
@@ -20,5 +24,5 @@ export const DEFAULT_CLEANUP_MODELS = {
   openai: "gpt-5.6-luna",
   "openai-subscription": "gpt-5.6-luna",
   openrouter: "openai/gpt-5.6-luna",
-  local: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  local: LOCAL_CLEANUP_MODEL,
 } as const satisfies Readonly<Record<SettingsProviderId, string>>;
