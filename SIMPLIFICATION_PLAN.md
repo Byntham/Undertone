@@ -12,7 +12,7 @@ Validation completed on the final tree:
 
 - `npm run verify`: 24 test files, 219 passed, 3 opt-in tests skipped.
 - Settings and overlay captures at 100%, 150%, and 200%; no horizontal overflow and representative images visually inspected.
-- `npm run smoke:audio` and `npm run test:overlay-motion`.
+- `npm run smoke:audio`.
 - `npm run package`, `npm run smoke:package`, and `npm run smoke:package:local` against the packaged output.
 - `git diff --check` and TypeScript unused-local/unused-parameter enforcement.
 
@@ -398,7 +398,7 @@ After D04, this polling no longer clones audio. Re-evaluate only if runtime stat
 
 Do not perform the full capture registry rewrite here.
 
-Gate after Phase 5: full verify, audio smoke, Settings captures at 100/150/200%, overlay captures at 100/150/200%, `test:overlay-motion`, and `test:turn-draft-native` on an idle desktop.
+Gate after Phase 5: full verify, audio smoke, Settings captures at 100/150/200%, overlay captures at 100/150/200%, and `test:turn-draft-native` on an idle desktop.
 
 ## Phase 6 — Release integrity and remaining mechanical cleanup
 

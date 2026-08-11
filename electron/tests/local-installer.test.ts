@@ -67,7 +67,9 @@ describe("local installer", () => {
   it("removes unverified downloads without replacing the destination", async () => {
     const root = await temporaryDirectory();
     const destination = path.join(root, "artifact.bin");
+    const existing = Buffer.from("existing verified artifact", "utf8");
     const bytes = Buffer.from("wrong bytes", "utf8");
+    await writeFile(destination, existing);
 
     await expect(downloadPinnedArtifact({
       url: "https://example.invalid/artifact.bin",
@@ -75,7 +77,7 @@ describe("local installer", () => {
       size: bytes.byteLength,
     }, destination, async () => new Response(bytes))).rejects.toThrow(/verification/u);
 
-    expect(existsSync(destination)).toBe(false);
+    expect(await readFile(destination)).toEqual(existing);
     expect(existsSync(`${destination}.part`)).toBe(false);
   });
 
@@ -402,27 +404,28 @@ describe("local installer", () => {
   });
 
   const networkTest = process.env.UNDERTONE_LOCAL_INSTALLER_E2E === "1" ? it : it.skip;
-  networkTest("downloads pinned public artifacts and extracts the real CPU runtime", async () => {
+  networkTest("installs and receipts the pinned CPU runtime and VAD artifacts", async () => {
     const root = await temporaryDirectory();
-    const runtimeZip = path.join(root, "whisper-cpu.zip");
-    const vadModel = path.join(root, LOCAL_VAD_MODEL);
-    const host = new WindowsHost({ requestTimeoutMs: 5_000 });
-    await host.start();
-    try {
-      await downloadPinnedArtifact(STT_ARTIFACTS.cpu_runtime, runtimeZip);
-      await downloadPinnedArtifact(STT_ARTIFACTS.vad_model, vadModel);
-      const extracted = path.join(root, "runtime");
-      const count = await host.extractSubset(
-        [runtimeZip],
-        ["whisper-server.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu-*.dll"],
-        extracted,
-      );
-      expect(count).toBeGreaterThanOrEqual(5);
-      expect(existsSync(path.join(extracted, "whisper-server.exe"))).toBe(true);
-      expect((await readFile(vadModel)).byteLength).toBe(STT_ARTIFACTS.vad_model.size);
-    } finally {
-      await host.stop();
+    const systemRoot = await temporaryDirectory();
+    const components = createLocalArtifactPlan(root, false)
+      .filter(({ id }) => id === "stt-cpu" || id === "stt-vad");
+    const installer = new LocalInstaller(
+      new WindowsHost({ requestTimeoutMs: 5_000 }),
+      root,
+      fetch,
+      systemRoot,
+      components,
+    );
+
+    await installer.install("stt", () => undefined);
+
+    expect(installer.isInstalled("stt")).toBe(true);
+    for (const component of components) {
+      expect(existsSync(receiptPath(root, component))).toBe(true);
     }
+    expect(existsSync(path.join(root, "runtime", "cpu", "whisper-server.exe"))).toBe(true);
+    expect((await readFile(path.join(root, "models", LOCAL_VAD_MODEL))).byteLength)
+      .toBe(STT_ARTIFACTS.vad_model.size);
   }, 120_000);
 });
 

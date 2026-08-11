@@ -316,7 +316,11 @@ export class WindowsHost {
       child.kill();
     }
     await waitForExit(child, this.requestTimeoutMs);
-    if (child.exitCode === null) child.kill();
+    if (isRunning(child)) {
+      child.kill();
+      await waitForExit(child, this.requestTimeoutMs);
+    }
+    if (isRunning(child)) throw new Error("Windows host did not exit");
     this.child = null;
   }
 
@@ -467,7 +471,7 @@ async function waitForExit(
   child: ChildProcessWithoutNullStreams,
   timeoutMs: number,
 ): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (!isRunning(child)) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
     child.once("close", () => {

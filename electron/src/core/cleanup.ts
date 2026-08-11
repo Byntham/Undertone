@@ -39,7 +39,6 @@ export interface LocalCleanupRuntime {
 
 export interface SubscriptionCleanupRuntime {
   complete(options: {
-    model: string;
     reasoningEffort: CleanupReasoningEffort;
     serviceTier: CleanupServiceTier;
     userPrompt: string;
@@ -83,7 +82,6 @@ export class CleanupClient {
       }
       try {
         const content = await this.subscription.complete({
-          model: effectiveModel,
           reasoningEffort: options.reasoningEffort ?? "none",
           serviceTier: options.serviceTier ?? "priority",
           userPrompt: user,

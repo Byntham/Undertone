@@ -24,7 +24,12 @@ function succeed(byteLength, durationMs) {
 
 ipcMain.on("audio:event", (_event, payload) => {
   if (payload.type === "ready") {
-    audioWindow.webContents.send("audio:command", { type: "start" });
+    audioWindow.webContents.send("audio:command", {
+      type: "start",
+      captureId: 1,
+      deviceName: "",
+      stream: false,
+    });
   } else if (payload.type === "level") {
     if (typeof payload.rms !== "number" || !Number.isFinite(payload.rms)
         || payload.rms < 0 || payload.rms > 1) {

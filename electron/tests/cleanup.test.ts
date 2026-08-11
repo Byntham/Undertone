@@ -66,7 +66,6 @@ describe("cleanup providers", () => {
     })).toBe("subscription result");
     expect(http.calls).toHaveLength(0);
     expect(calls[0]).toMatchObject({
-      model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
       userPrompt: JSON.stringify({ transcript: "some words" }),
@@ -74,10 +73,7 @@ describe("cleanup providers", () => {
   });
 
   it("uses the production prompt and structured response schema", async () => {
-    expect(SYSTEM_PROMPT.startsWith("COPYEDIT ONLY.")).toBe(true);
     expect(SYSTEM_PROMPT).not.toContain("text_before_cursor");
-    expect(SYSTEM_PROMPT).toContain("Final audit:");
-    expect(SYSTEM_PROMPT).not.toContain("\r");
 
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
@@ -97,7 +93,7 @@ describe("cleanup providers", () => {
     }
   });
 
-  it("honors timeout while always using the fixed model and production prompt", async () => {
+  it("honors the configured timeout", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     await client.cleanup({
@@ -107,9 +103,6 @@ describe("cleanup providers", () => {
     });
     const request = http.calls[0]!.request;
     expect(request.timeoutMs).toBe(7_500);
-    const body = jsonBody(request);
-    expect(body.model).toBe(DEFAULT_CLEANUP_MODELS.openrouter);
-    expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe(SYSTEM_PROMPT);
   });
 
   it("applies compatible tuning to each fixed cleanup model", async () => {

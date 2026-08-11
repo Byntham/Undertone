@@ -10,6 +10,7 @@ import {
   quoteWindowsArgument,
   type LocalProcessHost,
 } from "../src/main/localRuntime";
+import { LocalInstaller } from "../src/main/localInstaller";
 import {
   LOCAL_CLEANUP_MODEL,
   LOCAL_STT_MODEL,
@@ -422,20 +423,23 @@ describe("local runtime", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_LOCAL_RUNTIME_E2E !== "1")(
-    "reuses the installed whisper.cpp and llama.cpp servers",
+    "runs inference through installed whisper.cpp and llama.cpp servers",
     async () => {
       const localAppData = process.env.LOCALAPPDATA;
       if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
       const root = path.join(localAppData, "Undertone");
       const host = new WindowsHost({ requestTimeoutMs: 5_000 });
-      const stt = createLocalSttRuntime(host, root);
-      const cleanup = createLocalCleanupRuntime(host, root);
+      const installer = new LocalInstaller(host, root);
+      const stt = createLocalSttRuntime(host, root, {
+        isInstalled: () => installer.isInstalled("stt"),
+      });
+      const cleanup = createLocalCleanupRuntime(host, root, {
+        isInstalled: () => installer.isInstalled("cleanup"),
+      });
       try {
         await host.start();
         expect(stt.isInstalled()).toBe(true);
         await stt.load();
-        expect(await stt.withServer("wait", (url) => url))
-          .toMatch(/^http:\/\/127\.0\.0\.1:/u);
         expect((await stt.status()).build).toMatch(/^(cpu|cuda)$/u);
         const http = new FetchHttpClient();
         const transcriber = new Transcriber(http, stt);
@@ -451,8 +455,6 @@ describe("local runtime", () => {
 
         expect(cleanup.isInstalled()).toBe(true);
         await cleanup.load();
-        expect(await cleanup.withServer("wait", (url) => url))
-          .toMatch(/^http:\/\/127\.0\.0\.1:/u);
         expect((await cleanup.status()).build).toMatch(/^(cpu|cuda)$/u);
         const cleaner = new CleanupClient(http, cleanup);
         expect(await cleaner.cleanup({

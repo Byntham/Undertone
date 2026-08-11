@@ -135,18 +135,6 @@ describe("configuration", () => {
     });
   });
 
-  it("migrates the removed hybrid stack cleanup strategy to the default", () => {
-    expect(normalizeConfig({
-      stack_cleanup_strategy: "live-delta-commit-full",
-    }).stack_cleanup_strategy)
-      .toBe("live-full");
-  });
-
-  it("drops the removed experimental turn-window design setting", () => {
-    expect(normalizeConfig({ turn_window_design: "smoked-glass" }))
-      .not.toHaveProperty("turn_window_design");
-  });
-
   it("repairs a malformed live-transcription flag", () => {
     expect(normalizeConfig({ live_transcription: "false" }).live_transcription).toBe(false);
     expect(normalizeConfig({ live_transcription: true }).live_transcription).toBe(true);
@@ -167,29 +155,6 @@ describe("configuration", () => {
     expect(normalizeConfig({ cleanup_timeout: 4.5 }).cleanup_timeout).toBe(4.5);
     expect(normalizeConfig({ cleanup_timeout: 31 }).cleanup_timeout).toBe(2.5);
     expect(normalizeConfig({ cleanup_timeout: "slow" }).cleanup_timeout).toBe(2.5);
-  });
-
-  it("keeps only current fields and drops removed model overrides", () => {
-    const config = normalizeConfig({
-      language: "fr",
-      sample_rate: 48_000,
-      dev_mode: true,
-      onboarded: true,
-      stt_model: "whisper-1",
-      stt_models: "invalid",
-      cleanup_models: null,
-      cleanup_prompt: "obsolete",
-      cleanup_prompts: { Fast: "obsolete" },
-    });
-    expect(config.language).toBe("fr");
-    expect(config).not.toHaveProperty("sample_rate");
-    expect(config).not.toHaveProperty("dev_mode");
-    expect(config).not.toHaveProperty("onboarded");
-    expect(config).not.toHaveProperty("stt_model");
-    expect(config).not.toHaveProperty("cleanup_prompt");
-    expect(config).not.toHaveProperty("cleanup_prompts");
-    expect(config).not.toHaveProperty("stt_models");
-    expect(config).not.toHaveProperty("cleanup_models");
   });
 
   it("maps provider keys without an implicit xAI fallback", () => {

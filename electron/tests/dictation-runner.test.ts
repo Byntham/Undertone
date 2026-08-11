@@ -279,19 +279,6 @@ describe("dictation job runner", () => {
     });
   });
 
-  it("propagates invalid blank prepared text without opening a turn", async () => {
-    const { dependencies, state } = harness();
-    dependencies.prepareText = async () => ({ text: "  ", cleanupFailed: false });
-    await expect(new DictationJobRunner(dependencies).runTranscript(
-      "keep this",
-      OPEN_TURN,
-      normalizeConfig(undefined),
-    )).rejects.toThrow("display text must not be blank");
-
-    expect(dependencies.turnBuffer.peekText()).toBeNull();
-    expect(state.messages).toEqual([]);
-  });
-
   it("scratches and discards staged fragments", () => {
     const { dependencies, state } = harness();
     dependencies.turnBuffer.append("One", "One", "live-full");

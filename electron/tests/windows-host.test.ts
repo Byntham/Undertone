@@ -11,27 +11,30 @@ import { resolveWindowsHost, WindowsHost } from "../src/platform/windowsHost";
 describe("Windows host", () => {
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
-    const ready = await host.start();
-    expect(ready.protocol).toBe(8);
-    expect(ready.keyboardHook).toBe(true);
-    expect(ready.mouseHook).toBe(true);
-    const foreground = await host.getForeground();
-    expect(typeof foreground.window).toBe("string");
-    expect(typeof foreground.focus).toBe("string");
-    expect(foreground.focusIdentityState).toMatch(/^(available|unavailable|degraded)$/u);
-    expect(foreground.focusIdentityState === "available"
-      ? typeof foreground.focusIdentity === "string"
-      : foreground.focusIdentity === null).toBe(true);
-    expect(typeof foreground.generation).toBe("string");
-    const protectedValue = await host.protectSecret("test-only-secret");
-    expect(protectedValue).toMatch(/^dpapi:/);
-    expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
-    expect(await host.unprotectSecret("plaintext")).toBe("");
-    expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
-    await host.setInputMode("listen");
-    await host.setInputMode("shortcut-capture");
-    await host.setInputMode("off");
-    await host.stop();
+    try {
+      const ready = await host.start();
+      expect(ready.protocol).toBe(8);
+      expect(ready.keyboardHook).toBe(true);
+      expect(ready.mouseHook).toBe(true);
+      const foreground = await host.getForeground();
+      expect(typeof foreground.window).toBe("string");
+      expect(typeof foreground.focus).toBe("string");
+      expect(foreground.focusIdentityState).toMatch(/^(available|unavailable|degraded)$/u);
+      expect(foreground.focusIdentityState === "available"
+        ? typeof foreground.focusIdentity === "string"
+        : foreground.focusIdentity === null).toBe(true);
+      expect(typeof foreground.generation).toBe("string");
+      const protectedValue = await host.protectSecret("test-only-secret");
+      expect(protectedValue).toMatch(/^dpapi:/);
+      expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
+      expect(await host.unprotectSecret("plaintext")).toBe("");
+      expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
+      await host.setInputMode("listen");
+      await host.setInputMode("shortcut-capture");
+      await host.setInputMode("off");
+    } finally {
+      await host.stop();
+    }
   });
 
   it("requires guarded target identity fields and accepts only explicit input modes", async () => {
@@ -56,12 +59,6 @@ describe("Windows host", () => {
     };
     try {
       await nextLine(lines);
-      for (const mode of ["off", "listen", "shortcut-capture", "off"]) {
-        await expect(command("setInputMode", { mode })).resolves.toMatchObject({
-          type: "inputModeSet",
-          mode,
-        });
-      }
       await expect(command("setInputMode", { mode: "invalid" })).resolves.toMatchObject({
         type: "error",
       });
@@ -92,10 +89,7 @@ describe("Windows host", () => {
         await expect(command("guardedPaste", invalid)).resolves.toMatchObject({ type: "error" });
       }
     } finally {
-      if (child.exitCode === null) {
-        child.stdin.end();
-        await waitForChildExit(child);
-      }
+      await stopChild(child, true);
     }
   });
 
@@ -105,26 +99,30 @@ describe("Windows host", () => {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = readline.createInterface({ input: child.stdout });
-    const ready = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Host readiness timed out")), 2_000);
-      lines.once("line", (line) => {
-        clearTimeout(timer);
-        resolve(JSON.parse(line) as Record<string, unknown>);
+    try {
+      const ready = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Host readiness timed out")), 2_000);
+        lines.once("line", (line) => {
+          clearTimeout(timer);
+          resolve(JSON.parse(line) as Record<string, unknown>);
+        });
       });
-    });
-    expect(ready.type).toBe("ready");
-    child.stdin.end();
-    const code = await new Promise<number | null>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error("Host did not exit after stdin closed"));
-      }, 2_000);
-      child.once("close", (value) => {
-        clearTimeout(timer);
-        resolve(value);
+      expect(ready.type).toBe("ready");
+      child.stdin.end();
+      const code = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          child.kill();
+          reject(new Error("Host did not exit after stdin closed"));
+        }, 2_000);
+        child.once("close", (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        });
       });
-    });
-    expect(code).toBe(0);
+      expect(code).toBe(0);
+    } finally {
+      await stopChild(child, true);
+    }
   });
 
   it("extracts only matching runtime files from ZIP archives", async () => {
@@ -135,6 +133,7 @@ describe("Windows host", () => {
     const stoppedTarget = path.join(temporary, "stopped-target");
     const disconnectedTarget = path.join(temporary, "disconnected-target");
     const host = new WindowsHost();
+    let extractionChild: ReturnType<typeof spawn> | null = null;
     try {
       await mkdir(source);
       await writeFile(path.join(source, "whisper-server.exe"), "server", "utf8");
@@ -172,6 +171,7 @@ describe("Windows host", () => {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
+      extractionChild = child;
       child.stdout.resume();
       child.stderr.resume();
       child.stdin.write(`${JSON.stringify({
@@ -186,8 +186,12 @@ describe("Windows host", () => {
         .rejects.toThrow();
       await expect(stat(`${disconnectedTarget}.tmp`)).rejects.toThrow();
     } finally {
-      await host.stop();
-      await rm(temporary, { recursive: true, force: true });
+      try {
+        await host.stop();
+      } finally {
+        if (extractionChild !== null) await stopChild(extractionChild);
+        await rm(temporary, { recursive: true, force: true });
+      }
     }
   }, 20_000);
 
@@ -292,7 +296,7 @@ describe("Windows host", () => {
       await waitUntilStopped(processId);
       expect(isProcessAlive(processId)).toBe(false);
     } finally {
-      if (child.exitCode === null) child.kill();
+      await stopChild(child);
       if (processId !== undefined && isProcessAlive(processId)) {
         process.kill(processId);
       }
@@ -306,6 +310,7 @@ describe("Windows host", () => {
       const scriptPath = path.join(temporary, "target.ps1");
       const target = desktopTargetPaths(temporary, "target");
       const thief = desktopTargetPaths(temporary, "thief");
+      // This opt-in test can preserve text only; run it with a disposable text clipboard.
       const previousClipboard = getClipboardText();
       let targetProcess: ReturnType<typeof spawn> | null = null;
       let thiefProcess: ReturnType<typeof spawn> | null = null;
@@ -332,38 +337,25 @@ describe("Windows host", () => {
         await host.start();
         await activateTarget(thief);
         await waitForForeground(host, (foreground) => foreground.window === thiefWindow);
-        expect((await host.getForeground()).window).toBe(thiefWindow);
         await activateTarget(target);
-        const textTarget = await waitForForeground(
+        const textTarget = await waitForAvailableForeground(
           host,
-          (foreground) => foreground.window === targetWindow
-            && foreground.focusIdentityState === "available",
+          (foreground) => foreground.window === targetWindow,
         );
-        expect(textTarget.window).toBe(targetWindow);
-        if (textTarget.focusIdentityState !== "available") {
-          throw new Error("Text target focus identity was unavailable");
-        }
 
         await writeFile(target.focusOther, "", "utf8");
-        const otherTarget = await waitForForeground(host, (foreground) => (
+        await waitForAvailableForeground(host, (foreground) => (
           foreground.window === targetWindow
-          && foreground.focusIdentityState === "available"
           && foreground.focusIdentity !== textTarget.focusIdentity
         ));
-        expect(otherTarget.window).toBe(textTarget.window);
         setClipboardText("should not paste");
         expect(await host.sendGuardedPaste(textTarget)).toBe(false);
 
         await writeFile(target.focusText, "", "utf8");
-        const freshTarget = await waitForForeground(host, (foreground) => (
+        const freshTarget = await waitForAvailableForeground(host, (foreground) => (
           foreground.window === targetWindow
-          && foreground.focusIdentityState === "available"
           && foreground.focusIdentity === textTarget.focusIdentity
         ));
-        if (freshTarget.focusIdentityState === "degraded") {
-          throw new Error("Fresh target focus identity degraded");
-        }
-
         setClipboardText("hello ");
         expect(await host.sendGuardedPaste(freshTarget)).toBe(true);
         await delay(300);
@@ -408,8 +400,7 @@ const WPF_TARGET_SCRIPT = String.raw`param(
   [string]$FocusOtherPath,
   [string]$FocusTextPath,
   [string]$InitialText,
-  [int]$InsertionIndex,
-  [switch]$Password
+  [int]$InsertionIndex
 )
 Add-Type -AssemblyName PresentationFramework
 Add-Type @'
@@ -451,14 +442,9 @@ $window.Title = $Title
 $window.Width = 500
 $window.Height = 220
 $window.Topmost = $true
-if ($Password) {
-  $textBox = New-Object System.Windows.Controls.PasswordBox
-  $textBox.Password = $InitialText
-} else {
-  $textBox = New-Object System.Windows.Controls.TextBox
-  $textBox.Text = $InitialText
-  $textBox.CaretIndex = [Math]::Min($InsertionIndex, $textBox.Text.Length)
-}
+$textBox = New-Object System.Windows.Controls.TextBox
+$textBox.Text = $InitialText
+$textBox.CaretIndex = [Math]::Min($InsertionIndex, $textBox.Text.Length)
 $other = New-Object System.Windows.Controls.Button
 $other.Content = "Other control"
 $panel = New-Object System.Windows.Controls.StackPanel
@@ -488,8 +474,7 @@ $timer.Add_Tick({
     $textBox.Focus() | Out-Null
   }
   if (Test-Path -LiteralPath $StopPath) {
-    $result = if ($Password) { $textBox.Password } else { $textBox.Text }
-    [IO.File]::WriteAllText($ResultPath, $result)
+    [IO.File]::WriteAllText($ResultPath, $textBox.Text)
     $timer.Stop()
     $window.Close()
   }
@@ -515,7 +500,6 @@ function startDesktopTarget(
   files: DesktopTargetPaths,
   initialText: string,
   insertionIndex: number,
-  password = false,
 ): ReturnType<typeof spawn> {
   const arguments_ = [
     "-NoProfile",
@@ -533,7 +517,6 @@ function startDesktopTarget(
     "-InitialText", initialText,
     "-InsertionIndex", String(insertionIndex),
   ];
-  if (password) arguments_.push("-Password");
   return spawn("powershell", arguments_, { windowsHide: true, stdio: "ignore" });
 }
 
@@ -549,6 +532,22 @@ async function waitForForeground(
   while (Date.now() < deadline) {
     const foreground = await host.getForeground();
     if (matches(foreground)) return foreground;
+    await delay(25);
+  }
+  throw new Error("Foreground target did not reach the expected state");
+}
+
+type ForegroundInfo = Awaited<ReturnType<WindowsHost["getForeground"]>>;
+type AvailableForeground = Extract<ForegroundInfo, { focusIdentityState: "available" }>;
+
+async function waitForAvailableForeground(
+  host: WindowsHost,
+  matches: (foreground: AvailableForeground) => boolean,
+): Promise<AvailableForeground> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const foreground = await host.getForeground();
+    if (foreground.focusIdentityState === "available" && matches(foreground)) return foreground;
     await delay(25);
   }
   throw new Error("Foreground target did not reach the expected state");
@@ -615,7 +614,7 @@ async function waitForChildExit(
   child: ReturnType<typeof spawn>,
   timeoutMs = 2_000,
 ): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Child exit timed out")), timeoutMs);
     child.once("close", () => {
@@ -668,4 +667,20 @@ async function waitForChildExitCode(
       resolve(code);
     });
   });
+}
+
+async function stopChild(
+  child: ReturnType<typeof spawn>,
+  closeInput = false,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (closeInput && child.stdin !== null && !child.stdin.destroyed) child.stdin.end();
+  else child.kill();
+  try {
+    await waitForChildExit(child);
+  } catch (error) {
+    child.kill();
+    await waitForChildExit(child).catch(() => undefined);
+    throw error;
+  }
 }

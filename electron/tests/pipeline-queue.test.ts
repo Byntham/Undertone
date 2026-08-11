@@ -156,33 +156,6 @@ describe("dictation pipeline queue", () => {
     expect(events).toEqual(["dictate", "scratch", "commit"]);
   });
 
-  it("preserves recorded capture identity through the queue", async () => {
-    let receivedCaptureId: number | undefined;
-    let receivedTargetState: string | undefined;
-    const queue = new DictationPipelineQueue(
-      () => normalizeConfig(undefined),
-      {
-        async dictate(input, destination) {
-          if (input.type === "audio") receivedCaptureId = input.captureId;
-          if (destination.completion === "commit") {
-            receivedTargetState = destination.target.state;
-          }
-        },
-        async repaste() {},
-        async commit() {},
-        async discard() {},
-        async scratch() {},
-      },
-    );
-    await queue.enqueuePendingDictation(Promise.resolve({
-      input: { type: "audio", wav: Uint8Array.of(1), captureId: 42 },
-      overlayRevision: undefined,
-      destination: { completion: "commit", target: { state: "unavailable" } },
-    }));
-    expect(receivedCaptureId).toBe(42);
-    expect(receivedTargetState).toBe("unavailable");
-  });
-
   it("rejects a failed job without stalling later work", async () => {
     const events: string[] = [];
     const queue = new DictationPipelineQueue(

@@ -18,8 +18,33 @@ app.commandLine.appendSwitch("force-device-scale-factor", String(scale));
 const root = path.resolve(__dirname, "../dist/renderer");
 const sizeSuffix = width === 960 && height === 720 ? "" : `-${width}x${height}`;
 const output = path.resolve(__dirname, `../test-output/settings-${scale}${sizeSuffix}`);
+const profile = process.env.UNDERTONE_CAPTURE_PROFILE;
+if (profile === undefined) throw new Error("Run captures through scripts/run-electron.mjs");
+app.setPath("userData", profile);
 
 const pause = async () => await new Promise((resolve) => setTimeout(resolve, 100));
+
+async function selectSection(win, label) {
+  const clicked = await win.webContents.executeJavaScript(`(() => {
+    const label = ${JSON.stringify(label)};
+    const button = [...document.querySelectorAll('nav button')]
+      .find((candidate) => candidate.textContent?.includes(label));
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error(`Missing settings navigation button: ${label}`);
+
+  const deadline = Date.now() + 1_500;
+  while (Date.now() < deadline) {
+    const title = await win.webContents.executeJavaScript(
+      "document.querySelector('h1')?.textContent?.trim() ?? ''",
+    );
+    if (title === label) return;
+    await pause();
+  }
+  throw new Error(`Settings section did not render its expected title: ${label}`);
+}
 
 app.whenReady().then(async () => {
   const win = new BrowserWindow({
@@ -46,8 +71,8 @@ app.whenReady().then(async () => {
     { label: "History", filename: "history" },
   ];
   const results = [];
-  for (const [index, section] of sections.entries()) {
-    await win.webContents.executeJavaScript(`document.querySelectorAll('nav button')[${index}]?.click()`);
+  for (const section of sections) {
+    await selectSection(win, section.label);
     await pause();
     const metrics = await win.webContents.executeJavaScript(`({
       devicePixelRatio,
@@ -65,6 +90,9 @@ app.whenReady().then(async () => {
         > (document.querySelector('main')?.clientWidth ?? 0),
       title: document.querySelector('h1')?.textContent ?? ''
     })`);
+    if (metrics.title.trim() !== section.label) {
+      throw new Error(`Captured ${metrics.title || "no title"} instead of ${section.label}`);
+    }
     if (metrics.hasHorizontalOverflow || metrics.hasContentHorizontalOverflow) {
       throw new Error(`${section.label} has horizontal overflow at ${scale * 100}% scaling`);
     }
@@ -72,8 +100,7 @@ app.whenReady().then(async () => {
     await writeFile(path.join(output, `${section.filename}.png`), image.toPNG());
     results.push({ section: section.label, ...metrics });
   }
-  await win.webContents.executeJavaScript("document.querySelectorAll('nav button')[0]?.click()");
-  await pause();
+  await selectSection(win, "General");
   await win.webContents.executeJavaScript(`{
     const scrolling = document.scrollingElement;
     if (scrolling) scrolling.scrollTop = scrolling.scrollHeight;
@@ -83,8 +110,7 @@ app.whenReady().then(async () => {
   await pause();
   const generalBottom = await win.webContents.capturePage();
   await writeFile(path.join(output, "general-bottom.png"), generalBottom.toPNG());
-  await win.webContents.executeJavaScript("document.querySelectorAll('nav button')[1]?.click()");
-  await pause();
+  await selectSection(win, "Speech & AI");
   await win.webContents.executeJavaScript(`{
     const otherCredentials = document.querySelector('details.otherCredentials');
     if (otherCredentials) {

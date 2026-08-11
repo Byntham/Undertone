@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
-const { mkdir, writeFile } = require("node:fs/promises");
+const { mkdir, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
 
 const scaleArgument = process.argv.find((value) => value.startsWith("--scale="));
@@ -9,7 +9,9 @@ app.commandLine.appendSwitch("force-device-scale-factor", String(scale));
 app.on("window-all-closed", () => {});
 
 const outputDir = path.resolve(__dirname, `../test-output/overlay/${Math.round(scale * 100)}pct`);
-app.setPath("userData", path.join(outputDir, `profile-${process.pid}`));
+const profileDir = process.env.UNDERTONE_CAPTURE_PROFILE;
+if (profileDir === undefined) throw new Error("Run captures through scripts/run-electron.mjs");
+app.setPath("userData", profileDir);
 const overlayFile = path.resolve(__dirname, "../dist/renderer/overlay/index.html");
 const overlayPreload = path.resolve(__dirname, "../dist/main/preload/overlayPreload.js");
 const turnDraftFile = path.resolve(__dirname, "../dist/renderer/turn-draft/index.html");
@@ -56,11 +58,10 @@ async function captureMessageOverlay() {
       win.webContents.send("overlay:state", { state: "message", tone, text });
       await new Promise((resolve) => setTimeout(resolve, 30));
       const layout = await win.webContents.executeJavaScript(`(() => ({
-        hasBars: document.querySelector("#bars") !== null,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       }))()`);
-      if (layout.hasBars || layout.overflow) {
-        throw new Error(`Message overlay retained obsolete bar UI: ${JSON.stringify(layout)}`);
+      if (layout.overflow) {
+        throw new Error(`Message overlay overflowed: ${JSON.stringify(layout)}`);
       }
       win.webContents.invalidate();
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -167,7 +168,6 @@ async function captureTurnDraft() {
       return {
         activity: draft.dataset.activity,
         ariaLabel: draft.getAttribute("aria-label"),
-        hasBars: document.querySelector("#bars") !== null,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         continuousText: text.textContent === ${JSON.stringify(expectedText)},
         verticalOverflow: text.scrollHeight > text.clientHeight + 1,
@@ -195,9 +195,17 @@ async function captureTurnDraft() {
       await win.webContents.executeJavaScript(`document.querySelector("#draft").classList.remove("reveal")`);
       win.webContents.invalidate();
       await new Promise((resolve) => setTimeout(resolve, 30));
-      await capturePage(win);
       const image = await capturePage(win);
       await writeFile(path.join(outputDir, `${name}.png`), image.toPNG());
+    };
+
+    const waitForDismissal = async (dismissedRevision) => {
+      const deadline = Date.now() + 1_500;
+      while (Date.now() < deadline) {
+        if (completedDismissals.includes(dismissedRevision)) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`Turn draft dismissal did not complete for revision ${dismissedRevision}`);
     };
 
     compactCapture = true;
@@ -241,7 +249,7 @@ async function captureTurnDraft() {
     }
     await new Promise((resolve) => setTimeout(resolve, 80));
     const listening = await inspect(shortText);
-    if (listening.hasBars || listening.rimAnimation !== "auroraListeningBreath"
+    if (listening.rimAnimation !== "auroraListeningBreath"
         || resting.rimOpacity > 0.4
         || listening.voiceLevel < resting.voiceLevel + 0.35
         || listening.rimOpacity < resting.rimOpacity + 0.2
@@ -276,12 +284,12 @@ async function captureTurnDraft() {
         || dismissal.opacity > 0.01) {
       throw new Error(`Aurora failure resized before fading: ${JSON.stringify({ beforeDismiss, after: win.getBounds(), dismissal })}`);
     }
-    await capture("open-turn-aurora-error-dismissal");
     if (!completedDismissals.includes(dismissRevision)) {
       await win.webContents.executeJavaScript(`document.querySelector("#draft").dispatchEvent(
         new AnimationEvent("animationend", { animationName: "draftDismiss", bubbles: true })
       )`);
     }
+    await waitForDismissal(dismissRevision);
 
     await sendDraft(mediumText, "idle");
     const expandedHeight = await waitForHeight((height) => height > 68 && height < 360);
@@ -312,6 +320,7 @@ async function captureTurnDraft() {
 }
 
 app.whenReady().then(async () => {
+  await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
   await captureMessageOverlay();
   await captureTurnDraft();

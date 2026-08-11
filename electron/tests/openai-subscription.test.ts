@@ -49,16 +49,15 @@ describe("OpenAI Subscription", () => {
     ].join("\n\n"))).toBe('{"text":"done"}');
   });
 
-  it("refreshes expired credentials and uses Luna when no override is configured", async () => {
+  it("refreshes expired credentials before completing", async () => {
     const http = new FakeHttp();
-    http.postResponses.push(tokenResponse("new-account", "new-access", "new-refresh"), {
+    http.postResponses.push(tokenResponse("new-account", "new-refresh"), {
       status: 200,
       body: `data: ${JSON.stringify({ type: "response.output_text.done", text: '{"text":"clean"}' })}`,
     });
     const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
     const subscription = createSubscription(http, expiredCredentials(), persisted);
     await subscription.complete({
-      model: "",
       reasoningEffort: "none",
       serviceTier: "priority",
       userPrompt: "raw",
@@ -69,11 +68,6 @@ describe("OpenAI Subscription", () => {
     expect(http.posts[1]?.request.headers).toMatchObject({
       Authorization: expect.stringContaining("Bearer "),
       "ChatGPT-Account-ID": "new-account",
-    });
-    expect(JSON.parse(http.posts[1]!.request.body as string)).toMatchObject({
-      model: "gpt-5.6-luna",
-      reasoning: { effort: "none" },
-      service_tier: "priority",
     });
   });
 
@@ -89,7 +83,7 @@ describe("OpenAI Subscription", () => {
 
       if (invalidate === "disconnect") await subscription.disconnect();
       else subscription.dispose();
-      token.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+      token.resolve(tokenResponse("stale", "stale-refresh"));
 
       await expect(completion).rejects.toThrow("superseded by another account action");
       expect(persisted).toEqual(invalidate === "disconnect" ? [null] : []);
@@ -102,7 +96,7 @@ describe("OpenAI Subscription", () => {
     const staleToken = deferred<HttpResponse>();
     http.postResponses.push(
       staleToken.promise,
-      tokenResponse("replacement", "replacement-access", "replacement-refresh"),
+      tokenResponse("replacement", "replacement-refresh"),
     );
     const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
     const subscription = createSubscription(
@@ -115,7 +109,7 @@ describe("OpenAI Subscription", () => {
     expect(http.posts).toHaveLength(1);
 
     await subscription.connect();
-    staleToken.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+    staleToken.resolve(tokenResponse("stale", "stale-refresh"));
 
     await expect(completion).rejects.toThrow("superseded by another account action");
     expect(persisted).toHaveLength(1);
@@ -133,7 +127,7 @@ describe("OpenAI Subscription", () => {
     await vi.waitFor(() => { expect(http.posts).toHaveLength(1); });
 
     await subscription.disconnect();
-    token.resolve(tokenResponse("stale", "stale-access", "stale-refresh"));
+    token.resolve(tokenResponse("stale", "stale-refresh"));
 
     await expect(connection).rejects.toThrow("superseded by another account action");
     expect(persisted).toEqual([null]);
@@ -152,7 +146,6 @@ describe("OpenAI Subscription", () => {
     const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
     const subscription = createSubscription(http, validCredentials(), persisted);
     expect(await subscription.complete({
-      model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
       userPrompt: "raw",
@@ -180,25 +173,6 @@ describe("OpenAI Subscription", () => {
     expect(subscription.connected()).toBe(false);
     expect(persisted.at(-1)).toBeNull();
   });
-
-  it("does not apply Luna request tuning to another subscription model", async () => {
-    const http = new FakeHttp();
-    http.postResponses.push({
-      status: 200,
-      body: `data: ${JSON.stringify({ type: "response.output_text.done", text: '{"text":"clean"}' })}`,
-    });
-    const subscription = createSubscription(http, validCredentials(), []);
-    await subscription.complete({
-      model: "gpt-5.6-terra",
-      reasoningEffort: "max",
-      serviceTier: "priority",
-      userPrompt: "raw",
-      timeoutMs: 2_500,
-    });
-    const body = JSON.parse(http.posts[0]!.request.body as string) as Record<string, unknown>;
-    expect(body.reasoning).toEqual({ effort: "low" });
-    expect(body).not.toHaveProperty("service_tier");
-  });
 });
 
 function createSubscription(
@@ -219,7 +193,6 @@ function createSubscription(
 
 function completionOptions(): Parameters<OpenAiSubscription["complete"]>[0] {
   return {
-    model: "",
     reasoningEffort: "none",
     serviceTier: "default",
     userPrompt: "raw",
@@ -261,7 +234,7 @@ function validCredentials(): OpenAiSubscriptionCredentials {
   };
 }
 
-function tokenResponse(accountId: string, _label: string, refreshToken: string): HttpResponse {
+function tokenResponse(accountId: string, refreshToken: string): HttpResponse {
   return {
     status: 200,
     body: JSON.stringify({

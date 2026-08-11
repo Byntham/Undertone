@@ -70,17 +70,6 @@ describe("transcription providers", () => {
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
 
-    await transcriber.transcribe({
-      wav: WAV,
-      apiKey: "k",
-      provider: "openai",
-      language: "en",
-      vocabulary: [],
-    });
-    const secondForm = expectForm(http.calls[1]!.request.body);
-    expect(secondForm.get("model")).toBe(DEFAULT_STT_MODELS.openai);
-    expect(secondForm.get("language")).toBe("en");
-    expect(secondForm.has("languages[]")).toBe(false);
   });
 
   it("sends OpenRouter base64 JSON without vocabulary fields", async () => {

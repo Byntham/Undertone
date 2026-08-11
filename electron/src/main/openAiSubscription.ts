@@ -9,6 +9,7 @@ import {
 import { SYSTEM_PROMPT } from "../core/cleanupPrompt";
 import type { SubscriptionCleanupRuntime } from "../core/cleanup";
 import type { HttpClient, HttpResponse } from "../platform/http";
+import { DEFAULT_CLEANUP_MODELS } from "../shared/models";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
@@ -20,7 +21,6 @@ const CALLBACK_PORT = 1455;
 const TOKEN_TIMEOUT_MS = 30_000;
 const LOGIN_TIMEOUT_MS = 3 * 60_000;
 const REFRESH_SKEW_MS = 60_000;
-const DEFAULT_MODEL = "gpt-5.6-luna";
 
 export interface OpenAiSubscriptionCredentials {
   accessToken: string;
@@ -78,19 +78,14 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
   }
 
   async complete(options: {
-    model: string;
     reasoningEffort: CleanupReasoningEffort;
     serviceTier: CleanupServiceTier;
     userPrompt: string;
     timeoutMs: number;
   }): Promise<string> {
     if (!this.connected()) throw new Error("Connect your OpenAI account before using subscription cleanup.");
-    const model = options.model.trim() || DEFAULT_MODEL;
-    const lunaOptions = model === "gpt-5.6-luna"
-      ? { service_tier: options.serviceTier }
-      : {};
     const requestBody = JSON.stringify({
-      model,
+      model: DEFAULT_CLEANUP_MODELS["openai-subscription"],
       instructions: SYSTEM_PROMPT,
       input: [{
         role: "user",
@@ -109,8 +104,8 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
           },
         },
       },
-      reasoning: { effort: model === "gpt-5.6-luna" ? options.reasoningEffort : "low" },
-      ...lunaOptions,
+      reasoning: { effort: options.reasoningEffort },
+      service_tier: options.serviceTier,
       tools: [],
       parallel_tool_calls: false,
       store: false,

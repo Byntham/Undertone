@@ -5,7 +5,7 @@ const versionArgument = process.argv.find((argument) => argument.startsWith(vers
 if (versionArgument === undefined) throw new Error("Capture app version is missing");
 const appVersion = versionArgument.slice(versionPrefix.length);
 
-let snapshot = {
+const snapshot = {
   language: "en",
   aiCleanup: true,
   restoreClipboard: true,
@@ -66,42 +66,29 @@ const updateStatus = {
   message: "Update checks are available in the installed app.",
 };
 
+const history = [
+  { id: 2, ok: true, text: "Undertone is ready.", error: null, timestamp: Date.now(), retryable: false },
+  { id: 1, ok: false, text: "", error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
+];
+
+const unexpected = (name) => async () => {
+  throw new Error(`${name} is not available in the settings capture`);
+};
+
 contextBridge.exposeInMainWorld("undertoneSettings", {
   load: async () => snapshot,
-  update: async (patch) => {
-    if (patch.providerKey !== undefined) {
-      snapshot = {
-        ...snapshot,
-        keyConfigured: {
-          ...snapshot.keyConfigured,
-          [patch.providerKey.provider]: patch.providerKey.value.trim().length > 0,
-        },
-      };
-    }
-    const { providerKey: _providerKey, ...plain } = patch;
-    snapshot = { ...snapshot, ...plain };
-    return snapshot;
-  },
-  setStartWithWindows: async (enabled) => {
-    snapshot = { ...snapshot, startWithWindows: enabled };
-    return snapshot;
-  },
-  captureShortcut: async () => snapshot,
-  localAction: async () => snapshot,
-  history: async () => [
-    { id: 2, ok: true, text: "Undertone is ready.", error: null, timestamp: Date.now(), retryable: false },
-    { id: 1, ok: false, text: "", error: "A provider request timed out", timestamp: Date.now() - 60_000, retryable: true },
-  ],
-  historyAction: async () => undefined,
-  systemAction: async () => undefined,
-  providerTest: async (kind) => `${kind} works`,
-  openAiSubscriptionAction: async (action) => {
-    snapshot = { ...snapshot, openAiSubscriptionConnected: action === "connect" };
-    return snapshot;
-  },
-  microphoneTest: async () => 0.18,
+  update: unexpected("Updating settings"),
+  setStartWithWindows: unexpected("Changing autostart"),
+  captureShortcut: unexpected("Capturing shortcuts"),
+  localAction: unexpected("Changing local engines"),
+  history: async () => history,
+  historyAction: unexpected("Changing history"),
+  systemAction: unexpected("Opening system files"),
+  providerTest: unexpected("Testing providers"),
+  openAiSubscriptionAction: unexpected("Changing the OpenAI subscription"),
+  microphoneTest: unexpected("Testing the microphone"),
   updateStatus: async () => updateStatus,
-  checkForUpdates: async () => updateStatus,
-  installUpdate: async () => { throw new Error(updateStatus.message); },
+  checkForUpdates: unexpected("Checking for updates"),
+  installUpdate: unexpected("Installing updates"),
   onUpdateStatus: () => () => undefined,
 });

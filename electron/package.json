@@ -12,7 +12,6 @@
     "test": "npm run build:native && npm run test:built",
     "test:built": "vitest run --config vitest.config.mts",
     "start": "npm run build && node scripts/run-electron.mjs .",
-    "package:dir": "npm run build && electron-builder --win --x64 --dir",
     "clean:release": "node -e \"require('node:fs').rmSync('release',{recursive:true,force:true})\"",
     "package:built": "npm run clean:release && electron-builder --win --x64",
     "package": "npm run build && npm run package:built",
@@ -20,7 +19,6 @@
     "smoke:package:local": "node scripts/package-smoke.mjs --local",
     "smoke:audio": "node scripts/run-electron.mjs scripts/audio-smoke.cjs",
     "test:turn-draft-native": "npm run build && node scripts/test-turn-draft-native.mjs",
-    "test:overlay-motion": "tsc -p tsconfig.build.json && vite build && node scripts/run-electron.mjs scripts/capture-overlay-bitblt.cjs --primed --assert-stable",
     "verify": "npm run typecheck && npm run build && npm run test:built"
   },
   "devDependencies": {

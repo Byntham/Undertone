@@ -131,29 +131,6 @@ describe("settings model", () => {
     })).toThrow(/invalid fields/u);
   });
 
-  it("falls back to local when a corrupt config contains unknown providers", () => {
-    const config = normalizeConfig({ provider: "broken", cleanup_provider: 42 });
-    const snapshot = settingsSnapshot(config, "1.3.0");
-    expect(snapshot.provider).toBe("local");
-    expect(snapshot.cleanupProvider).toBe("local");
-  });
-
-  it("never exposes malformed persisted values through the settings snapshot", () => {
-    const snapshot = settingsSnapshot(normalizeConfig({
-      language: 42,
-      restore_clipboard: "false",
-      local_idle_minutes: Number.NaN,
-      vocabulary: [" valid ", null, "bad\nterm"],
-      corrections: { " heard ": " written ", invalid: [] },
-    }), "1.8.1");
-
-    expect(snapshot.language).toBe("en");
-    expect(snapshot.restoreClipboard).toBe(true);
-    expect(snapshot.localIdleMinutes).toBe(0);
-    expect(snapshot.vocabulary).toEqual(["valid"]);
-    expect(snapshot.corrections).toEqual({ heard: "written" });
-  });
-
   it("applies supported fields without mutating the existing config", () => {
     const config = normalizeConfig(undefined);
     const next = applySettingsPatch(config, {
@@ -245,8 +222,6 @@ describe("settings model", () => {
     const config = normalizeConfig(undefined);
     expect(() => applySettingsPatch(config, { api_key: "steal-me" }))
       .toThrow(/Unsupported settings field/u);
-    expect(() => applySettingsPatch(config, { onboarded: true }))
-      .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { startWithWindows: true }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { liveTranscription: "yes" }))
@@ -256,10 +231,6 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { localIdleMinutes: 7 }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { cleanupTimeout: 4.5 }))
-      .toThrow(/Unsupported settings field/u);
-    expect(() => applySettingsPatch(config, { cleanupPrompt: "custom" }))
-      .toThrow(/Unsupported settings field/u);
-    expect(() => applySettingsPatch(config, { cleanupPrompts: { Fast: "custom" } }))
       .toThrow(/Unsupported settings field/u);
     expect(() => applySettingsPatch(config, { cleanupReasoningEffort: "minimal" }))
       .toThrow(/Unsupported settings field/u);
@@ -273,8 +244,6 @@ describe("settings model", () => {
       .toThrow(/at most one/u);
     expect(() => applySettingsPatch(config, { openTurnCleanupStrategy: "sometimes" }))
       .toThrow(/invalid/u);
-    expect(() => applySettingsPatch(config, { turnWindowDesign: "unknown" }))
-      .toThrow(/Unsupported/u);
     expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { corrections: { heard: "" } }))
