@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
+import type { GuardedPasteResult, PasteTarget } from "../core/clipboardPaster";
+
 const PROTOCOL_VERSION = 8;
 const HOST_NAME = "Undertone.WinHost.exe";
 const EXTRACTION_TIMEOUT_MS = 300_000;
@@ -155,21 +157,18 @@ export class WindowsHost {
     return response.sent;
   }
 
-  async sendGuardedPaste(target: {
-    window: string;
-    focus: string;
-    generation: string;
-  } & (
-    | { focusIdentityState: "available"; focusIdentity: string }
-    | { focusIdentityState: "unavailable"; focusIdentity: null }
-  )): Promise<boolean> {
+  async sendGuardedPaste(target: PasteTarget): Promise<GuardedPasteResult> {
     const response = await this.request("guardedPaste", "guardedPasteResult", target);
-    if (typeof response.sent !== "boolean" || typeof response.focusMatched !== "boolean") {
+    if (!isGuardedPasteResponse(response.status, response.reason)) {
       throw new Error("Windows host returned an invalid guarded paste result");
     }
-    if (!response.focusMatched) return false;
-    if (!response.sent) throw new Error("Windows did not accept the paste keystroke");
-    return true;
+    if (response.status !== "pasted") {
+      console.warn(`Guarded paste ${response.status} (${response.reason})`);
+    }
+    if (response.status === "paste-failed") {
+      throw new Error("Windows did not accept the paste keystroke");
+    }
+    return response.status;
   }
 
   async protectSecret(value: string): Promise<string> {
@@ -456,6 +455,25 @@ function isFocusIdentity(
   return state === "available"
     ? typeof value === "string" && value.length > 0
     : (state === "unavailable" || state === "degraded") && value === null;
+}
+
+function isGuardedPasteResponse(
+  status: unknown,
+  reason: unknown,
+): status is GuardedPasteResult | "paste-failed" {
+  if (status === "pasted") return reason === "none";
+  if (status === "paste-failed") return reason === "send-input";
+  if (status === "focus-changed") {
+    return reason === "window-changed"
+      || reason === "control-changed"
+      || reason === "identity-changed";
+  }
+  if (status !== "focus-unavailable") return false;
+  return reason === "window-unavailable"
+    || reason === "focus-unavailable"
+    || reason === "identity-unavailable"
+    || reason === "input-race"
+    || reason === "snapshot-unstable";
 }
 
 function parseOneShotResponse(output: string): Record<string, unknown> | null {

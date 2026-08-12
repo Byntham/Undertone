@@ -153,7 +153,7 @@ describe("dictation job runner", () => {
     expect(state.fallback).toBeNull();
     expect(dependencies.turnBuffer.peekText()).toBe("Keep me");
     expect(state.messages.at(-1)).toEqual({
-      text: "Focus changed — press ctrl+alt to paste",
+      text: "Couldn't confirm the paste target — press ctrl+alt to paste",
       kind: "error",
     });
   });
@@ -350,9 +350,9 @@ function harness(): {
           || (target.focusIdentityState === "available"
             ? target.focusIdentity !== state.foregroundFocusIdentity
             : state.foregroundFocusIdentity !== null)
-        )) return false;
+        )) return "focus-changed";
         state.pasted.push({ text, restore });
-        return true;
+        return "pasted";
       },
       copyFallback(text) { state.fallback = text; },
     },

@@ -12,6 +12,7 @@ import {
   type DictationTarget,
 } from "./pipelineQueue";
 import type { TurnBuffer } from "./turnBuffer";
+import type { GuardedPasteResult } from "./clipboardPaster";
 
 export interface TranscriberPort {
   transcribe(options: {
@@ -27,7 +28,7 @@ export interface PasterPort {
     text: string,
     restoreClipboard: boolean,
     target?: DictationTarget,
-  ): Promise<boolean>;
+  ): Promise<GuardedPasteResult>;
   copyFallback(text: string): void;
 }
 
@@ -109,7 +110,7 @@ export class DictationJobRunner {
       return;
     }
     if (destination.target.state === "unavailable") {
-      this.focusChanged(config, feedback);
+      this.focusUnavailable(config, feedback);
       return;
     }
     await this.commitTurn(
@@ -195,13 +196,17 @@ export class DictationJobRunner {
     }
 
     try {
-      const pasted = await this.dependencies.paster.paste(
+      const pasteResult = await this.dependencies.paster.paste(
         text,
         config.restore_clipboard,
         target ?? undefined,
       );
-      if (!pasted) {
+      if (pasteResult === "focus-changed") {
         this.focusChanged(config, feedback);
+        return;
+      }
+      if (pasteResult === "focus-unavailable") {
+        this.focusUnavailable(config, feedback);
         return;
       }
     } catch {
@@ -229,6 +234,14 @@ export class DictationJobRunner {
     const message = shortcut.length > 0
       ? `Focus changed — press ${shortcut} to paste`
       : "Focus changed — commit the open turn manually";
+    feedback.message({ text: message, tone: "error" });
+  }
+
+  private focusUnavailable(config: UndertoneConfig, feedback: DictationFeedback): void {
+    const shortcut = config.commit_hotkey;
+    const message = shortcut.length > 0
+      ? `Couldn't confirm the paste target — press ${shortcut} to paste`
+      : "Couldn't confirm the paste target — commit the open turn manually";
     feedback.message({ text: message, tone: "error" });
   }
 

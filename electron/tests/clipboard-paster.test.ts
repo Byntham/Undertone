@@ -120,12 +120,12 @@ describe("clipboard paster", () => {
         async sendPaste() { sent = true; return true; },
         async sendGuardedPaste(actual) {
           expect(actual).toEqual(target);
-          return false;
+          return "focus-changed" as const;
         },
       },
       async () => undefined,
     );
-    await expect(paster.paste("dictated text", true, target)).resolves.toBe(false);
+    await expect(paster.paste("dictated text", true, target)).resolves.toBe("focus-changed");
     expect(sent).toBe(false);
     expect(clipboard.value).toBe("previous");
   });
@@ -138,7 +138,7 @@ describe("clipboard paster", () => {
         async sendPaste() { return true; },
         async sendGuardedPaste() {
           clipboard.value = "user copied this";
-          return false;
+          return "focus-unavailable" as const;
         },
       },
       async () => undefined,
@@ -149,7 +149,7 @@ describe("clipboard paster", () => {
       focusIdentityState: "unavailable",
       focusIdentity: null,
       generation: "7",
-    })).resolves.toBe(false);
+    })).resolves.toBe("focus-unavailable");
     expect(clipboard.value).toBe("user copied this");
   });
 

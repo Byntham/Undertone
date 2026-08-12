@@ -5,8 +5,10 @@ export interface ClipboardAdapter {
 
 export interface PasteSender {
   sendPaste(): Promise<boolean>;
-  sendGuardedPaste?(target: PasteTarget): Promise<boolean>;
+  sendGuardedPaste?(target: PasteTarget): Promise<GuardedPasteResult>;
 }
+
+export type GuardedPasteResult = "pasted" | "focus-changed" | "focus-unavailable";
 
 export type PasteTarget = {
   window: string;
@@ -34,14 +36,14 @@ export class ClipboardPaster {
     text: string,
     restoreClipboard = true,
     target?: PasteTarget,
-  ): Promise<boolean> {
-    if (text.length === 0) return Promise.resolve(true);
+  ): Promise<GuardedPasteResult> {
+    if (text.length === 0) return Promise.resolve("pasted");
 
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<GuardedPasteResult>((resolve, reject) => {
       const operation = this.tail.then(async () => {
         try {
           const result = await this.performPaste(text, restoreClipboard, target);
-          resolve(result.sent);
+          resolve(result.result);
           await result.restored;
         } catch (error) {
           reject(error);
@@ -60,7 +62,7 @@ export class ClipboardPaster {
     text: string,
     restoreClipboard: boolean,
     target: PasteTarget | undefined,
-  ): Promise<{ sent: boolean; restored: Promise<void> }> {
+  ): Promise<{ result: GuardedPasteResult; restored: Promise<void> }> {
     const pastedText = trailingSpace(text);
     const generation = ++this.generation;
     let previous: string | null;
@@ -71,25 +73,25 @@ export class ClipboardPaster {
     }
     this.clipboard.writeText(pastedText);
     await this.wait(150);
-    const sent = target === undefined
-      ? await this.sender.sendPaste()
+    const result = target === undefined
+      ? await this.sender.sendPaste() ? "pasted" : "paste-failed"
       : this.sender.sendGuardedPaste === undefined
-        ? false
+        ? "focus-unavailable"
         : await this.sender.sendGuardedPaste(target);
-    if (target === undefined && !sent) {
+    if (result === "paste-failed") {
       throw new Error("Windows did not accept the paste keystroke");
     }
-    if (!sent) {
+    if (result !== "pasted") {
       if (previous !== null && this.clipboard.readText() === pastedText) {
         this.clipboard.writeText(previous);
       }
-      return { sent: false, restored: Promise.resolve() };
+      return { result, restored: Promise.resolve() };
     }
     if (!restoreClipboard || previous === null) {
-      return { sent: true, restored: Promise.resolve() };
+      return { result: "pasted", restored: Promise.resolve() };
     }
     return {
-      sent: true,
+      result: "pasted",
       restored: new Promise((resolve) => {
         this.schedule(async () => {
           try {
