@@ -11,6 +11,9 @@ using System.Web.Script.Serialization;
 internal static class Program
 {
     private const int ProtocolVersion = 8;
+    private const int FocusReadAttempts = 3;
+    private const int FocusReadTimeoutMs = 150;
+    private const int FocusRetryDelayMs = 50;
     private const int WhKeyboardLl = 13;
     private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
@@ -226,20 +229,37 @@ internal static class Program
             else if (type == "guardedPaste")
             {
                 var expected = GuardedPasteTarget(command);
-                bool focusMatched;
-                bool sent = false;
+                string focusGeneration;
+                var foreground = CaptureForeground(out focusGeneration);
+                string reason;
+                string status;
                 lock (InputGate)
                 {
-                    var foreground = Desktop.GetForeground(_focusReader.QueryIdentity(150));
-                    focusMatched = FocusMatches(expected, foreground)
-                        && expected.Generation == Interlocked.Read(ref _inputGeneration).ToString();
-                    if (focusMatched)
-                        sent = Desktop.SendPaste();
+                    var currentHandles = Desktop.GetForeground(foreground.FocusIdentity);
+                    if (expected.Generation != focusGeneration
+                        || focusGeneration != Interlocked.Read(ref _inputGeneration).ToString())
+                        reason = "input-race";
+                    else if (foreground.Window != currentHandles.Window
+                        || foreground.Focus != currentHandles.Focus)
+                        reason = HandlesChangedReason(expected, currentHandles);
+                    else
+                        reason = FocusMismatchReason(expected, foreground);
+                    if (reason == null)
+                    {
+                        status = Desktop.SendPaste() ? "pasted" : "paste-failed";
+                        reason = status == "pasted" ? "none" : "send-input";
+                    }
+                    else
+                    {
+                        status = IsConfirmedFocusChange(reason)
+                            ? "focus-changed"
+                            : "focus-unavailable";
+                    }
                 }
                 Respond(requestId, "guardedPasteResult", new Dictionary<string, object>
                 {
-                    { "focusMatched", focusMatched },
-                    { "sent", sent }
+                    { "status", status },
+                    { "reason", reason }
                 });
             }
             else if (type == "protectSecret")
@@ -322,18 +342,44 @@ internal static class Program
 
     private static ForegroundInfo CaptureForeground(out string generation)
     {
-        ForegroundInfo foreground = null;
-        for (var attempt = 0; attempt < 2; attempt += 1)
+        ForegroundInfo unavailable = null;
+        var unavailableSamples = 0;
+        for (var attempt = 0; attempt < FocusReadAttempts; attempt += 1)
         {
             var before = Interlocked.Read(ref _inputGeneration);
-            var focusIdentity = _focusReader.QueryIdentity(150);
-            foreground = Desktop.GetForeground(focusIdentity);
+            var handlesBefore = Desktop.GetForeground(FocusIdentityResult.Degraded());
+            var focusIdentity = _focusReader.QueryIdentity(FocusReadTimeoutMs);
+            var foreground = Desktop.GetForeground(focusIdentity);
             var after = Interlocked.Read(ref _inputGeneration);
-            if (before == after)
+            var stable = before == after
+                && handlesBefore.Window == foreground.Window
+                && handlesBefore.Focus == foreground.Focus;
+            if (stable && focusIdentity.State == FocusIdentityState.Available)
             {
                 generation = after.ToString();
                 return foreground;
             }
+            if (stable && focusIdentity.State == FocusIdentityState.Unavailable)
+            {
+                unavailableSamples = unavailable != null
+                    && unavailable.Window == foreground.Window
+                    && unavailable.Focus == foreground.Focus
+                    ? unavailableSamples + 1
+                    : 1;
+                unavailable = foreground;
+                if (unavailableSamples >= 2)
+                {
+                    generation = after.ToString();
+                    return foreground;
+                }
+            }
+            else
+            {
+                unavailable = null;
+                unavailableSamples = 0;
+            }
+            if (attempt + 1 < FocusReadAttempts)
+                Thread.Sleep(FocusRetryDelayMs);
         }
         generation = Interlocked.Read(ref _inputGeneration).ToString();
         return Desktop.GetForeground(FocusIdentityResult.Degraded());
@@ -396,18 +442,47 @@ internal static class Program
         };
     }
 
-    private static bool FocusMatches(
+    private static string HandlesChangedReason(
         GuardedTarget expected,
         ForegroundInfo actual)
     {
-        if (actual.FocusIdentity.State == FocusIdentityState.Degraded
-            || expected.Window != actual.Window
-            || expected.Focus != actual.Focus)
-            return false;
+        if (expected.Window == "0" || actual.Window == "0")
+            return "window-unavailable";
+        if (expected.Window != actual.Window)
+            return "window-changed";
+        if (expected.Focus == "0" || actual.Focus == "0")
+            return "focus-unavailable";
+        return expected.Focus != actual.Focus ? "control-changed" : "snapshot-unstable";
+    }
+
+    private static string FocusMismatchReason(
+        GuardedTarget expected,
+        ForegroundInfo actual)
+    {
+        if (expected.Window == "0" || actual.Window == "0")
+            return "window-unavailable";
+        if (expected.Window != actual.Window)
+            return "window-changed";
+        if (expected.Focus == "0" || actual.Focus == "0")
+            return "focus-unavailable";
+        if (expected.Focus != actual.Focus)
+            return "control-changed";
+        if (actual.FocusIdentity.State == FocusIdentityState.Degraded)
+            return "identity-unavailable";
         if (expected.FocusIdentityState == "available")
             return actual.FocusIdentity.State == FocusIdentityState.Available
-                && expected.FocusIdentity == actual.FocusIdentity.Value;
-        return actual.FocusIdentity.State == FocusIdentityState.Unavailable;
+                ? expected.FocusIdentity == actual.FocusIdentity.Value ? null : "identity-changed"
+                : "identity-unavailable";
+        return actual.FocusIdentity.State == FocusIdentityState.Unavailable
+            ? null
+            : "identity-unavailable";
+    }
+
+    private static bool IsConfirmedFocusChange(string reason)
+    {
+        return reason == "window-changed"
+            || reason == "control-changed"
+            || reason == "identity-changed";
     }
 
     private static string FocusIdentityStateName(FocusIdentityState state)

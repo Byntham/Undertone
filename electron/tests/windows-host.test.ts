@@ -72,8 +72,7 @@ describe("Windows host", () => {
       };
       await expect(command("guardedPaste", required)).resolves.toMatchObject({
         type: "guardedPasteResult",
-        focusMatched: false,
-        sent: false,
+        status: "focus-changed",
       });
       for (const invalid of [
         { ...required, focus: undefined },
@@ -349,7 +348,7 @@ describe("Windows host", () => {
           && foreground.focusIdentity !== textTarget.focusIdentity
         ));
         setClipboardText("should not paste");
-        expect(await host.sendGuardedPaste(textTarget)).toBe(false);
+        expect(await host.sendGuardedPaste(textTarget)).toBe("focus-changed");
 
         await writeFile(target.focusText, "", "utf8");
         const freshTarget = await waitForAvailableForeground(host, (foreground) => (
@@ -357,7 +356,7 @@ describe("Windows host", () => {
           && foreground.focusIdentity === textTarget.focusIdentity
         ));
         setClipboardText("hello ");
-        expect(await host.sendGuardedPaste(freshTarget)).toBe(true);
+        expect(await host.sendGuardedPaste(freshTarget)).toBe("pasted");
         await delay(300);
         await writeFile(target.stop, "", "utf8");
         await writeFile(thief.stop, "", "utf8");
