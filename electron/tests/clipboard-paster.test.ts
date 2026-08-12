@@ -29,7 +29,7 @@ describe("clipboard paster", () => {
     expect(clipboard.value).toBe("previous");
   });
 
-  it("does not let an older restore overwrite a newer paste", async () => {
+  it("restores the original clipboard across overlapping queued pastes", async () => {
     const clipboard = new MemoryClipboard("original");
     const scheduled: Array<() => Promise<void>> = [];
     const paster = new ClipboardPaster(
@@ -39,11 +39,28 @@ describe("clipboard paster", () => {
       (callback) => { scheduled.push(callback); },
     );
     await paster.paste("first");
-    await paster.paste("second");
+    const secondPaste = paster.paste("second");
+    expect(clipboard.value).toBe("first ");
+    expect(scheduled).toHaveLength(1);
     await scheduled[0]!();
+    await secondPaste;
     expect(clipboard.value).toBe("second ");
     await scheduled[1]!();
-    expect(clipboard.value).toBe("first ");
+    expect(clipboard.value).toBe("original");
+  });
+
+  it("restores an empty clipboard", async () => {
+    const clipboard = new MemoryClipboard("");
+    const scheduled: Array<() => Promise<void>> = [];
+    const paster = new ClipboardPaster(
+      clipboard,
+      { async sendPaste() { return true; } },
+      async () => undefined,
+      (callback) => { scheduled.push(callback); },
+    );
+    await paster.paste("dictated text");
+    await scheduled[0]!();
+    expect(clipboard.value).toBe("");
   });
 
   it("preserves a user clipboard change made before restoration", async () => {
@@ -93,6 +110,7 @@ describe("clipboard paster", () => {
     const target = {
       window: "42",
       focus: "420",
+      focusIdentityState: "available" as const,
       focusIdentity: "uia:1",
       generation: "7",
     };
@@ -125,7 +143,13 @@ describe("clipboard paster", () => {
       },
       async () => undefined,
     );
-    await expect(paster.paste("dictated text", true, { window: "42" })).resolves.toBe(false);
+    await expect(paster.paste("dictated text", true, {
+      window: "42",
+      focus: "0",
+      focusIdentityState: "unavailable",
+      focusIdentity: null,
+      generation: "7",
+    })).resolves.toBe(false);
     expect(clipboard.value).toBe("user copied this");
   });
 

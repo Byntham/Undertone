@@ -66,7 +66,7 @@ export function joinFloat32(chunks: readonly Float32Array[]): Float32Array {
   return joined;
 }
 
-export function encodePcm16(samples: Float32Array): Uint8Array {
+function encodePcm16(samples: Float32Array): Uint8Array {
   const bytes = new Uint8Array(samples.length * 2);
   const view = new DataView(bytes.buffer);
   for (let index = 0; index < samples.length; index += 1) {

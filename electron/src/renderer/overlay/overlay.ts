@@ -1,11 +1,9 @@
-import type { OverlayState } from "../../shared/overlay";
+import type { OverlayBridge, OverlayState } from "../../shared/overlay";
 import "./style.css";
 
 declare global {
   interface Window {
-    undertoneOverlay?: {
-      onState: (listener: (state: OverlayState) => void) => () => void;
-    };
+    undertoneOverlay: OverlayBridge;
   }
 }
 
@@ -16,11 +14,13 @@ const check = document.querySelector<HTMLSpanElement>("#check");
 if (pill === null || label === null || check === null) {
   throw new Error("Overlay markup is incomplete");
 }
+const overlayBridge = window.undertoneOverlay;
+if (overlayBridge === undefined) throw new Error("Overlay preload bridge is missing");
 
 let mode: OverlayState["state"] = "hidden";
 let hiddenResetTimer: ReturnType<typeof setTimeout> | undefined;
 
-window.undertoneOverlay?.onState(({ state, text, tone }) => {
+overlayBridge.onState(({ state, text, tone }: OverlayState) => {
   if (hiddenResetTimer !== undefined) clearTimeout(hiddenResetTimer);
   hiddenResetTimer = undefined;
   mode = state;

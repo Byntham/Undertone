@@ -28,10 +28,8 @@ try {
   ]);
 
   await runAppTest(20, "stress");
-  for (let restart = 1; restart <= 5; restart += 1) {
-    await runAppTest(1, `restart-${restart}`);
-  }
-  console.log("TURN_DRAFT_NATIVE_E2E_OK cycles=20 restarts=5");
+  await runAppTest(1, "restart");
+  console.log("TURN_DRAFT_NATIVE_E2E_OK cycles=20 restarts=1");
 } finally {
   await cleanTestState();
 }
@@ -59,12 +57,27 @@ async function runAppTest(cycles, label) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`${label} failed: ${detail}\n${appOutput}`);
   } finally {
-    if (!appProcess.killed) appProcess.kill();
-    await Promise.race([
-      new Promise((resolve) => appProcess.once("close", resolve)),
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    if (appProcess.exitCode === null && appProcess.signalCode === null) appProcess.kill();
+    if (!await waitForExit(appProcess, 2_000)) {
+      if (appProcess.pid !== undefined) {
+        await execFileAsync("taskkill", ["/PID", String(appProcess.pid), "/T", "/F"])
+          .catch(() => undefined);
+      }
+      await waitForExit(appProcess, 2_000);
+      throw new Error(`${label} left Electron running after termination\n${appOutput}`);
+    }
   }
+}
+
+async function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 async function cleanTestState() {

@@ -13,21 +13,23 @@ import {
   Tray,
 } from "electron";
 import electronUpdater = require("electron-updater");
-import { existsSync } from "node:fs";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { CleanupClient } from "../core/cleanup";
+import { CleanupClient, CleanupError } from "../core/cleanup";
 import { encodePcm16Wav, StreamingPcm16Encoder } from "../core/audio";
 import { ClipboardPaster } from "../core/clipboardPaster";
 import {
   DEFAULT_CONFIG,
-  modelOverride,
   normalizeConfig,
   providerKey,
   type UndertoneConfig,
+  xaiVocabularyHints,
 } from "../core/config";
-import { DictationJobRunner } from "../core/dictationRunner";
+import {
+  DictationJobRunner,
+  type DictationFeedbackMessage,
+} from "../core/dictationRunner";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import {
   LiveTranscriber,
@@ -57,13 +59,6 @@ import {
 import { ConfigStore } from "./configStore";
 import { AutostartManager } from "./autostart";
 import { AppUpdateService } from "./appUpdater";
-import {
-  DeveloperController,
-  worktreeDisplayName,
-  type DeveloperRepositoryDiscovery,
-  type DeveloperSnapshot,
-  type DeveloperWorktree,
-} from "./developerController";
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
@@ -76,7 +71,7 @@ import {
   type LocalServerRuntime,
 } from "./localRuntime";
 import { FetchHttpClient } from "../platform/http";
-import { WindowsHost } from "../platform/windowsHost";
+import { WindowsHost, type InputMode } from "../platform/windowsHost";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
@@ -87,7 +82,6 @@ import type {
 import {
   canHideTurnDraftAfterDismissal,
   hasActiveTurnDraftWork,
-  isBarOnlyFeedback,
   nextTurnDraftMode,
   type OverlayState,
   type OverlayTone,
@@ -95,16 +89,11 @@ import {
   type TurnDraftView,
 } from "../shared/overlay";
 
-const DEV_QUIT_ARGUMENT = "--undertone-dev-quit";
-const OPEN_SETTINGS_ARGUMENT = "--undertone-open-settings";
 const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
 const turnDraftNativeE2e = process.env.UNDERTONE_TURN_DRAFT_NATIVE_E2E === "1";
-const managedDev = process.env.UNDERTONE_MANAGED_DEV === "1";
 const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIEW === "1";
-const devBranch = electronPreview ? process.env.UNDERTONE_DEV_BRANCH?.trim() : undefined;
-const devQuitRequest = electronPreview && process.argv.includes(DEV_QUIT_ARGUMENT);
 const isolatedProfile = electronPreview || packagedSmoke;
 const TURN_DRAFT_COMPACT_SIZE = { width: 72, height: 44 } as const;
 const TURN_DRAFT_TEXT_SIZE = { width: 320, height: 68 } as const;
@@ -149,9 +138,6 @@ if (packagedSmoke) {
 } else if (turnDraftNativeE2e) {
   const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
   app.setPath("userData", path.join(previewRoot, "Undertone", "TurnDraftNativeE2E"));
-} else if (managedDev) {
-  const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
-  app.setPath("userData", path.join(previewRoot, "Undertone", "ManagedDev"));
 } else if (electronPreview) {
   const previewRoot = process.env.LOCALAPPDATA ?? app.getPath("appData");
   app.setPath("userData", path.join(previewRoot, "Undertone", "ElectronPreview"));
@@ -159,7 +145,7 @@ if (packagedSmoke) {
 const gotLock = app.requestSingleInstanceLock();
 const fileLog = installFileLog(path.join(app.getPath("userData"), "app.log"));
 
-if (!gotLock || devQuitRequest) {
+if (!gotLock) {
   app.quit();
 } else {
   let settingsWindow: BrowserWindow | null = null;
@@ -175,22 +161,13 @@ if (!gotLock || devQuitRequest) {
   let config: UndertoneConfig = normalizeConfig(undefined);
   let configStore: ConfigStore | null = null;
   let settingsUpdateChain: Promise<void> = Promise.resolve();
+  let autostartUpdateChain: Promise<void> = Promise.resolve();
   let startWithWindows = false;
   let pipeline: DictationPipelineQueue | null = null;
   let localStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
   let appUpdateService: AppUpdateService | null = null;
-  let developerController: DeveloperController | null = null;
-  let discoveredDeveloperRepository: DeveloperRepositoryDiscovery | null = null;
-  let developerWorktrees: DeveloperWorktree[] = [];
-  let developerSnapshot: DeveloperSnapshot = {
-    phase: "production",
-    repositoryRoot: null,
-    activeWorktree: null,
-    message: "Production active",
-  };
-  let productionPausedForDev = false;
   let transcriberClient: Transcriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   let openAiSubscription: OpenAiSubscription | null = null;
@@ -206,13 +183,18 @@ if (!gotLock || devQuitRequest) {
     streamed: boolean;
     liveFailed: boolean;
   }>();
-  let nextAudioFinalizationId = 1;
+  let nextCaptureId = 1;
   let activeAudioCaptureId: number | null = null;
   let shortcutCapture: {
     collector: ShortcutCapture;
     completed: boolean;
     resolve: (shortcut: string | null) => void;
   } | null = null;
+  const desiredInputMode = (): InputMode => {
+    if (quitting) return "off";
+    if (shortcutCapture !== null) return "shortcut-capture";
+    return paused ? "off" : "listen";
+  };
   const history = new SessionHistory();
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
@@ -488,7 +470,6 @@ if (!gotLock || devQuitRequest) {
     );
     if (hasNewerWork) cancelTurnDraftDismissal();
     const activeDismissal = turnDraftDismissal;
-    const provisional = [...liveCaptures.values()];
     let text = composeTurnDraftText();
     if (text.length === 0
       && (turnDraftManualProcessing || activeDismissal !== null || turnDraftSignal !== null)) {
@@ -528,9 +509,6 @@ if (!gotLock || devQuitRequest) {
     // compact outcome signals outlive their capture while the rim is shown.
     const draft: TurnDraftView | null = text.length === 0 && !hasActiveTurn ? null : {
       text,
-      fragmentCount: (snapshot?.fragmentCount ?? 0) + provisional.length,
-      charCount: text.length,
-      liveState,
       activity,
       statusText: turnDraftSignal?.text ?? null,
       presentation: activeDismissal === null ? "visible" : "dismissing",
@@ -576,8 +554,7 @@ if (!gotLock || devQuitRequest) {
     text: string,
     kind: OverlayTone = "normal",
   ): void => {
-    const duration = kind === "normal" ? 1_200 : kind === "warning" ? 2_200 : 2_600;
-    overlayController.feedback(text, kind, duration);
+    overlayController.feedback(text, kind);
   };
 
   const clearTurnDraftSignal = (): void => {
@@ -588,12 +565,8 @@ if (!gotLock || devQuitRequest) {
   const showDictationFeedback = (
     captureId: number,
     text: string,
-    kind: OverlayTone = "normal",
+    kind: "warning" | "error",
   ): void => {
-    if (!isBarOnlyFeedback(text, kind)) {
-      showFeedback(text, kind);
-      return;
-    }
     clearTurnDraftSignal();
     const signal: TurnDraftSignal = {
       captureId,
@@ -617,14 +590,6 @@ if (!gotLock || devQuitRequest) {
     }, 1_000);
   };
 
-  const showActiveCaptureFeedback = (
-    captureId: number,
-    text: string,
-    kind: OverlayTone,
-  ): void => {
-    showDictationFeedback(captureId, text, kind);
-  };
-
   const playCue = (name: "start" | "stop" | "lock" | "cancel"): void => {
     if (!config.sound_cues) return;
     audioWindow?.webContents.send("audio:command", { type: "cue", name });
@@ -636,15 +601,9 @@ if (!gotLock || devQuitRequest) {
   };
 
   const updateTrayTooltip = (): void => {
-    const activeDevBranch = developerSnapshot.activeWorktree?.branch;
-    const tooltip = activeDevBranch !== undefined
-      ? `Undertone — Dev: ${activeDevBranch}`
-      : paused
-        ? "Undertone — paused"
-        : "Undertone — hold to paste, tap to toggle, Left Alt to keep open";
-    tray?.setToolTip(devBranch === undefined || devBranch.length === 0
-      ? tooltip
-      : `${tooltip}\nDev: ${devBranch}`);
+    tray?.setToolTip(paused
+      ? "Undertone — paused"
+      : "Undertone — hold to paste, tap to toggle, Left Alt to keep open");
   };
 
   const configureShortcuts = (): void => {
@@ -721,12 +680,23 @@ if (!gotLock || devQuitRequest) {
   const captureForegroundTarget = async (): Promise<DictationTarget | null> => {
     try {
       const foreground = await windowsHost.getForeground();
-      return {
+      if (foreground.focusIdentityState === "degraded") return null;
+      const common = {
         window: foreground.window,
         focus: foreground.focus,
-        focusIdentity: foreground.focusIdentity,
         generation: foreground.generation,
       };
+      return foreground.focusIdentityState === "available"
+        ? {
+          ...common,
+          focusIdentityState: "available",
+          focusIdentity: foreground.focusIdentity,
+        }
+        : {
+          ...common,
+          focusIdentityState: "unavailable",
+          focusIdentity: null,
+        };
     } catch {
       return null;
     }
@@ -775,7 +745,7 @@ if (!gotLock || devQuitRequest) {
         showFeedback("Audio service is not ready", "error");
         return false;
       }
-      const captureId = nextAudioFinalizationId++;
+      const captureId = nextCaptureId++;
       const streamLive = liveTranscriptionEnabled(config);
       if (!turnDraftReady
           || turnDraftWindow === null
@@ -793,7 +763,7 @@ if (!gotLock || devQuitRequest) {
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
-              vocabulary: provider === "xai" ? liveVocabulary(config) : [],
+              vocabulary: xaiVocabularyHints(config),
             }, {
               partial: (text) => {
                 const active = liveCaptures.get(captureId);
@@ -849,7 +819,7 @@ if (!gotLock || devQuitRequest) {
           if (pending === undefined) return;
           pendingAudioFinalizations.delete(captureId);
           pending.resolve(null);
-          showActiveCaptureFeedback(captureId, "Audio finalization timed out", "error");
+          showFeedback("Audio finalization timed out", "error");
         }, 5_000);
         pendingAudioFinalizations.set(captureId, {
           resolve: resolveAudio,
@@ -870,7 +840,7 @@ if (!gotLock || devQuitRequest) {
                 activeLive.session.append(activeLive.encoder.finish());
                 const text = await activeLive.session.finish();
                 if (text.length === 0) {
-                  showActiveCaptureFeedback(captureId, "No speech detected", "error");
+                  showDictationFeedback(captureId, "No speech detected", "error");
                   abandonLiveCapture(captureId);
                   return null;
                 }
@@ -896,11 +866,15 @@ if (!gotLock || devQuitRequest) {
             }
             return {
               input,
-              target: capturedTarget ?? (completion === "commit"
-                ? { window: "0", generation: "-1" }
-                : null),
               overlayRevision,
-              completion,
+              destination: completion === "commit"
+                ? {
+                  completion: "commit",
+                  target: capturedTarget === null
+                    ? { state: "unavailable" }
+                    : { state: "captured", value: capturedTarget },
+                }
+                : { completion: "open-turn" },
             };
           },
         );
@@ -1092,187 +1066,18 @@ if (!gotLock || devQuitRequest) {
     );
   };
 
-  const refreshDeveloperWorktrees = async (): Promise<void> => {
-    const controller = developerController;
-    if (controller === null) return;
-    try {
-      if (controller.snapshot().repositoryRoot === null) {
-        discoveredDeveloperRepository = await controller.discoverT3Repository(
-          path.join(app.getPath("home"), ".t3", "worktrees", "Undertone"),
-        );
-        developerWorktrees = discoveredDeveloperRepository?.worktrees ?? [];
-      } else {
-        discoveredDeveloperRepository = null;
-        developerWorktrees = await controller.worktrees();
-      }
-    } catch (error) {
-      discoveredDeveloperRepository = null;
-      developerWorktrees = [];
-      console.warn("Could not discover Undertone worktrees", error);
-    }
-    rebuildTrayMenu();
-  };
-
-  const runDeveloperAction = async (
-    action: () => Promise<void>,
-    successMessage: string,
-  ): Promise<void> => {
-    try {
-      await action();
-      showFeedback(successMessage, "normal");
-    } catch (error) {
-      showFeedback(error instanceof Error ? error.message : String(error), "error");
-    }
-  };
-
-  const confirmDeveloperAccess = async (): Promise<boolean> => {
-    const confirmation = await dialog.showMessageBox({
-      type: "warning",
-      title: "Enable Undertone development controls?",
-      message: "Development builds run local worktree code with your Windows user permissions.",
-      detail: "Enable this only for an Undertone repository that you trust.",
-      buttons: ["Cancel", "Enable development"],
-      defaultId: 0,
-      cancelId: 0,
-    });
-    return confirmation.response === 1;
-  };
-
-  const chooseDeveloperRepository = async (): Promise<void> => {
-    const controller = developerController;
-    if (controller === null) return;
-    if (controller.snapshot().repositoryRoot === null && !await confirmDeveloperAccess()) return;
-    const result = await dialog.showOpenDialog({
-      title: "Choose the main Undertone repository folder",
-      properties: ["openDirectory"],
-    });
-    const selected = result.filePaths[0];
-    if (result.canceled || selected === undefined) return;
-    await runDeveloperAction(async () => {
-      await controller.setRepository(selected);
-      await refreshDeveloperWorktrees();
-    }, "Development repository configured");
-  };
-
-  const activateDeveloperWorktree = async (worktree: DeveloperWorktree): Promise<void> => {
-    const controller = developerController;
-    if (controller === null) return;
-    let repositoryToConfigure: string | null = null;
-    if (controller.snapshot().repositoryRoot === null) {
-      const discovery = discoveredDeveloperRepository;
-      if (discovery === null || !await confirmDeveloperAccess()) return;
-      repositoryToConfigure = discovery.repositoryRoot;
-    }
-    const displayName = worktreeDisplayName(worktree.branch);
-    showFeedback(`Building ${displayName}`, "normal");
-    await runDeveloperAction(
-      async () => {
-        if (repositoryToConfigure !== null) {
-          await controller.setRepository(repositoryToConfigure);
-          await refreshDeveloperWorktrees();
-        }
-        await controller.activate(worktree);
-      },
-      `${displayName} is active`,
-    );
-  };
-
-  const developerMenu = (): MenuItemConstructorOptions[] => {
-    const controller = developerController;
-    if (controller === null) return [];
-    const activeRoot = developerSnapshot.activeWorktree?.root;
-    const items: MenuItemConstructorOptions[] = [
-      {
-        label: "Production",
-        type: "radio",
-        checked: activeRoot === undefined,
-        click: () => {
-          void runDeveloperAction(
-            async () => await controller.returnToProduction(),
-            "Production Undertone restored",
-          );
-        },
-      },
-    ];
-    if (developerSnapshot.repositoryRoot !== null || discoveredDeveloperRepository !== null) {
-      if (developerSnapshot.repositoryRoot === null) {
-        items.push(
-          { type: "separator" },
-          { label: "Available worktrees", enabled: false },
-        );
-      }
-      for (const worktree of developerWorktrees) {
-        const displayBranch = worktreeDisplayName(worktree.branch);
-        items.push({
-          label: worktree.compatible
-            ? displayBranch
-            : `${displayBranch} — ${worktree.compatibilityError ?? "incompatible"}`,
-          type: "radio",
-          checked: activeRoot !== undefined
-            && path.resolve(activeRoot).toLowerCase() === path.resolve(worktree.root).toLowerCase(),
-          enabled: worktree.compatible && developerSnapshot.phase !== "building",
-          click: () => { void activateDeveloperWorktree(worktree); },
-        });
-      }
-      items.push({ type: "separator" });
-      if (developerSnapshot.repositoryRoot !== null) {
-        items.push({
-          label: "Rebuild active worktree",
-          enabled: developerSnapshot.activeWorktree !== null
-            && developerSnapshot.phase !== "building",
-          click: () => {
-            showFeedback("Building active worktree", "normal");
-            void runDeveloperAction(
-              async () => await controller.rebuildActive(),
-              "Development build updated",
-            );
-          },
-        });
-      }
-      items.push({
-        label: "Refresh worktrees",
-        click: () => { void refreshDeveloperWorktrees(); },
-      });
-    }
-    items.push(
-      { type: "separator" },
-      {
-        label: developerSnapshot.repositoryRoot === null
-          ? "Choose repository folder…"
-          : "Choose another repository…",
-        click: () => { void chooseDeveloperRepository(); },
-      },
-    );
-    if (developerSnapshot.repositoryRoot !== null) {
-      items.push({
-        label: "Disable development",
-        click: () => {
-          void runDeveloperAction(async () => {
-            await controller.disable();
-            await refreshDeveloperWorktrees();
-          }, "Developer mode disabled");
-        },
-      });
-    }
-    return items;
-  };
-
   const rebuildTrayMenu = (): void => {
     if (tray === null) return;
-    const devActive = developerSnapshot.activeWorktree !== null;
     const template: MenuItemConstructorOptions[] = [
       {
         label: "Open Settings",
-        click: () => {
-          if (!developerController?.openDevSettings()) openSettings();
-        },
+        click: () => { openSettings(); },
       },
       { type: "separator" },
       {
         label: "Pause dictation",
         type: "checkbox",
         checked: paused,
-        enabled: !devActive,
         click: (item) => {
           if (shortcutCapture !== null) {
             item.checked = paused;
@@ -1281,7 +1086,7 @@ if (!gotLock || devQuitRequest) {
           }
           paused = item.checked;
           if (paused) gestures.cancel();
-          void (paused ? windowsHost.stopInput() : windowsHost.startInput())
+          void windowsHost.setInputMode(desiredInputMode())
             .then(() => {
               updateTrayTooltip();
               showFeedback(
@@ -1289,9 +1094,10 @@ if (!gotLock || devQuitRequest) {
                 paused ? "warning" : "normal",
               );
             })
-            .catch((error: unknown) => {
+            .catch(async (error: unknown) => {
               item.checked = !paused;
               paused = item.checked;
+              await windowsHost.setInputMode(desiredInputMode()).catch(() => undefined);
               updateTrayTooltip();
               showFeedback(
                 error instanceof Error ? error.message : "Could not change dictation state",
@@ -1299,11 +1105,6 @@ if (!gotLock || devQuitRequest) {
               );
             });
         },
-      },
-      { type: "separator" },
-      {
-        label: "Development",
-        submenu: developerMenu(),
       },
       { type: "separator" },
       {
@@ -1318,65 +1119,12 @@ if (!gotLock || devQuitRequest) {
     updateTrayTooltip();
   };
 
-  const initializeDeveloperController = async (): Promise<void> => {
-    if (managedDev || packagedSmoke) return;
-    const localAppData = process.env.LOCALAPPDATA ?? app.getPath("appData");
-    const controller = new DeveloperController({
-      configPath: path.join(app.getPath("appData"), "Undertone", "developer.json"),
-      buildRoot: path.join(localAppData, "Undertone", "DevBuilds"),
-      processHost: windowsHost,
-      onBeforeDevStart: async () => {
-        if (productionPausedForDev) return;
-        const developmentConfig = path.join(localAppData, "Undertone", "ManagedDev", "config.json");
-        const productionConfig = path.join(app.getPath("appData"), "Undertone", "config.json");
-        if (!existsSync(developmentConfig) && existsSync(productionConfig)) {
-          await mkdir(path.dirname(developmentConfig), { recursive: true });
-          await copyFile(productionConfig, developmentConfig);
-        }
-        productionPausedForDev = true;
-        try {
-          gestures.cancel();
-          await windowsHost.stopInput();
-          await Promise.all([
-            localStt?.eject() ?? Promise.resolve(),
-            localCleanup?.eject() ?? Promise.resolve(),
-          ]);
-        } catch (error) {
-          productionPausedForDev = false;
-          if (!paused && !quitting) await windowsHost.startInput().catch(() => undefined);
-          throw error;
-        }
-      },
-      onDevUnavailable: async () => {
-        if (!productionPausedForDev) return;
-        productionPausedForDev = false;
-        if (!paused && !quitting) {
-          await windowsHost.startInput();
-          configureLocalResidency();
-        }
-      },
-      onStateChange: (snapshot) => {
-        developerSnapshot = snapshot;
-        rebuildTrayMenu();
-      },
-    });
-    developerController = controller;
-    await controller.load();
-    const environmentRepository = process.env.UNDERTONE_DEV_REPOSITORY;
-    if (environmentRepository !== undefined && environmentRepository.trim().length > 0) {
-      await controller.setRepository(environmentRepository);
-    }
-    await refreshDeveloperWorktrees();
-  };
-
   const createTray = (): void => {
     normalTrayImage = nativeImage.createFromPath(resolveAsset("icon.png"));
     recordingTrayImage = nativeImage.createFromDataURL(recordingTraySvg());
     tray = new Tray(normalTrayImage);
     rebuildTrayMenu();
-    tray.on("double-click", () => {
-      if (!developerController?.openDevSettings()) openSettings();
-    });
+    tray.on("double-click", openSettings);
   };
 
   const initializePipeline = async (): Promise<void> => {
@@ -1400,9 +1148,11 @@ if (!gotLock || devQuitRequest) {
     const localRoot = path.join(localAppData, "Undertone");
     localInstaller = new LocalInstaller(windowsHost, localRoot);
     localStt = createLocalSttRuntime(windowsHost, localRoot, {
+      isInstalled: () => localInstaller?.isInstalled("stt") ?? false,
       onNotice: (message) => showFeedback(message, "warning"),
     });
     localCleanup = createLocalCleanupRuntime(windowsHost, localRoot, {
+      isInstalled: () => localInstaller?.isInstalled("cleanup") ?? false,
       onNotice: (message) => showFeedback(message, "warning"),
     });
     configureLocalResidency();
@@ -1437,14 +1187,14 @@ if (!gotLock || devQuitRequest) {
       history,
       turnBuffer,
       feedback: {
-        message: showFeedback,
+        message: ({ text, tone }) => { showFeedback(text, tone); },
         dismiss: () => { overlayController.hide(); },
       },
     });
     pipeline = new DictationPipelineQueue(
       () => config,
       {
-        dictate: async (input, target, snapshot, overlayRevision, completion) => {
+        dictate: async (input, destination, snapshot, overlayRevision) => {
           const captureId = input.type === "transcript" ? input.previewId : input.captureId;
           if (input.type === "transcript") {
             const capture = liveCaptures.get(input.previewId);
@@ -1456,17 +1206,21 @@ if (!gotLock || devQuitRequest) {
           }
           try {
             const feedback = {
-              message: (text: string, kind: OverlayTone = "normal") => {
-                showDictationFeedback(captureId ?? -1, text, kind);
+              message: (message: DictationFeedbackMessage) => {
+                if (message.destination === "turn-draft") {
+                  showDictationFeedback(captureId ?? -1, message.text, message.tone);
+                } else {
+                  showFeedback(message.text, message.tone);
+                }
               },
               dismiss: () => { overlayController.hide(overlayRevision); },
             };
             if (input.type === "audio") {
-              await runner.run(input.wav, target, snapshot, completion, feedback);
+              await runner.run(input.wav, destination, snapshot, feedback);
             } else {
-              await runner.runTranscript(input.text, target, snapshot, completion, feedback);
+              await runner.runTranscript(input.text, destination, snapshot, feedback);
             }
-            if (completion === "commit"
+            if (destination.completion === "commit"
               && turnBuffer.snapshot() === null
               && captureId !== undefined
               && turnDraftSignal?.captureId !== captureId) {
@@ -1484,16 +1238,15 @@ if (!gotLock || devQuitRequest) {
           }
         },
         repaste: async (text, snapshot) => {
-          await paster.paste(text, Boolean(snapshot.restore_clipboard));
-          history.registerSuccess(text);
-          overlayController.feedback("Text pasted", "normal", 1_000);
+          await paster.paste(text, snapshot.restore_clipboard);
+          showFeedback("Text pasted");
         },
         commit: async (snapshot) => {
           turnDraftManualProcessing = turnBuffer.snapshot() !== null;
           publishTurnDraft();
           try {
             await runner.commit(snapshot, {
-              message: showFeedback,
+              message: ({ text, tone }) => { showFeedback(text, tone); },
               dismiss: () => {
                 if (activeDictationCaptureIds.size === 0) {
                   overlayController.hide();
@@ -1514,14 +1267,14 @@ if (!gotLock || devQuitRequest) {
         },
         discard: async () => {
           runner.discard({
-            message: showFeedback,
+            message: ({ text, tone }) => { showFeedback(text, tone); },
             dismiss: () => { overlayController.hide(); },
           });
           publishTurnDraft();
         },
         scratch: async () => {
           runner.scratchLast({
-            message: showFeedback,
+            message: ({ text, tone }) => { showFeedback(text, tone); },
             dismiss: () => { overlayController.hide(); },
           });
           publishTurnDraft();
@@ -1536,10 +1289,10 @@ if (!gotLock || devQuitRequest) {
     localCleanup?.setIdleTimeout(idleSeconds);
     if (!config.local_loaded) return;
     if (config.provider === "local") {
-      localStt?.loadAsync(modelOverride(config, "stt", "local"));
+      localStt?.warm();
     }
     if (config.ai_cleanup && config.cleanup_provider === "local") {
-      localCleanup?.loadAsync(modelOverride(config, "cleanup", "local"));
+      localCleanup?.warm();
     }
   }
 
@@ -1562,8 +1315,8 @@ if (!gotLock || devQuitRequest) {
       microphoneTest.reject(new Error("Undertone is shutting down"));
       microphoneTest = null;
     }
+    await windowsHost.setInputMode(desiredInputMode()).catch(() => undefined);
     await Promise.all([
-      developerController?.dispose() ?? Promise.resolve(),
       localStt?.shutdown() ?? Promise.resolve(),
       localCleanup?.shutdown() ?? Promise.resolve(),
     ]);
@@ -1578,37 +1331,35 @@ if (!gotLock || devQuitRequest) {
     shutdownComplete = true;
   }
 
-  function currentSettingsSnapshot(): ReturnType<typeof settingsSnapshot> {
-    const engineSnapshot = (
+  async function currentSettingsSnapshot(): Promise<ReturnType<typeof settingsSnapshot>> {
+    const engineSnapshot = async (
       kind: LocalEngineKind,
       runtime: LocalServerRuntime | null,
-      model: string,
-    ): LocalEngineSnapshot => {
+    ): Promise<LocalEngineSnapshot> => {
       const install = localInstallState[kind];
-      const installBytes = localInstaller?.installSize(kind) ?? 0;
+      const installState = {
+        installing: install.installing,
+        installPhase: install.phase,
+        installFraction: install.fraction,
+        installBytes: localInstaller?.installSize(kind) ?? 0,
+      };
       if (runtime === null) {
         return {
           installed: false,
           loaded: false,
           loading: false,
           build: null,
-          installing: install.installing,
-          installPhase: install.phase,
-          installFraction: install.fraction,
-          installBytes,
+          ...installState,
         };
       }
       try {
-        const status = runtime.status(model);
+        const status = await runtime.status();
         return {
           installed: status.installed,
           loaded: status.loaded,
           loading: status.loading,
           build: status.build,
-          installing: install.installing,
-          installPhase: install.phase,
-          installFraction: install.fraction,
-          installBytes,
+          ...installState,
         };
       } catch {
         return {
@@ -1616,25 +1367,22 @@ if (!gotLock || devQuitRequest) {
           loaded: false,
           loading: false,
           build: null,
-          installing: install.installing,
-          installPhase: install.phase,
-          installFraction: install.fraction,
-          installBytes,
+          ...installState,
         };
       }
     };
-    return settingsSnapshot(config, app.getVersion(), electronPreview, {
-      stt: engineSnapshot("stt", localStt, modelOverride(config, "stt", "local")),
-      cleanup: engineSnapshot(
-        "cleanup",
-        localCleanup,
-        modelOverride(config, "cleanup", "local"),
-      ),
+    const [stt, cleanup] = await Promise.all([
+      engineSnapshot("stt", localStt),
+      engineSnapshot("cleanup", localCleanup),
+    ]);
+    return settingsSnapshot(config, app.getVersion(), {
+      stt,
+      cleanup,
     }, microphones, startWithWindows);
   }
 
   async function persistSettingsPatch(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
-    let result = currentSettingsSnapshot();
+    let result = await currentSettingsSnapshot();
     const operation = settingsUpdateChain.then(async () => {
       const store = configStore;
       if (store === null) throw new Error("Settings store is not ready");
@@ -1645,15 +1393,6 @@ if (!gotLock || devQuitRequest) {
       const previousDiscard = config.discard_hotkey;
       const previousProvider = config.provider;
       const previousLiveTranscription = config.live_transcription;
-      if (isRecord(value) && value.startWithWindows !== undefined) {
-        if (typeof value.startWithWindows !== "boolean") {
-          throw new Error("startWithWindows must be boolean");
-        }
-        if (!electronPreview) {
-          await autostart.setEnabled(value.startWithWindows);
-        }
-        startWithWindows = value.startWithWindows;
-      }
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
@@ -1672,9 +1411,22 @@ if (!gotLock || devQuitRequest) {
       }
       configureLocalResidency();
       updateTrayTooltip();
-      result = currentSettingsSnapshot();
+      result = await currentSettingsSnapshot();
     });
     settingsUpdateChain = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async function setStartWithWindows(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
+    if (typeof value !== "boolean") throw new Error("Start with Windows must be boolean");
+    let result = await currentSettingsSnapshot();
+    const operation = autostartUpdateChain.then(async () => {
+      if (!electronPreview) await autostart.setEnabled(value);
+      startWithWindows = value;
+      result = await currentSettingsSnapshot();
+    });
+    autostartUpdateChain = operation.catch(() => undefined);
     await operation;
     return result;
   }
@@ -1709,15 +1461,14 @@ if (!gotLock || devQuitRequest) {
       };
     });
     try {
-      await windowsHost.startShortcutCapture();
+      await windowsHost.setInputMode(desiredInputMode());
       const shortcut = await captured;
       if (shortcut === null) return currentSettingsSnapshot();
       return await persistSettingsPatch({ [field]: shortcut });
     } finally {
       shortcutCapture = null;
       pttActionRouter.reset();
-      await windowsHost.stopShortcutCapture().catch(() => undefined);
-      if (paused) await windowsHost.stopInput().catch(() => undefined);
+      await windowsHost.setInputMode(desiredInputMode()).catch(() => undefined);
     }
   }
 
@@ -1768,15 +1519,7 @@ if (!gotLock || devQuitRequest) {
     }
   };
 
-  app.on("second-instance", (_event, argv) => {
-    if (electronPreview && argv.includes(DEV_QUIT_ARGUMENT)) {
-      app.quit();
-      return;
-    }
-    if (argv.includes(OPEN_SETTINGS_ARGUMENT)) {
-      openSettings();
-      return;
-    }
+  app.on("second-instance", () => {
     openSettings();
   });
   app.on("before-quit", (event) => {
@@ -1796,6 +1539,12 @@ if (!gotLock || devQuitRequest) {
       throw new Error("Settings update came from an unauthorized renderer");
     }
     return await persistSettingsPatch(value);
+  });
+  ipcMain.handle("autostart:set", async (event, value: unknown) => {
+    if (event.sender !== settingsWindow?.webContents) {
+      throw new Error("Autostart update came from an unauthorized renderer");
+    }
+    return await setStartWithWindows(value);
   });
   ipcMain.handle("shortcut:capture", async (event, value: unknown) => {
     if (event.sender !== settingsWindow?.webContents) {
@@ -1825,11 +1574,11 @@ if (!gotLock || devQuitRequest) {
     const kind = value.kind;
     const runtime = value.kind === "stt" ? localStt : localCleanup;
     if (runtime === null) throw new Error("Local engine service is not ready");
-    const model = modelOverride(config, kind, "local");
     if (value.action === "install") {
       if (localInstaller === null) throw new Error("Local installer is not ready");
       localInstallState[kind] = { installing: true, phase: "Preparing", fraction: 0 };
       try {
+        await runtime.eject();
         await localInstaller.install(kind, (progress) => {
           localInstallState[kind] = { installing: true, ...progress };
         });
@@ -1837,7 +1586,7 @@ if (!gotLock || devQuitRequest) {
         localInstallState[kind] = { installing: false, phase: "", fraction: 0 };
       }
     } else if (value.action === "load") {
-      await runtime.ensureReady(model);
+      await runtime.load();
     } else {
       await runtime.eject();
     }
@@ -1858,7 +1607,7 @@ if (!gotLock || devQuitRequest) {
       text: "",
       error: entry.error,
       timestamp: entry.timestamp,
-      retryable: entry.wav !== undefined,
+      retryable: entry.retryable,
     });
   });
   ipcMain.handle("history:action", async (event, value: unknown) => {
@@ -1869,8 +1618,8 @@ if (!gotLock || devQuitRequest) {
       || !isHistoryAction(value.action)) {
       throw new Error("Invalid history action");
     }
-    const entry = history.snapshot().find((candidate) => candidate.id === value.id);
-    if (entry === undefined) throw new Error("That history entry is no longer available");
+    const entry = history.lookup(value.id);
+    if (entry === null) throw new Error("That history entry is no longer available");
     const activePipeline = pipeline;
     if (activePipeline === null && value.action !== "copy") {
       throw new Error("Dictation pipeline is not ready");
@@ -1887,7 +1636,7 @@ if (!gotLock || devQuitRequest) {
       await activePipeline!.enqueueRepaste(entry.text);
       return;
     }
-    const wav = history.consumeRetry(entry.id);
+    const wav = history.takeRetry(entry.id);
     if (wav === null) throw new Error("Retry audio is no longer available");
     await activePipeline!.enqueueRetry(wav);
   });
@@ -1923,27 +1672,22 @@ if (!gotLock || devQuitRequest) {
         language: config.language,
         vocabulary: [],
         provider,
-        model: modelOverride(config, "stt", provider),
       });
       return `Transcription works (${providerName(provider)}).`;
     }
     const client = cleanupClient;
     if (client === null) throw new Error("Cleanup service is not ready");
     const provider = config.cleanup_provider;
-    const model = modelOverride(config, "cleanup", provider);
-    if (provider === "local") await localCleanup?.ensureReady(model);
+    if (provider === "local") await localCleanup?.load();
     const cleaned = await client.cleanup({
       transcript: "testing one two three",
-      corrections: {},
       apiKey: providerKey(config, provider),
       provider,
-      model,
       timeoutSeconds: provider === "local" ? 30 : config.cleanup_timeout,
       reasoningEffort: config.cleanup_reasoning_effort,
       serviceTier: config.cleanup_service_tier,
-      throwOnError: true,
     });
-    if (cleaned === null) throw new Error("Cleanup test failed");
+    if (cleaned === null) throw new CleanupError("Local cleanup is not ready.");
     return `Cleanup works (${providerName(provider)}).`;
   });
   ipcMain.handle("openai-subscription:action", async (event, value: unknown) => {
@@ -2081,7 +1825,7 @@ if (!gotLock || devQuitRequest) {
       }
       if ((!pending.streamed && (wav === null || wav.byteLength <= 44)) || durationMs < 250) {
         pending.resolve(null);
-        showActiveCaptureFeedback(
+        showDictationFeedback(
           requestId,
           "Recording too short — speak a little longer",
           "warning",
@@ -2200,25 +1944,15 @@ if (!gotLock || devQuitRequest) {
       updateDraft();
       setInterval(updateDraft, 250);
     }
-    await initializeDeveloperController();
-    if (!managedDev) createTray();
+    createTray();
     updateTrayTooltip();
     const sttConfigured = config.provider === "local"
       || providerKey(config, config.provider).trim().length > 0;
     if (!turnDraftNativeE2e && (packagedSmoke || !sttConfigured)) openSettings();
-    await windowsHost.startInput();
-    if (managedDev) {
-      const readyFile = process.env.UNDERTONE_MANAGED_READY_FILE;
-      const localAppData = process.env.LOCALAPPDATA ?? app.getPath("appData");
-      const buildRoot = path.join(localAppData, "Undertone", "DevBuilds");
-      if (readyFile === undefined || !isWithin(readyFile, buildRoot)) {
-        throw new Error("Managed development readiness path is invalid");
-      }
-      await writeFile(readyFile, "ready", "utf8");
-    }
+    await windowsHost.setInputMode(desiredInputMode());
     if (updaterSupported) {
       setTimeout(() => {
-        if (developerSnapshot.activeWorktree === null) void appUpdateService?.check();
+        void appUpdateService?.check();
       }, 15_000);
     }
     if (packagedSmoke) {
@@ -2238,9 +1972,9 @@ if (!gotLock || devQuitRequest) {
         if (localStt === null || localCleanup === null) {
           throw new Error("Local runtimes did not initialize");
         }
-        await localStt.ensureReady();
+        await localStt.load();
         await localStt.eject();
-        await localCleanup.ensureReady();
+        await localCleanup.load();
         await localCleanup.eject();
       }
       await writeFile(packagedSmokeResult, "ok", "utf8");
@@ -2249,12 +1983,18 @@ if (!gotLock || devQuitRequest) {
     }
   }).catch(async (error: unknown) => {
     console.error("Electron startup failed", error);
+    const message = error instanceof Error ? error.message : String(error);
     if (packagedSmokeResult !== undefined
       && isWithin(packagedSmokeResult, app.getPath("temp"))) {
-      const message = error instanceof Error ? error.message : String(error);
       await writeFile(packagedSmokeResult, `error:${message}`, "utf8").catch(() => undefined);
     }
     await fileLog.flush();
+    if (!packagedSmoke) {
+      dialog.showErrorBox(
+        "Undertone could not start",
+        `${message}\n\nLog: ${path.join(app.getPath("userData"), "app.log")}`,
+      );
+    }
     app.exit(1);
   });
 }
@@ -2340,17 +2080,6 @@ function actionShortcut(shortcut: string): string {
   }
 }
 
-function liveVocabulary(config: UndertoneConfig): unknown[] {
-  if (!config.stt_vocab_hints) return [];
-  const values: unknown[] = Array.isArray(config.vocabulary) ? [...config.vocabulary] : [];
-  if (isRecord(config.corrections)) {
-    for (const correction of Object.values(config.corrections)) {
-      if (typeof correction === "string" && !values.includes(correction)) values.push(correction);
-    }
-  }
-  return values;
-}
-
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -2373,7 +2102,6 @@ function isWithin(candidate: string, parent: string): boolean {
 }
 
 function resolveAsset(name: "icon.png" | "icon.ico"): string {
-  if (managedDev) return path.join(app.getAppPath(), "assets", name);
   return app.isPackaged
     ? path.join(process.resourcesPath, "assets", name)
     : path.resolve(__dirname, "../../../../assets", name);

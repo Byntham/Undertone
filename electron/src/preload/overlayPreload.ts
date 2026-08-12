@@ -1,9 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { OverlayState } from "../shared/overlay";
+import type { OverlayBridge, OverlayState } from "../shared/overlay";
 
-export type { OverlayState } from "../shared/overlay";
-
-contextBridge.exposeInMainWorld("undertoneOverlay", {
+const overlayBridge: OverlayBridge = {
   onState: (listener: (state: OverlayState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: OverlayState): void => {
       listener(state);
@@ -11,4 +9,6 @@ contextBridge.exposeInMainWorld("undertoneOverlay", {
     ipcRenderer.on("overlay:state", handler);
     return () => ipcRenderer.removeListener("overlay:state", handler);
   },
-});
+};
+
+contextBridge.exposeInMainWorld("undertoneOverlay", overlayBridge);

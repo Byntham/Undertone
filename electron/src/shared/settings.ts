@@ -1,8 +1,21 @@
-export type SettingsProviderId = "xai" | "openai" | "openai-subscription" | "openrouter" | "local";
 export type CloudProviderId = "xai" | "openai" | "openrouter";
 export type ModelProviderId = CloudProviderId | "openai-subscription";
 export type TranscriptionProviderId = CloudProviderId | "local";
 export type CleanupProviderId = ModelProviderId | "local";
+export type SettingsProviderId = CleanupProviderId;
+export type OpenTurnCleanupStrategy = "live-full" | "commit-full";
+
+export function isCloudProvider(value: unknown): value is CloudProviderId {
+  return value === "xai" || value === "openai" || value === "openrouter";
+}
+
+export function isTranscriptionProvider(value: unknown): value is TranscriptionProviderId {
+  return isCloudProvider(value) || value === "local";
+}
+
+export function isCleanupProvider(value: unknown): value is CleanupProviderId {
+  return isTranscriptionProvider(value) || value === "openai-subscription";
+}
 export type OpenAiSubscriptionAction = "connect" | "disconnect";
 export type LocalEngineKind = "stt" | "cleanup";
 export type LocalEngineAction = "install" | "load" | "eject";
@@ -12,9 +25,6 @@ export type ShortcutSetting =
   | "commitHotkey"
   | "scratchHotkey"
   | "discardHotkey";
-export type OpenTurnCleanupStrategySetting =
-  | "live-full"
-  | "commit-full";
 export type HistoryAction = "copy" | "repaste" | "retry";
 export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
@@ -60,11 +70,10 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   liveTranscription: boolean;
-  openTurnCleanupStrategy: OpenTurnCleanupStrategySetting;
+  openTurnCleanupStrategy: OpenTurnCleanupStrategy;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
-  preview: boolean;
   provider: TranscriptionProviderId;
   cleanupProvider: CleanupProviderId;
   keyConfigured: Record<CloudProviderId, boolean>;
@@ -93,14 +102,13 @@ export interface SettingsPatch {
   aiCleanup?: boolean;
   restoreClipboard?: boolean;
   soundCues?: boolean;
-  startWithWindows?: boolean;
   hotkey?: string;
   repasteHotkey?: string;
   commitHotkey?: string;
   scratchHotkey?: string;
   discardHotkey?: string;
   liveTranscription?: boolean;
-  openTurnCleanupStrategy?: OpenTurnCleanupStrategySetting;
+  openTurnCleanupStrategy?: OpenTurnCleanupStrategy;
   inputDevice?: string;
   provider?: TranscriptionProviderId;
   cleanupProvider?: CleanupProviderId;
@@ -115,6 +123,7 @@ export interface SettingsPatch {
 export interface SettingsApi {
   load(): Promise<SettingsSnapshot>;
   update(patch: SettingsPatch): Promise<SettingsSnapshot>;
+  setStartWithWindows(enabled: boolean): Promise<SettingsSnapshot>;
   captureShortcut(field: ShortcutSetting): Promise<SettingsSnapshot>;
   localAction(kind: LocalEngineKind, action: LocalEngineAction): Promise<SettingsSnapshot>;
   history(): Promise<HistorySnapshotEntry[]>;

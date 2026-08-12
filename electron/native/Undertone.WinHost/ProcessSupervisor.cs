@@ -11,7 +11,6 @@ internal sealed class ProcessSupervisor : IDisposable
 
     private readonly Dictionary<int, SupervisedProcess> _processes =
         new Dictionary<int, SupervisedProcess>();
-    private readonly Dictionary<int, int> _exitCodes = new Dictionary<int, int>();
 
     public ProcessSupervisor() { }
 
@@ -45,8 +44,7 @@ internal sealed class ProcessSupervisor : IDisposable
         string fileName,
         string arguments,
         string workingDirectory,
-        string logFile,
-        Dictionary<string, string> environment)
+        string logFile)
     {
         var process = new Process
         {
@@ -64,16 +62,6 @@ internal sealed class ProcessSupervisor : IDisposable
             },
             EnableRaisingEvents = true
         };
-        if (environment != null)
-        {
-            foreach (var pair in environment)
-            {
-                if (pair.Value == null)
-                    process.StartInfo.EnvironmentVariables.Remove(pair.Key);
-                else
-                    process.StartInfo.EnvironmentVariables[pair.Key] = pair.Value;
-            }
-        }
         var job = CreateKillOnCloseJob();
         if (!process.Start())
         {
@@ -151,12 +139,6 @@ internal sealed class ProcessSupervisor : IDisposable
         catch { return false; }
     }
 
-    public bool TryGetExitCode(int processId, out int exitCode)
-    {
-        lock (_processes)
-            return _exitCodes.TryGetValue(processId, out exitCode);
-    }
-
     public void Dispose()
     {
         SupervisedProcess[] processes;
@@ -173,24 +155,10 @@ internal sealed class ProcessSupervisor : IDisposable
     private void Complete(SupervisedProcess supervised)
     {
         var processId = supervised.ProcessId;
-        var exitCode = 1;
-        try { exitCode = supervised.Process.ExitCode; } catch { }
         lock (_processes)
         {
             if (!_processes.Remove(processId))
                 return;
-            _exitCodes[processId] = exitCode;
-            if (_exitCodes.Count > 64)
-            {
-                var oldest = 0;
-                foreach (var candidate in _exitCodes.Keys)
-                {
-                    oldest = candidate;
-                    break;
-                }
-                if (oldest != 0)
-                    _exitCodes.Remove(oldest);
-            }
         }
         supervised.Dispose();
     }

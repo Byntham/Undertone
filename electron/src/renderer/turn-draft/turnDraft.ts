@@ -1,39 +1,14 @@
-import type { TurnDraftView } from "../../shared/overlay";
+import type { TurnDraftBridge, TurnDraftView } from "../../shared/overlay";
 import "./style.css";
 
-type DraftActivity =
-  | "idle"
-  | "recording"
-  | "locked"
-  | "transcribing"
-  | "slow"
-  | "listening"
-  | "finalizing"
-  | "warning"
-  | "error";
-
-type ActivityView = TurnDraftView & {
-  activity?: DraftActivity;
-  presentation?: "visible" | "dismissing";
-  revision?: number;
-};
+type DraftActivity = TurnDraftView["activity"];
 
 declare global {
   interface Window {
-    undertoneTurnDraft?: {
-      discard: () => void;
-      snap: () => void;
-      reportContentHeight: (height: number) => void;
-      completeDismiss: (revision: number) => void;
-      onView: (listener: (draft: TurnDraftView) => void) => () => void;
-      onLevel: (listener: (level: number) => void) => () => void;
-    };
+    undertoneTurnDraft: TurnDraftBridge;
   }
 }
 
-const TEXT_BASE_HEIGHT = 68;
-const BODY_GUTTERS = 12;
-const TEXT_CHROME = 16;
 const TEXT_MEASUREMENT_SLACK = 2;
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -49,6 +24,9 @@ const signalRim = requiredElement<SVGSVGElement>("#signalRim");
 const signalPath = requiredElement<SVGRectElement>("#signalPath");
 const discard = requiredElement<HTMLButtonElement>("#discard");
 const snap = requiredElement<HTMLButtonElement>("#snap");
+const turnDraftBridge = window.undertoneTurnDraft;
+if (turnDraftBridge === undefined) throw new Error("Open-turn preload bridge is missing");
+const compactHeight = window.innerHeight;
 
 let currentActivity: DraftActivity = "idle";
 let rendered = false;
@@ -103,20 +81,21 @@ function requestContentHeight(): void {
   layoutFrame = undefined;
   let height: number;
   if (contentIsEmpty()) {
-    height = TEXT_BASE_HEIGHT;
+    height = compactHeight;
   } else {
     // Ignore the transient narrow frame while the native window grows from
     // the compact indicator into its text width. ResizeObserver retries it.
     if (draftViewport.clientWidth < 180) return;
+    const viewportChromeHeight = window.innerHeight - draftViewport.clientHeight;
     height = Math.max(
-      TEXT_BASE_HEIGHT,
-      Math.ceil(BODY_GUTTERS + TEXT_CHROME + fullTextHeight() + TEXT_MEASUREMENT_SLACK),
+      compactHeight,
+      Math.ceil(viewportChromeHeight + fullTextHeight() + TEXT_MEASUREMENT_SLACK),
     );
   }
   fitTextViewport();
   if (height === lastRequestedHeight) return;
   lastRequestedHeight = height;
-  window.undertoneTurnDraft?.reportContentHeight(height);
+  turnDraftBridge.reportContentHeight(height);
 }
 
 function scheduleLayout(): void {
@@ -145,7 +124,7 @@ function completeDismissal(revision: number): void {
   if (dismissingRevision !== revision || completedDismissalRevision === revision) return;
   completedDismissalRevision = revision;
   rendered = false;
-  window.undertoneTurnDraft?.completeDismiss(revision);
+  turnDraftBridge.completeDismiss(revision);
 }
 
 function startDismissal(revision: number): void {
@@ -163,10 +142,13 @@ function startDismissal(revision: number): void {
 new ResizeObserver(scheduleLayout).observe(draftViewport);
 new ResizeObserver(sizeSignalPath).observe(draft);
 sizeSignalPath();
-window.addEventListener("resize", scheduleLayout);
+window.addEventListener("resize", () => {
+  lastRequestedHeight = undefined;
+  scheduleLayout();
+});
 
-discard.addEventListener("click", () => { window.undertoneTurnDraft?.discard(); });
-snap.addEventListener("click", () => { window.undertoneTurnDraft?.snap(); });
+discard.addEventListener("click", () => { turnDraftBridge.discard(); });
+snap.addEventListener("click", () => { turnDraftBridge.snap(); });
 
 draft.addEventListener("animationend", (event) => {
   if (event.animationName === "surfaceReveal") draft.classList.remove("reveal");
@@ -178,7 +160,7 @@ draft.addEventListener("animationend", (event) => {
   }
 });
 
-window.undertoneTurnDraft?.onLevel((rms) => {
+turnDraftBridge.onLevel((rms) => {
   if (!(["recording", "locked", "listening"] as DraftActivity[])
     .includes(currentActivity) || !Number.isFinite(rms)) return;
   const decibels = 20 * Math.log10(Math.max(0.00001, rms));
@@ -192,22 +174,16 @@ window.undertoneTurnDraft?.onLevel((rms) => {
   draft.style.setProperty("--voice-level", envelope.toFixed(3));
 });
 
-window.undertoneTurnDraft?.onView((incoming) => {
-  const view = incoming as ActivityView;
+turnDraftBridge.onView((view) => {
   const empty = view.text.trim().length === 0;
-  const fallbackActivity = view.liveState === "listening"
-    ? "listening"
-    : view.liveState === "finalizing" ? "finalizing" : "idle";
-  const nextActivity = view.activity ?? fallbackActivity;
-  const presentation = view.presentation ?? "visible";
-  const revision = Number.isSafeInteger(view.revision) ? (view.revision ?? 0) : 0;
+  const nextActivity = view.activity;
+  const presentation = view.presentation;
+  const revision = view.revision;
   const reveal = !rendered;
   const activityChanged = nextActivity !== currentActivity;
   const wakeListening = isListeningActivity(nextActivity)
     && !isListeningActivity(currentActivity);
 
-  draft.dataset.presentation = presentation;
-  draft.dataset.revision = String(revision);
   if (presentation === "dismissing") {
     startDismissal(revision);
     return;
@@ -218,7 +194,6 @@ window.undertoneTurnDraft?.onView((incoming) => {
   rendered = true;
   draft.dataset.empty = String(empty);
   draft.dataset.activity = nextActivity;
-  draft.dataset.liveState = view.liveState ?? "idle";
   draftText.textContent = view.text;
   draft.setAttribute(
     "aria-label",

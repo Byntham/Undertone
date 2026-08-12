@@ -2,17 +2,20 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  LOCAL_CLEANUP_MODEL,
-  LOCAL_STT_MODEL,
-  LOCAL_VAD_MODEL,
   createLocalCleanupRuntime,
   createLocalSttRuntime,
   quoteWindowsArgument,
   type LocalProcessHost,
 } from "../src/main/localRuntime";
+import { LocalInstaller } from "../src/main/localInstaller";
+import {
+  LOCAL_CLEANUP_MODEL,
+  LOCAL_STT_MODEL,
+  LOCAL_VAD_MODEL,
+} from "../src/shared/models";
 import { WindowsHost } from "../src/platform/windowsHost";
 import { FetchHttpClient } from "../src/platform/http";
 import { encodePcm16Wav } from "../src/core/audio";
@@ -32,6 +35,7 @@ class FakeHost implements LocalProcessHost {
   readonly stopped: number[] = [];
   readonly running = new Map<number, boolean>();
   failCuda = false;
+  runningCheck: ((processId: number) => Promise<boolean>) | null = null;
   private nextProcessId = 100;
 
   async spawnSupervised(
@@ -53,11 +57,13 @@ class FakeHost implements LocalProcessHost {
   }
 
   async isSupervisedRunning(processId: number): Promise<boolean> {
+    if (this.runningCheck !== null) return await this.runningCheck(processId);
     return this.running.get(processId) === true;
   }
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   while (temporaryDirectories.length > 0) {
     const directory = temporaryDirectories.pop();
     if (directory !== undefined) await rm(directory, { recursive: true, force: true });
@@ -70,18 +76,18 @@ describe("local runtime", () => {
     const host = new FakeHost();
     const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
 
-    const baseUrl = await runtime.ensureReady();
+    await runtime.load();
+    const baseUrl = await runtime.withServer("wait", (url) => url);
     expect(baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
     expect(host.starts).toHaveLength(1);
     expect(host.starts[0]?.file).toBe(path.join(root, "runtime", "cpu", "whisper-server.exe"));
     expect(host.starts[0]?.argumentsValue).toContain(LOCAL_STT_MODEL);
     expect(host.starts[0]?.argumentsValue).toContain(LOCAL_VAD_MODEL);
-    expect(runtime.baseUrl()).toBe(baseUrl);
-    expect((await runtime.ensureReady())).toBe(baseUrl);
+    expect(await runtime.withServer("wait", (url) => url)).toBe(baseUrl);
     expect(host.starts).toHaveLength(1);
 
     await runtime.eject();
-    expect(runtime.baseUrl()).toBeNull();
+    expect(await runtime.withServer("fallback", () => "used")).toBeNull();
     expect(host.stopped).toContain(host.starts[0]?.processId);
   });
 
@@ -95,12 +101,12 @@ describe("local runtime", () => {
       onNotice: (message) => notices.push(message),
     });
 
-    await runtime.ensureReady();
+    await runtime.load();
     expect(host.starts.map((start) => path.basename(path.dirname(start.file))))
       .toEqual(["cuda", "cpu"]);
     expect(notices).toEqual(["GPU transcription failed — using CPU (slower)."]);
     await runtime.eject();
-    await runtime.ensureReady();
+    await runtime.load();
     expect(host.starts.map((start) => path.basename(path.dirname(start.file))))
       .toEqual(["cuda", "cpu", "cpu"]);
     expect(notices).toEqual(["GPU transcription failed — using CPU (slower)."]);
@@ -119,26 +125,297 @@ describe("local runtime", () => {
       },
     });
 
-    expect(runtime.baseUrl()).toBeNull();
-    runtime.loadAsync();
-    runtime.loadAsync();
-    expect(runtime.baseUrl()).toBeNull();
+    expect(await runtime.withServer("fallback", () => "used")).toBeNull();
+    runtime.warm();
+    runtime.warm();
+    expect(await runtime.withServer("fallback", () => "used")).toBeNull();
     await waitUntil(() => host.starts.length === 1);
     release?.();
-    await waitUntil(() => runtime.baseUrl() !== null);
+    await runtime.load();
     expect(host.starts).toHaveLength(1);
 
     const firstProcess = host.starts[0]?.processId;
     if (firstProcess !== undefined) host.running.set(firstProcess, false);
-    runtime.loadAsync();
+    runtime.warm();
     await waitUntil(() => host.starts.length === 2);
     await runtime.shutdown();
   });
 
-  it("rejects model path traversal and quotes Windows arguments", async () => {
+  it("never posts to a stale cleanup process and starts only one replacement warm", async () => {
+    const root = await installedRoot("cleanup");
+    const host = new FakeHost();
+    let blockReadiness = false;
+    const readiness = deferred();
+    const runtime = createLocalCleanupRuntime(host, root, {
+      fetch: async () => {
+        if (blockReadiness) await readiness.promise;
+        return { status: 200 };
+      },
+    });
+    await runtime.load();
+    const firstProcess = host.starts[0]!.processId;
+    host.running.set(firstProcess, false);
+    blockReadiness = true;
+    const posted: string[] = [];
+    const cleaner = new CleanupClient({
+      async post(url) {
+        posted.push(url);
+        return {
+          status: 200,
+          body: JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ text: "cleaned" }) } }],
+          }),
+        };
+      },
+    }, runtime);
+
+    expect(await Promise.all([
+      cleaner.cleanup(localCleanupOptions("words")),
+      cleaner.cleanup(localCleanupOptions("words")),
+    ])).toEqual([null, null]);
+    await waitUntil(() => host.starts.length === 2);
+    expect(posted).toEqual([]);
+    expect(host.starts).toHaveLength(2);
+    readiness.resolve();
+    await runtime.load();
+    await runtime.shutdown();
+  });
+
+  it("waits for STT and restarts a dead cached process before posting", async () => {
     const root = await installedRoot("stt");
-    const runtime = createLocalSttRuntime(new FakeHost(), root, { fetch: readyFetch });
-    expect(() => runtime.isInstalled("../outside.bin")).toThrow(/filename/u);
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    host.running.set(host.starts[0]!.processId, false);
+    const posted: string[] = [];
+    const transcriber = new Transcriber({
+      async post(url) {
+        posted.push(url);
+        return { status: 200, body: JSON.stringify({ text: " restarted  okay " }) };
+      },
+    }, runtime);
+
+    expect(await transcriber.transcribe({
+      wav: new Uint8Array(64),
+      apiKey: "",
+      provider: "local",
+      language: "en",
+      vocabulary: [],
+    })).toBe("restarted okay");
+    expect(host.starts).toHaveLength(2);
+    expect(posted).toHaveLength(1);
+    await runtime.shutdown();
+  });
+
+  it("keeps long and overlapping uses alive, then grants a full idle period", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    runtime.setIdleTimeout(0.05);
+    const first = deferred();
+    const second = deferred();
+    const firstUse = runtime.withServer("wait", async () => await first.promise);
+    const secondUse = runtime.withServer("wait", async () => await second.promise);
+
+    await delayForTest(100);
+    expect(host.stopped).toEqual([]);
+    first.resolve();
+    await firstUse;
+    await delayForTest(100);
+    expect(host.stopped).toEqual([]);
+    second.resolve();
+    await secondUse;
+    await waitUntil(() => host.stopped.length === 1);
+  });
+
+  it("releases a throwing callback for idle eviction", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    runtime.setIdleTimeout(0.05);
+    await expect(runtime.withServer("wait", () => {
+      throw new Error("callback failed");
+    })).rejects.toThrow("callback failed");
+    await waitUntil(() => host.stopped.length === 1);
+  });
+
+  it.each(["eject", "shutdown"] as const)(
+    "lets an active callback finish before %s stops its process",
+    async (action) => {
+      const root = await installedRoot("stt");
+      const host = new FakeHost();
+      const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+      await runtime.load();
+      const callback = deferred();
+      const entered = deferred();
+      const use = runtime.withServer("wait", async () => {
+        entered.resolve();
+        await callback.promise;
+      });
+      await entered.promise;
+      const stopping = runtime[action]();
+      await delayForTest(25);
+      expect(host.stopped).toEqual([]);
+      callback.resolve();
+      await Promise.all([use, stopping]);
+      expect(host.stopped).toEqual([host.starts[0]!.processId]);
+    },
+  );
+
+  it.each(["eject", "shutdown"] as const)(
+    "does not restart a runtime when warm is called during %s",
+    async (action) => {
+      const root = await installedRoot("cleanup");
+      const host = new FakeHost();
+      const runtime = createLocalCleanupRuntime(host, root, { fetch: readyFetch });
+      await runtime.load();
+      const stopping = deferred();
+      const releaseStop = deferred();
+      host.stopSupervised = async (processId) => {
+        host.stopped.push(processId);
+        stopping.resolve();
+        await releaseStop.promise;
+        host.running.set(processId, false);
+        return true;
+      };
+
+      const ejecting = runtime[action]();
+      await stopping.promise;
+      runtime.warm();
+      releaseStop.resolve();
+      await ejecting;
+      await delayForTest(100);
+
+      expect(host.starts).toHaveLength(1);
+    },
+  );
+
+  it("does not acquire a stale server across the liveness-to-use await gap", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    const staleProcess = host.starts[0]!.processId;
+    const checked = deferred();
+    const releaseCheck = deferred();
+    let block = true;
+    host.runningCheck = async (processId) => {
+      if (block && processId === staleProcess) {
+        checked.resolve();
+        await releaseCheck.promise;
+      }
+      return host.running.get(processId) === true;
+    };
+    const usedProcessCounts: number[] = [];
+    const use = runtime.withServer("wait", () => {
+      usedProcessCounts.push(host.starts.length);
+    });
+    await checked.promise;
+    const eject = runtime.eject();
+    block = false;
+    releaseCheck.resolve();
+    await eject;
+    await use;
+    expect(usedProcessCounts).toEqual([2]);
+    await runtime.shutdown();
+  });
+
+  it("reports a dead process as unloaded", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    host.running.set(host.starts[0]!.processId, false);
+    expect(await runtime.status()).toMatchObject({ loaded: false, build: null });
+    await runtime.shutdown();
+  });
+
+  it("waits for supervised process death before resolving eject", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    const processId = host.starts[0]!.processId;
+    host.runningCheck = async () => host.running.get(processId) === true;
+    const originalStop = host.stopSupervised.bind(host);
+    host.stopSupervised = async (stoppedProcessId) => {
+      host.stopped.push(stoppedProcessId);
+      return true;
+    };
+    let settled = false;
+    const eject = runtime.eject().then(() => { settled = true; });
+    await delayForTest(75);
+    expect(settled).toBe(false);
+    host.running.set(processId, false);
+    await eject;
+    expect(settled).toBe(true);
+    host.stopSupervised = originalStop;
+  });
+
+  it("retries transient liveness-query failures until process death is confirmed", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    let queries = 0;
+    host.runningCheck = async (processId) => {
+      queries += 1;
+      if (queries < 3) throw new Error("host query timed out");
+      return host.running.get(processId) === true;
+    };
+
+    await runtime.eject();
+    expect(queries).toBe(3);
+  });
+
+  it("rejects persistent unknown liveness and retains the process for retry", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    host.runningCheck = async () => { throw new Error("host unavailable"); };
+    vi.useFakeTimers();
+    try {
+      const rejection = expect(runtime.eject()).rejects.toThrow("did not stop");
+      await vi.advanceTimersByTimeAsync(5_100);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    host.runningCheck = async (processId) => host.running.get(processId) === true;
+    await runtime.eject();
+    expect(host.stopped).toEqual([
+      host.starts[0]!.processId,
+      host.starts[0]!.processId,
+    ]);
+  });
+
+  it("contains an idle-stop failure and retains the process for retry", async () => {
+    const root = await installedRoot("stt");
+    const host = new FakeHost();
+    const runtime = createLocalSttRuntime(host, root, { fetch: readyFetch });
+    await runtime.load();
+    host.runningCheck = async () => { throw new Error("host unavailable"); };
+    vi.useFakeTimers();
+    try {
+      runtime.setIdleTimeout(0.05);
+      await vi.advanceTimersByTimeAsync(5_200);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    host.runningCheck = async (processId) => host.running.get(processId) === true;
+    await runtime.eject();
+    expect(host.stopped).toEqual([
+      host.starts[0]!.processId,
+      host.starts[0]!.processId,
+    ]);
+  });
+
+  it("quotes Windows arguments", () => {
     expect(quoteWindowsArgument("plain")).toBe("plain");
     expect(quoteWindowsArgument("C:\\Model Files\\model.bin"))
       .toBe('"C:\\Model Files\\model.bin"');
@@ -146,19 +423,24 @@ describe("local runtime", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_LOCAL_RUNTIME_E2E !== "1")(
-    "reuses the installed whisper.cpp and llama.cpp servers",
+    "runs inference through installed whisper.cpp and llama.cpp servers",
     async () => {
       const localAppData = process.env.LOCALAPPDATA;
       if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
       const root = path.join(localAppData, "Undertone");
       const host = new WindowsHost({ requestTimeoutMs: 5_000 });
-      const stt = createLocalSttRuntime(host, root);
-      const cleanup = createLocalCleanupRuntime(host, root);
+      const installer = new LocalInstaller(host, root);
+      const stt = createLocalSttRuntime(host, root, {
+        isInstalled: () => installer.isInstalled("stt"),
+      });
+      const cleanup = createLocalCleanupRuntime(host, root, {
+        isInstalled: () => installer.isInstalled("cleanup"),
+      });
       try {
         await host.start();
         expect(stt.isInstalled()).toBe(true);
-        expect(await stt.ensureReady()).toMatch(/^http:\/\/127\.0\.0\.1:/u);
-        expect(stt.status().build).toMatch(/^(cpu|cuda)$/u);
+        await stt.load();
+        expect((await stt.status()).build).toMatch(/^(cpu|cuda)$/u);
         const http = new FetchHttpClient();
         const transcriber = new Transcriber(http, stt);
         const silence = new Uint8Array(encodePcm16Wav(new Float32Array(8_000), 16_000));
@@ -167,20 +449,21 @@ describe("local runtime", () => {
           apiKey: "",
           provider: "local",
           language: "en",
+          vocabulary: [],
         })).toBe("");
         await stt.eject();
 
         expect(cleanup.isInstalled()).toBe(true);
-        expect(await cleanup.ensureReady()).toMatch(/^http:\/\/127\.0\.0\.1:/u);
-        expect(cleanup.baseUrl()).not.toBeNull();
-        expect(cleanup.status().build).toMatch(/^(cpu|cuda)$/u);
+        await cleanup.load();
+        expect((await cleanup.status()).build).toMatch(/^(cpu|cuda)$/u);
         const cleaner = new CleanupClient(http, cleanup);
         expect(await cleaner.cleanup({
           transcript: "um hello there",
-          corrections: {},
           apiKey: "",
           provider: "local",
           timeoutSeconds: 10,
+          reasoningEffort: "none",
+          serviceTier: "priority",
         })).not.toBeNull();
       } finally {
         await cleanup.shutdown();
@@ -191,6 +474,17 @@ describe("local runtime", () => {
     150_000,
   );
 });
+
+function localCleanupOptions(transcript: string) {
+  return {
+    transcript,
+    apiKey: "",
+    provider: "local" as const,
+    timeoutSeconds: 2.5,
+    reasoningEffort: "none" as const,
+    serviceTier: "priority" as const,
+  };
+}
 
 async function installedRoot(
   kind: "stt" | "cleanup",
@@ -231,4 +525,20 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Condition timed out");
+}
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolvePromise!: () => void;
+  const promise = new Promise<void>((resolve) => { resolvePromise = resolve; });
+  return {
+    promise,
+    resolve: resolvePromise,
+  };
+}
+
+async function delayForTest(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

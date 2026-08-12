@@ -17,24 +17,37 @@ export interface SecretCipher {
 export interface ConfigStoreOptions {
   configPath: string;
   cipher: SecretCipher;
+  onWarning?: (message: string) => void;
 }
 
 export class ConfigStore {
   private readonly configPath: string;
   private readonly cipher: SecretCipher;
+  private readonly onWarning: (message: string) => void;
 
   constructor(options: ConfigStoreOptions) {
     this.configPath = options.configPath;
     this.cipher = options.cipher;
+    this.onWarning = options.onWarning ?? ((message) => { console.warn(message); });
   }
 
   async load(): Promise<UndertoneConfig> {
     await mkdir(path.dirname(this.configPath), { recursive: true });
+    let text: string;
+    try {
+      text = await readFile(this.configPath, "utf8");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return normalizeConfig(undefined);
+      throw error;
+    }
     let parsed: unknown;
     try {
-      const text = await readFile(this.configPath, "utf8");
       parsed = JSON.parse(text);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      const recoveryPath = `${this.configPath}.corrupt-${fileTimestamp(new Date())}`;
+      await rename(this.configPath, recoveryPath);
+      this.onWarning(`Invalid config moved to ${recoveryPath}`);
       parsed = undefined;
     }
     const config = normalizeConfig(parsed);
@@ -59,6 +72,14 @@ export class ConfigStore {
     await writeFile(temporary, JSON.stringify(ordered, null, 2), "utf8");
     await rename(temporary, this.configPath);
   }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+function fileTimestamp(date: Date): string {
+  return date.toISOString().replaceAll(":", "-");
 }
 
 function sortJson(value: unknown): unknown {

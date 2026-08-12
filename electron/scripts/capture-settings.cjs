@@ -1,7 +1,7 @@
 const { app, BrowserWindow } = require("electron");
-const { createServer } = require("node:http");
-const { mkdir, readFile, rm, writeFile } = require("node:fs/promises");
+const { mkdir, rm, writeFile } = require("node:fs/promises");
 const path = require("node:path");
+const { version } = require("../package.json");
 
 const scaleIndex = process.argv.indexOf("--scale");
 const scale = scaleIndex >= 0 ? Number(process.argv[scaleIndex + 1]) : 1;
@@ -18,42 +18,50 @@ app.commandLine.appendSwitch("force-device-scale-factor", String(scale));
 const root = path.resolve(__dirname, "../dist/renderer");
 const sizeSuffix = width === 960 && height === 720 ? "" : `-${width}x${height}`;
 const output = path.resolve(__dirname, `../test-output/settings-${scale}${sizeSuffix}`);
-const contentTypes = new Map([
-  [".html", "text/html; charset=utf-8"],
-  [".js", "text/javascript; charset=utf-8"],
-  [".css", "text/css; charset=utf-8"],
-]);
+const profile = process.env.UNDERTONE_CAPTURE_PROFILE;
+if (profile === undefined) throw new Error("Run captures through scripts/run-electron.mjs");
+app.setPath("userData", profile);
 
-const server = createServer(async (request, response) => {
-  try {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const relative = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
-    const candidate = path.resolve(root, relative);
-    if (!candidate.startsWith(`${root}${path.sep}`) && candidate !== path.join(root, "index.html")) {
-      response.writeHead(403).end();
-      return;
-    }
-    const body = await readFile(candidate);
-    response.writeHead(200, { "Content-Type": contentTypes.get(path.extname(candidate)) ?? "application/octet-stream" });
-    response.end(body);
-  } catch {
-    response.writeHead(404).end();
+const pause = async () => await new Promise((resolve) => setTimeout(resolve, 100));
+
+async function selectSection(win, label) {
+  const clicked = await win.webContents.executeJavaScript(`(() => {
+    const label = ${JSON.stringify(label)};
+    const button = [...document.querySelectorAll('nav button')]
+      .find((candidate) => candidate.textContent?.includes(label));
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error(`Missing settings navigation button: ${label}`);
+
+  const deadline = Date.now() + 1_500;
+  while (Date.now() < deadline) {
+    const title = await win.webContents.executeJavaScript(
+      "document.querySelector('h1')?.textContent?.trim() ?? ''",
+    );
+    if (title === label) return;
+    await pause();
   }
-});
+  throw new Error(`Settings section did not render its expected title: ${label}`);
+}
 
 app.whenReady().then(async () => {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("Preview server did not bind");
   const win = new BrowserWindow({
     width,
     height,
     useContentSize: true,
     show: false,
     backgroundColor: "#282c34",
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, "settings-capture-preload.cjs"),
+      additionalArguments: [`--undertone-capture-version=${version}`],
+    },
   });
-  await win.loadURL(`http://127.0.0.1:${address.port}/`);
+  await win.loadFile(path.join(root, "index.html"));
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   const sections = [
@@ -63,9 +71,9 @@ app.whenReady().then(async () => {
     { label: "History", filename: "history" },
   ];
   const results = [];
-  for (const [index, section] of sections.entries()) {
-    await win.webContents.executeJavaScript(`document.querySelectorAll('nav button')[${index}]?.click()`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const section of sections) {
+    await selectSection(win, section.label);
+    await pause();
     const metrics = await win.webContents.executeJavaScript(`({
       devicePixelRatio,
       bodyWidth: document.body.scrollWidth,
@@ -82,23 +90,27 @@ app.whenReady().then(async () => {
         > (document.querySelector('main')?.clientWidth ?? 0),
       title: document.querySelector('h1')?.textContent ?? ''
     })`);
+    if (metrics.title.trim() !== section.label) {
+      throw new Error(`Captured ${metrics.title || "no title"} instead of ${section.label}`);
+    }
+    if (metrics.hasHorizontalOverflow || metrics.hasContentHorizontalOverflow) {
+      throw new Error(`${section.label} has horizontal overflow at ${scale * 100}% scaling`);
+    }
     const image = await win.webContents.capturePage();
     await writeFile(path.join(output, `${section.filename}.png`), image.toPNG());
     results.push({ section: section.label, ...metrics });
   }
-  await win.webContents.executeJavaScript("document.querySelectorAll('nav button')[0]?.click()");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await selectSection(win, "General");
   await win.webContents.executeJavaScript(`{
     const scrolling = document.scrollingElement;
     if (scrolling) scrolling.scrollTop = scrolling.scrollHeight;
     const main = document.querySelector('main');
     if (main) main.scrollTop = main.scrollHeight;
   }`);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await pause();
   const generalBottom = await win.webContents.capturePage();
   await writeFile(path.join(output, "general-bottom.png"), generalBottom.toPNG());
-  await win.webContents.executeJavaScript("document.querySelectorAll('nav button')[1]?.click()");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await selectSection(win, "Speech & AI");
   await win.webContents.executeJavaScript(`{
     const otherCredentials = document.querySelector('details.otherCredentials');
     if (otherCredentials) {
@@ -106,7 +118,7 @@ app.whenReady().then(async () => {
       otherCredentials.scrollIntoView({ block: 'center' });
     }
   }`);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await pause();
   const otherCredentials = await win.webContents.capturePage();
   await writeFile(path.join(output, "speech-ai-other-credentials.png"), otherCredentials.toPNG());
   await win.webContents.executeJavaScript(`{
@@ -115,15 +127,13 @@ app.whenReady().then(async () => {
     const main = document.querySelector('main');
     if (main) main.scrollTop = main.scrollHeight;
   }`);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await pause();
   const speechAiOnDevice = await win.webContents.capturePage();
   await writeFile(path.join(output, "speech-ai-on-device.png"), speechAiOnDevice.toPNG());
   console.log(JSON.stringify({ scale, results }));
   win.destroy();
-  server.close();
   app.quit();
 }).catch((error) => {
   console.error(error);
-  server.close();
   app.exit(1);
 });

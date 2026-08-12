@@ -24,7 +24,9 @@ class FakeHttp implements HttpClient {
 }
 
 const local: LocalSttRuntime = {
-  ensureReady: () => "http://127.0.0.1:9",
+  async withServer(_policy, callback) {
+    return await callback("http://127.0.0.1:9");
+  },
 };
 
 describe("transcription providers", () => {
@@ -57,6 +59,7 @@ describe("transcription providers", () => {
       apiKey: "k",
       vocabulary: VOCABULARY,
       provider: "openai",
+      language: "en",
     });
     const first = http.calls[0]!;
     expect(first.url).toBe("https://api.openai.com/v1/audio/transcriptions");
@@ -67,16 +70,6 @@ describe("transcription providers", () => {
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
 
-    await transcriber.transcribe({
-      wav: WAV,
-      apiKey: "k",
-      provider: "openai",
-      model: "whisper-1",
-    });
-    const overrideForm = expectForm(http.calls[1]!.request.body);
-    expect(overrideForm.get("model")).toBe("whisper-1");
-    expect(overrideForm.get("language")).toBe("en");
-    expect(overrideForm.has("languages[]")).toBe(false);
   });
 
   it("sends OpenRouter base64 JSON without vocabulary fields", async () => {
@@ -87,6 +80,7 @@ describe("transcription providers", () => {
       apiKey: "k",
       vocabulary: VOCABULARY,
       provider: "openrouter",
+      language: "en",
     });
     const call = http.calls[0]!;
     expect(call.url).toBe("https://openrouter.ai/api/v1/audio/transcriptions");
@@ -107,11 +101,9 @@ describe("transcription providers", () => {
   it("uses a keyless local multipart endpoint and collapses whitespace", async () => {
     const http = new FakeHttp();
     http.response = response(200, { text: " hello\n world \n" });
-    const models: string[] = [];
     const transcriber = new Transcriber(http, {
-      ensureReady(model) {
-        models.push(model);
-        return "http://127.0.0.1:9";
+      async withServer(_policy, callback) {
+        return await callback("http://127.0.0.1:9");
       },
     });
     expect(await transcriber.transcribe({
@@ -120,9 +112,7 @@ describe("transcription providers", () => {
       language: "en",
       vocabulary: VOCABULARY,
       provider: "local",
-      model: "custom.bin",
     })).toBe("hello world");
-    expect(models).toEqual(["custom.bin"]);
     const call = http.calls[0]!;
     expect(call.url).toBe("http://127.0.0.1:9/inference");
     expect(call.request.headers).toBeUndefined();
@@ -133,19 +123,16 @@ describe("transcription providers", () => {
     expect(form.has("keyterm")).toBe(false);
   });
 
-  it("rejects missing keys and unknown providers before making a request", async () => {
+  it("rejects missing keys before making a request", async () => {
     const http = new FakeHttp();
     const transcriber = new Transcriber(http, local);
     await expect(transcriber.transcribe({
       wav: WAV,
       apiKey: "  ",
       provider: "openai",
+      language: "en",
+      vocabulary: [],
     })).rejects.toThrow(/Speech & AI/u);
-    await expect(transcriber.transcribe({
-      wav: WAV,
-      apiKey: "k",
-      provider: "grok9000",
-    })).rejects.toThrow(/grok9000/u);
     expect(http.calls).toHaveLength(0);
   });
 
@@ -157,6 +144,8 @@ describe("transcription providers", () => {
       wav: WAV,
       apiKey: "bad",
       provider: "openai",
+      language: "en",
+      vocabulary: [],
     })).rejects.toThrow(/Invalid OpenAI API key/u);
 
     http.response = response(200, "not-json", false);
@@ -164,6 +153,8 @@ describe("transcription providers", () => {
       wav: WAV,
       apiKey: "k",
       provider: "openai",
+      language: "en",
+      vocabulary: [],
     })).rejects.toThrow(/non-JSON/u);
 
     http.error = new Error("offline");
@@ -171,6 +162,8 @@ describe("transcription providers", () => {
       wav: WAV,
       apiKey: "k",
       provider: "openrouter",
+      language: "en",
+      vocabulary: [],
     })).rejects.toBeInstanceOf(TranscriptionError);
   });
 });

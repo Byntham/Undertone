@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLEANUP_API_URLS,
   CleanupClient,
+  CleanupError,
   plausibleLength,
   type LocalCleanupRuntime,
   type SubscriptionCleanupRuntime,
@@ -26,14 +27,22 @@ class FakeHttp implements HttpClient {
 
 class FakeLocal implements LocalCleanupRuntime {
   url: string | null = "http://127.0.0.1:9";
-  readonly warmed: string[] = [];
-  baseUrl(): string | null { return this.url; }
-  loadAsync(model: string): void { this.warmed.push(model); }
+  warmCount = 0;
+  async withServer<T>(
+    _policy: "fallback",
+    callback: (baseUrl: string) => Promise<T> | T,
+  ): Promise<T | null> {
+    if (this.url === null) {
+      this.warm();
+      return null;
+    }
+    return await callback(this.url);
+  }
+  warm(): void { this.warmCount += 1; }
 }
 
 const baseOptions = {
   transcript: "some words",
-  corrections: {},
   apiKey: "k",
 };
 
@@ -52,27 +61,24 @@ describe("cleanup providers", () => {
       ...baseOptions,
       apiKey: "",
       provider: "openai-subscription",
-      model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
     })).toBe("subscription result");
     expect(http.calls).toHaveLength(0);
     expect(calls[0]).toMatchObject({
-      model: "gpt-5.6-luna",
       reasoningEffort: "high",
       serviceTier: "priority",
+      userPrompt: JSON.stringify({ transcript: "some words" }),
     });
   });
 
   it("uses the production prompt and structured response schema", async () => {
-    expect(SYSTEM_PROMPT.startsWith("COPYEDIT ONLY.")).toBe(true);
     expect(SYSTEM_PROMPT).not.toContain("text_before_cursor");
-    expect(SYSTEM_PROMPT).toContain("Final audit:");
-    expect(SYSTEM_PROMPT).not.toContain("\r");
 
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
-    for (const [provider, url] of Object.entries(CLEANUP_API_URLS)) {
+    for (const provider of ["xai", "openai", "openrouter"] as const) {
+      const url = CLEANUP_API_URLS[provider];
       expect(await client.cleanup({ ...baseOptions, provider })).toBe("ok");
       const call = http.calls.at(-1)!;
       expect(call.url).toBe(url);
@@ -87,23 +93,32 @@ describe("cleanup providers", () => {
     }
   });
 
-  it("honors model and timeout while always using the production prompt", async () => {
+  it("honors the configured timeout", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     await client.cleanup({
       ...baseOptions,
       provider: "openrouter",
-      model: "my-model",
       timeoutSeconds: 7.5,
     });
     const request = http.calls[0]!.request;
     expect(request.timeoutMs).toBe(7_500);
-    const body = jsonBody(request);
-    expect(body.model).toBe("my-model");
-    expect((body.messages as Array<Record<string, unknown>>)[0]!.content).toBe(SYSTEM_PROMPT);
   });
 
-  it("applies compatible tuning only to each provider's opinionated cleanup model", async () => {
+  it("preserves safe subscription recovery instructions and sanitizes other failures", async () => {
+    let message = "OpenAI Subscription cleanup was not authorized. Reconnect your OpenAI account.";
+    const subscription: SubscriptionCleanupRuntime = {
+      async complete() { throw new Error(message); },
+    };
+    const client = new CleanupClient(new FakeHttp(), new FakeLocal(), subscription);
+    const options = { ...baseOptions, provider: "openai-subscription" as const };
+
+    await expect(client.cleanup(options)).rejects.toThrow(message);
+    message = "secret-token-must-not-leak";
+    await expect(client.cleanup(options)).rejects.toThrow("Cleanup request failed.");
+  });
+
+  it("applies compatible tuning to each fixed cleanup model", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     const tuned = {
@@ -115,7 +130,6 @@ describe("cleanup providers", () => {
     await client.cleanup({
       ...tuned,
       provider: "openai",
-      model: "gpt-5.6-luna",
     });
     expect(jsonBody(http.calls[0]!.request)).toMatchObject({
       reasoning_effort: "low",
@@ -125,7 +139,6 @@ describe("cleanup providers", () => {
     await client.cleanup({
       ...tuned,
       provider: "openrouter",
-      model: "openai/gpt-5.6-luna",
     });
     expect(jsonBody(http.calls[1]!.request)).toMatchObject({
       reasoning: { effort: "low" },
@@ -136,26 +149,9 @@ describe("cleanup providers", () => {
     await client.cleanup({
       ...tuned,
       provider: "xai",
-      model: "grok-4.3",
     });
     expect(jsonBody(http.calls[2]!.request)).toMatchObject({ reasoning_effort: "none" });
 
-    await client.cleanup({
-      ...tuned,
-      provider: "openai",
-      model: "gpt-5.6-terra",
-    });
-    await client.cleanup({
-      ...tuned,
-      provider: "openrouter",
-      model: "openai/gpt-5.6-terra",
-    });
-    for (const call of http.calls.slice(3)) {
-      const body = jsonBody(call.request);
-      expect(body).not.toHaveProperty("reasoning_effort");
-      expect(body).not.toHaveProperty("reasoning");
-      expect(body).not.toHaveProperty("service_tier");
-    }
   });
 
   it("uses keyless local cleanup and never blocks on a cold model", async () => {
@@ -166,33 +162,33 @@ describe("cleanup providers", () => {
     expect(http.calls[0]!.url).toBe("http://127.0.0.1:9/v1/chat/completions");
     expect(http.calls[0]!.request.headers).not.toHaveProperty("Authorization");
     expect(jsonBody(http.calls[0]!.request).model).toBe(DEFAULT_CLEANUP_MODELS.local);
-    expect(local.warmed).toEqual([]);
+    expect(local.warmCount).toBe(0);
 
     local.url = null;
     expect(await client.cleanup({
       ...baseOptions,
       apiKey: "",
       provider: "local",
-      model: "my.gguf",
     })).toBeNull();
     expect(http.calls).toHaveLength(1);
-    expect(local.warmed).toEqual(["my.gguf"]);
+    expect(local.warmCount).toBe(1);
   });
 
-  it("returns null for unknown providers, HTTP errors, invalid replies, and exceptions", async () => {
+  it("throws sanitized errors for HTTP errors, invalid replies, and exceptions", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
-    expect(await client.cleanup({ ...baseOptions, provider: "grok9000" })).toBeNull();
-    expect(http.calls).toHaveLength(0);
     http.response = { status: 500, body: "error" };
-    expect(await client.cleanup({ ...baseOptions, provider: "xai" })).toBeNull();
+    await expect(client.cleanup({ ...baseOptions, provider: "xai" }))
+      .rejects.toThrow(new CleanupError("Cleanup request rejected (500)."));
     http.response = { status: 200, body: "not-json" };
-    expect(await client.cleanup({ ...baseOptions, provider: "xai" })).toBeNull();
-    http.error = new Error("timeout");
-    expect(await client.cleanup({ ...baseOptions, provider: "xai" })).toBeNull();
+    await expect(client.cleanup({ ...baseOptions, provider: "xai" }))
+      .rejects.toThrow(new CleanupError("Cleanup provider returned invalid JSON."));
+    http.error = new Error("secret-token-must-not-leak");
+    await expect(client.cleanup({ ...baseOptions, provider: "xai" }))
+      .rejects.toThrow(new CleanupError("Cleanup request failed."));
   });
 
-  it("reports sanitized provider failures when requested", async () => {
+  it("reports sanitized provider failures", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     http.response = {
@@ -202,7 +198,6 @@ describe("cleanup providers", () => {
     await expect(client.cleanup({
       ...baseOptions,
       provider: "openai",
-      throwOnError: true,
     })).rejects.toThrow("Cleanup request rejected (400): Unsupported parameter: temperature");
     expect(http.calls).toHaveLength(1);
   });
@@ -219,7 +214,6 @@ describe("cleanup providers", () => {
     expect(await client.cleanup({
       ...baseOptions,
       provider: "openai",
-      model: "compatibility-model",
     })).toBe("first result");
     expect(http.calls).toHaveLength(2);
     expect(responseFormat(http.calls[0]!.request)).toBe("json_schema");
@@ -228,14 +222,12 @@ describe("cleanup providers", () => {
     expect(await client.cleanup({
       ...baseOptions,
       provider: "openai",
-      model: "compatibility-model",
     })).toBe("second result");
     expect(responseFormat(http.calls[2]!.request)).toBe("json_object");
 
     expect(await client.cleanup({
       ...baseOptions,
-      provider: "openai",
-      model: "different-model",
+      provider: "openrouter",
     })).toBe("ok");
     expect(responseFormat(http.calls[3]!.request)).toBe("json_schema");
   });
@@ -251,42 +243,33 @@ describe("cleanup providers", () => {
     await expect(client.cleanup({
       ...baseOptions,
       provider: "openrouter",
-      model: "incompatible-model",
-      throwOnError: true,
     })).rejects.toThrow(
       "Cleanup request rejected (400): JSON object output is not supported for this model.",
     );
     expect(http.calls.map(({ request }) => responseFormat(request)))
       .toEqual(["json_schema", "json_object"]);
 
-    expect(await client.cleanup({
-      ...baseOptions,
-      provider: "openrouter",
-      model: "incompatible-model",
-    })).toBe("ok");
+    expect(await client.cleanup({ ...baseOptions, provider: "openrouter" })).toBe("ok");
     expect(responseFormat(http.calls[2]!.request)).toBe("json_schema");
   });
 
-  it("sends only turn data and rejects implausible expansion", async () => {
+  it("sends only the transcript and rejects implausible expansion", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());
     await client.cleanup({
       ...baseOptions,
       transcript: "hello",
-      corrections: { "under tone": "Undertone" },
       provider: "xai",
     });
     const messages = jsonBody(http.calls[0]!.request).messages as Array<Record<string, unknown>>;
-    expect(JSON.parse(messages[1]!.content as string)).toEqual({
-      dictionary: { "under tone": "Undertone" },
-      transcript: "hello",
-    });
+    expect(JSON.parse(messages[1]!.content as string)).toEqual({ transcript: "hello" });
+    expect(SYSTEM_PROMPT).not.toContain("dictionary");
     expect(plausibleLength("A short cleaned reply.", "some words")).toBe(true);
     expect(plausibleLength("x".repeat(100), "tiny")).toBe(false);
 
     http.response = cleanupResponse("x".repeat(100));
-    expect(await client.cleanup({ ...baseOptions, transcript: "tiny", provider: "xai" }))
-      .toBeNull();
+    await expect(client.cleanup({ ...baseOptions, transcript: "tiny", provider: "xai" }))
+      .rejects.toThrow("Cleanup response failed the safety checks.");
   });
 });
 

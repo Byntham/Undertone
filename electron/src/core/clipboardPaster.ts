@@ -8,17 +8,20 @@ export interface PasteSender {
   sendGuardedPaste?(target: PasteTarget): Promise<boolean>;
 }
 
-export interface PasteTarget {
+export type PasteTarget = {
   window: string;
-  focus?: string;
-  focusIdentity?: string | null;
-  generation?: string;
-}
+  focus: string;
+  generation: string;
+} & (
+  | { focusIdentityState: "available"; focusIdentity: string }
+  | { focusIdentityState: "unavailable"; focusIdentity: null }
+);
 
 type Scheduler = (callback: () => Promise<void>, delayMs: number) => void;
 
 export class ClipboardPaster {
   private generation = 0;
+  private tail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly clipboard: ClipboardAdapter,
@@ -27,12 +30,37 @@ export class ClipboardPaster {
     private readonly schedule: Scheduler = scheduleLater,
   ) {}
 
-  async paste(
+  paste(
     text: string,
     restoreClipboard = true,
     target?: PasteTarget,
   ): Promise<boolean> {
-    if (text.length === 0) return true;
+    if (text.length === 0) return Promise.resolve(true);
+
+    return new Promise<boolean>((resolve, reject) => {
+      const operation = this.tail.then(async () => {
+        try {
+          const result = await this.performPaste(text, restoreClipboard, target);
+          resolve(result.sent);
+          await result.restored;
+        } catch (error) {
+          reject(error);
+        }
+      });
+      this.tail = operation;
+    });
+  }
+
+  copyFallback(text: string): void {
+    this.generation += 1;
+    this.clipboard.writeText(text);
+  }
+
+  private async performPaste(
+    text: string,
+    restoreClipboard: boolean,
+    target: PasteTarget | undefined,
+  ): Promise<{ sent: boolean; restored: Promise<void> }> {
     const pastedText = trailingSpace(text);
     const generation = ++this.generation;
     let previous: string | null;
@@ -55,24 +83,30 @@ export class ClipboardPaster {
       if (previous !== null && this.clipboard.readText() === pastedText) {
         this.clipboard.writeText(previous);
       }
-      return false;
+      return { sent: false, restored: Promise.resolve() };
     }
-    if (!restoreClipboard || previous === null || previous.length === 0) return true;
-    this.schedule(async () => {
-      if (generation !== this.generation) return;
-      try {
-        if (this.clipboard.readText() !== pastedText) return;
-        this.clipboard.writeText(previous);
-      } catch {
-        // Clipboard restoration is best effort after the paste has succeeded.
-      }
-    }, 500);
-    return true;
-  }
-
-  copyFallback(text: string): void {
-    this.generation += 1;
-    this.clipboard.writeText(text);
+    if (!restoreClipboard || previous === null) {
+      return { sent: true, restored: Promise.resolve() };
+    }
+    return {
+      sent: true,
+      restored: new Promise((resolve) => {
+        this.schedule(async () => {
+          try {
+            if (
+              generation === this.generation
+              && this.clipboard.readText() === pastedText
+            ) {
+              this.clipboard.writeText(previous);
+            }
+          } catch {
+            // Clipboard restoration is best effort after the paste has succeeded.
+          } finally {
+            resolve();
+          }
+        }, 500);
+      }),
+    };
   }
 }
 

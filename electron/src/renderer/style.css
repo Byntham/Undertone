@@ -363,7 +363,6 @@ input::placeholder { color: var(--faint); }
 .historyEntry time { color: var(--faint); font-size: 10.5px; }
 .historyEntry p { margin: 0; color: var(--text); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .historyEntry[data-ok="false"] p { color: #e9bd75; }
-.historyEntry small { display: block; margin-top: 5px; color: var(--faint); font-size: 10.5px; }
 .historyActions { display: flex; gap: 6px; }
 
 @media (max-width: 780px) {

@@ -1,10 +1,7 @@
 import {
-  DEFAULT_CONFIG,
+  cloneConfig,
   KEY_FIELDS,
-  modelOverride,
-  normalizeConfig,
   providerKey,
-  type ProviderId,
   type UndertoneConfig,
 } from "./config";
 import {
@@ -20,6 +17,11 @@ import type {
   TranscriptionProviderId,
 } from "../shared/settings";
 import {
+  isCleanupProvider,
+  isCloudProvider,
+  isTranscriptionProvider,
+} from "../shared/settings";
+import {
   actionShortcutsOverlap,
   KEEP_OPEN_SHORTCUT,
   normalizeReleaseShortcut,
@@ -33,7 +35,6 @@ const PATCH_FIELDS = new Set([
   "aiCleanup",
   "restoreClipboard",
   "soundCues",
-  "startWithWindows",
   "hotkey",
   "repasteHotkey",
   "commitHotkey",
@@ -52,19 +53,9 @@ const PATCH_FIELDS = new Set([
   "corrections",
 ]);
 
-const TRANSCRIPTION_PROVIDERS = new Set<ProviderId>(["xai", "openai", "openrouter", "local"]);
-const CLEANUP_PROVIDERS = new Set<ProviderId>([
-  "xai",
-  "openai",
-  "openai-subscription",
-  "openrouter",
-  "local",
-]);
-const CLOUD_PROVIDERS = new Set<CloudProviderId>(["xai", "openai", "openrouter"]);
 export function settingsSnapshot(
   config: UndertoneConfig,
   appVersion: string,
-  preview: boolean,
   localEngines: {
     stt: LocalEngineSnapshot;
     cleanup: LocalEngineSnapshot;
@@ -72,14 +63,8 @@ export function settingsSnapshot(
   microphones: readonly string[] = [],
   startWithWindows = false,
 ): SettingsSnapshot {
-  const provider = snapshotProvider(
-    config.provider,
-    TRANSCRIPTION_PROVIDERS,
-  ) as TranscriptionProviderId;
-  const cleanupProvider = snapshotProvider(
-    config.cleanup_provider,
-    CLEANUP_PROVIDERS,
-  ) as CleanupProviderId;
+  const provider: TranscriptionProviderId = config.provider;
+  const cleanupProvider: CleanupProviderId = config.cleanup_provider;
   return {
     language: config.language,
     aiCleanup: config.ai_cleanup,
@@ -97,7 +82,6 @@ export function settingsSnapshot(
     inputDevice: config.input_device,
     microphones: [...microphones],
     appVersion,
-    preview,
     provider,
     cleanupProvider,
     keyConfigured: {
@@ -109,9 +93,7 @@ export function settingsSnapshot(
       && config.openai_oauth_refresh_token.trim().length > 0
       && config.openai_oauth_account_id.trim().length > 0,
     sttModel: activeSttModel(config, provider),
-    cleanupModel: modelOverride(config, "cleanup", cleanupProvider)
-      || DEFAULT_CLEANUP_MODELS[cleanupProvider]
-      || "",
+    cleanupModel: DEFAULT_CLEANUP_MODELS[cleanupProvider],
     localLoaded: config.local_loaded,
     localIdleMinutes: config.local_idle_minutes,
     sttVocabHints: config.stt_vocab_hints,
@@ -124,20 +106,11 @@ export function settingsSnapshot(
   };
 }
 
-function activeSttModel(
-  config: UndertoneConfig,
-  provider: TranscriptionProviderId,
-): string {
+function activeSttModel(config: UndertoneConfig, provider: TranscriptionProviderId): string {
   if (config.live_transcription && (provider === "openai" || provider === "xai")) {
     return LIVE_STT_MODELS[provider] ?? "";
   }
-  return modelOverride(config, "stt", provider) || DEFAULT_STT_MODELS[provider];
-}
-
-function snapshotProvider(value: unknown, supported: ReadonlySet<ProviderId>): ProviderId {
-  return typeof value === "string" && supported.has(value as ProviderId)
-    ? value as ProviderId
-    : DEFAULT_CONFIG.provider;
+  return DEFAULT_STT_MODELS[provider];
 }
 
 export function applySettingsPatch(
@@ -148,7 +121,7 @@ export function applySettingsPatch(
   for (const key of Object.keys(value)) {
     if (!PATCH_FIELDS.has(key)) throw new Error(`Unsupported settings field: ${key}`);
   }
-  const next = normalizeConfig(config);
+  const next = cloneConfig(config);
   if (value.language !== undefined) {
     if (typeof value.language !== "string"
       || value.language.length < 2
@@ -166,9 +139,6 @@ export function applySettingsPatch(
   }
   if (value.soundCues !== undefined) {
     next.sound_cues = booleanField(value.soundCues, "soundCues");
-  }
-  if (value.startWithWindows !== undefined) {
-    booleanField(value.startWithWindows, "startWithWindows");
   }
   const changedShortcuts = new Set<ShortcutConfigKey>();
   if (value.hotkey !== undefined) {
@@ -219,10 +189,10 @@ export function applySettingsPatch(
     next.input_device = boundedSingleLine(value.inputDevice, "inputDevice", 512);
   }
   if (value.provider !== undefined) {
-    next.provider = providerField(value.provider, "provider", TRANSCRIPTION_PROVIDERS);
+    next.provider = providerField(value.provider, "provider", isTranscriptionProvider);
   }
   if (value.cleanupProvider !== undefined) {
-    next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider", CLEANUP_PROVIDERS);
+    next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider", isCleanupProvider);
   }
   if (value.providerKey !== undefined) {
     const update = providerKeyUpdate(value.providerKey);
@@ -266,25 +236,24 @@ const EMPTY_LOCAL_ENGINES = {
   cleanup: EMPTY_LOCAL_ENGINE,
 };
 
-function providerField(
+function providerField<T extends string>(
   value: unknown,
   name: string,
-  supported: ReadonlySet<ProviderId>,
-): ProviderId {
-  if (typeof value !== "string" || !supported.has(value as ProviderId)) {
+  supported: (candidate: unknown) => candidate is T,
+): T {
+  if (!supported(value)) {
     throw new Error(`${name} is not a supported provider`);
   }
-  return value as ProviderId;
+  return value;
 }
 
 function providerKeyUpdate(value: unknown): { provider: CloudProviderId; value: string } {
   exactObject(value, ["provider", "value"], "providerKey");
-  if (typeof value.provider !== "string"
-    || !CLOUD_PROVIDERS.has(value.provider as CloudProviderId)) {
+  if (!isCloudProvider(value.provider)) {
     throw new Error("providerKey has an unsupported provider");
   }
   const secret = boundedSingleLine(value.value, "providerKey.value", 4_096);
-  return { provider: value.provider as CloudProviderId, value: secret };
+  return { provider: value.provider, value: secret };
 }
 
 function boundedSingleLine(value: unknown, name: string, maxLength: number): string {
@@ -359,10 +328,27 @@ type ActionShortcutConfigKey =
   | "scratch_hotkey"
   | "discard_hotkey";
 
-const ACTION_SHORTCUTS: readonly {
-  key: ActionShortcutConfigKey;
+interface ShortcutParticipant {
+  key: ShortcutConfigKey;
   label: string;
-}[] = [
+}
+
+type ShortcutConflict = {
+  kind: "reserved";
+  participants: readonly [ShortcutParticipant];
+} | {
+  kind: "dictate-action";
+  participants: readonly [ShortcutParticipant, ShortcutParticipant];
+} | {
+  kind: "action-action";
+  participants: readonly [ShortcutParticipant, ShortcutParticipant];
+};
+
+const DICTATE_SHORTCUT: ShortcutParticipant = { key: "hotkey", label: "Dictate" };
+
+const ACTION_SHORTCUTS: readonly (ShortcutParticipant & {
+  key: ActionShortcutConfigKey;
+})[] = [
   { key: "repaste_hotkey", label: "Re-paste" },
   { key: "commit_hotkey", label: "Commit" },
   { key: "scratch_hotkey", label: "Scratch" },
@@ -373,75 +359,88 @@ function validateShortcutChanges(
   config: UndertoneConfig,
   changed: ReadonlySet<ShortcutConfigKey>,
 ): void {
-  if (changed.has("hotkey")
-    && pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT)) {
-    throw new Error("The Dictate shortcut cannot include Left Alt; Left Alt keeps a recording open");
-  }
-  for (const action of ACTION_SHORTCUTS) {
-    if (changed.has(action.key)
-      && actionShortcutsOverlap(config[action.key], KEEP_OPEN_SHORTCUT)) {
-      throw new Error(`Left Alt is reserved for keeping a recording open`);
+  const conflict = analyzeShortcutConflicts(config).find(({ participants }) => (
+    participants.some(({ key }) => changed.has(key))
+  ));
+  if (conflict === undefined) return;
+  if (conflict.kind === "reserved") {
+    if (conflict.participants[0].key === "hotkey") {
+      throw new Error("The Dictate shortcut cannot include Left Alt; Left Alt keeps a recording open");
     }
+    throw new Error("Left Alt is reserved for keeping a recording open");
   }
-  for (const action of ACTION_SHORTCUTS) {
-    if ((changed.has("hotkey") || changed.has(action.key))
-      && pttActionShortcutsOverlap(config.hotkey, config[action.key])) {
-      throw new Error(`The Dictate shortcut overlaps the ${action.label} shortcut`);
-    }
+  if (conflict.kind === "dictate-action") {
+    throw new Error(
+      `The Dictate shortcut overlaps the ${conflict.participants[1].label} shortcut`,
+    );
   }
-  for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
-    for (let right = left + 1; right < ACTION_SHORTCUTS.length; right += 1) {
-      const leftAction = ACTION_SHORTCUTS[left]!;
-      const rightAction = ACTION_SHORTCUTS[right]!;
-      if (!changed.has(leftAction.key) && !changed.has(rightAction.key)) continue;
-      if (actionShortcutsOverlap(config[leftAction.key], config[rightAction.key])) {
-        throw new Error("That shortcut is already assigned to another action");
-      }
-    }
-  }
+  throw new Error("That shortcut is already assigned to another action");
 }
 
 function shortcutWarning(config: UndertoneConfig): string | null {
-  try {
-    if (pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT)) {
+  const conflicts = analyzeShortcutConflicts(config);
+  const reserved = conflicts.find((conflict) => conflict.kind === "reserved");
+  if (reserved !== undefined) {
+    const participant = reserved.participants[0];
+    if (participant.key === "hotkey") {
       return "The Dictate shortcut includes Left Alt, which is reserved for keeping a recording open.";
     }
-  } catch {
-    // Unsupported saved shortcuts are reported by the shortcut loader.
+    return `${participant.label} uses Left Alt, which is reserved for keeping a recording open.`;
   }
-  for (const action of ACTION_SHORTCUTS) {
-    try {
-      if (actionShortcutsOverlap(config[action.key], KEEP_OPEN_SHORTCUT)) {
-        return `${action.label} uses Left Alt, which is reserved for keeping a recording open.`;
-      }
-    } catch {
-      // Unsupported saved shortcuts are reported by the shortcut loader.
-    }
-  }
-  const pttConflicts = ACTION_SHORTCUTS.filter((action) => {
-    try {
-      return pttActionShortcutsOverlap(config.hotkey, config[action.key]);
-    } catch {
-      return false;
-    }
-  }).map((action) => action.label);
+  const pttConflicts = conflicts
+    .filter((conflict) => conflict.kind === "dictate-action")
+    .map((conflict) => conflict.participants[1].label);
   if (pttConflicts.length > 0) {
     return `The Dictate shortcut overlaps ${joinLabels(pttConflicts)}. Change one of these shortcuts.`;
+  }
+  const actionConflict = conflicts.find((conflict) => conflict.kind === "action-action");
+  if (actionConflict !== undefined) {
+    const [left, right] = actionConflict.participants;
+    return `${left.label} and ${right.label} use the same shortcut.`;
+  }
+  return null;
+}
+
+function analyzeShortcutConflicts(config: UndertoneConfig): ShortcutConflict[] {
+  const conflicts: ShortcutConflict[] = [];
+  if (overlaps(() => pttActionShortcutsOverlap(config.hotkey, KEEP_OPEN_SHORTCUT))) {
+    conflicts.push({ kind: "reserved", participants: [DICTATE_SHORTCUT] });
+  }
+  for (const action of ACTION_SHORTCUTS) {
+    if (overlaps(() => actionShortcutsOverlap(config[action.key], KEEP_OPEN_SHORTCUT))) {
+      conflicts.push({ kind: "reserved", participants: [action] });
+    }
+  }
+  for (const action of ACTION_SHORTCUTS) {
+    if (overlaps(() => pttActionShortcutsOverlap(config.hotkey, config[action.key]))) {
+      conflicts.push({ kind: "dictate-action", participants: [DICTATE_SHORTCUT, action] });
+    }
   }
   for (let left = 0; left < ACTION_SHORTCUTS.length; left += 1) {
     for (let right = left + 1; right < ACTION_SHORTCUTS.length; right += 1) {
       const leftAction = ACTION_SHORTCUTS[left]!;
       const rightAction = ACTION_SHORTCUTS[right]!;
-      try {
-        if (actionShortcutsOverlap(config[leftAction.key], config[rightAction.key])) {
-          return `${leftAction.label} and ${rightAction.label} use the same shortcut.`;
-        }
-      } catch {
-        // Unsupported saved shortcuts are reported by the shortcut loader.
+      if (overlaps(() => actionShortcutsOverlap(
+        config[leftAction.key],
+        config[rightAction.key],
+      ))) {
+        conflicts.push({
+          kind: "action-action",
+          participants: [leftAction, rightAction],
+        });
       }
     }
   }
-  return null;
+  return conflicts;
+}
+
+function overlaps(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    // Unsupported saved shortcuts are reported by the shortcut loader.
+    return false;
+  }
 }
 
 function joinLabels(labels: readonly string[]): string {
