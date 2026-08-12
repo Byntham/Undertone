@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -212,7 +212,14 @@ export function componentOutputsExist(component: LocalArtifactComponent): boolea
   }
   return component.requiredOutputs.every(({ pattern }) => {
     const expression = new RegExp(`^${escapeRegex(pattern).replace(/\*/gu, ".*")}$`, "iu");
-    return entries.some((entry) => expression.test(entry));
+    return entries.some((entry) => {
+      if (!expression.test(entry)) return false;
+      try {
+        return lstatSync(path.join(component.target, entry)).isFile();
+      } catch {
+        return false;
+      }
+    });
   });
 }
 

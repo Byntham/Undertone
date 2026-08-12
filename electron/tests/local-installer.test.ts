@@ -23,6 +23,7 @@ import {
 import {
   CLEANUP_ARTIFACTS,
   componentIdentity,
+  componentOutputsExist,
   createLocalArtifactPlan,
   receiptPath,
   STT_ARTIFACTS,
@@ -45,6 +46,25 @@ afterEach(async () => {
 });
 
 describe("local installer", () => {
+  it("rejects archive outputs that only match required filenames", async () => {
+    const root = await temporaryDirectory();
+    const target = path.join(root, "runtime");
+    await mkdir(path.join(target, "server.exe"), { recursive: true });
+    await writeFile(path.join(target, "runtime.dll"), "runtime", "utf8");
+    const component: LocalArtifactComponent = {
+      id: "runtime",
+      kind: "stt",
+      applicable: true,
+      format: "archive",
+      artifacts: [],
+      target,
+      requiredOutputs: [{ pattern: "server.exe" }, { pattern: "*.dll" }],
+      workspaceBytes: 0,
+    };
+
+    expect(componentOutputsExist(component)).toBe(false);
+  });
+
   it("downloads to a partial file and promotes only verified bytes", async () => {
     const root = await temporaryDirectory();
     const destination = path.join(root, "models", "artifact.bin");

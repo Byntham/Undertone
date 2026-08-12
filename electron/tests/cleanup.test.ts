@@ -105,6 +105,19 @@ describe("cleanup providers", () => {
     expect(request.timeoutMs).toBe(7_500);
   });
 
+  it("preserves safe subscription recovery instructions and sanitizes other failures", async () => {
+    let message = "OpenAI Subscription cleanup was not authorized. Reconnect your OpenAI account.";
+    const subscription: SubscriptionCleanupRuntime = {
+      async complete() { throw new Error(message); },
+    };
+    const client = new CleanupClient(new FakeHttp(), new FakeLocal(), subscription);
+    const options = { ...baseOptions, provider: "openai-subscription" as const };
+
+    await expect(client.cleanup(options)).rejects.toThrow(message);
+    message = "secret-token-must-not-leak";
+    await expect(client.cleanup(options)).rejects.toThrow("Cleanup request failed.");
+  });
+
   it("applies compatible tuning to each fixed cleanup model", async () => {
     const http = new FakeHttp();
     const client = new CleanupClient(http, new FakeLocal());

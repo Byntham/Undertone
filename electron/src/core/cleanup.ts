@@ -89,7 +89,7 @@ export class CleanupClient {
         });
         return validateCleanupContent(content, options.transcript);
       } catch (error) {
-        throw cleanupError(error);
+        throw subscriptionCleanupError(error);
       }
     }
     const formatKey = `${provider}:${effectiveModel}`;
@@ -197,6 +197,17 @@ function cleanupError(error: unknown): CleanupError {
     return new CleanupError("Cleanup request timed out.");
   }
   return new CleanupError("Cleanup request failed.");
+}
+
+function subscriptionCleanupError(error: unknown): CleanupError {
+  if (error instanceof Error && [
+    "Connect your OpenAI account before using subscription cleanup.",
+    "OpenAI Subscription cleanup was not authorized. Reconnect your OpenAI account.",
+    "OpenAI Subscription cleanup reached your subscription limit. Try again later.",
+  ].includes(error.message)) {
+    return new CleanupError(error.message);
+  }
+  return cleanupError(error);
 }
 
 function providerFailure(status: number, body: string): string {
