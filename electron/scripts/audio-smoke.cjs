@@ -29,6 +29,7 @@ ipcMain.on("audio:event", (_event, payload) => {
       captureId: 1,
       deviceName: "",
       stream: false,
+      retain: true,
     });
   } else if (payload.type === "level") {
     if (typeof payload.rms !== "number" || !Number.isFinite(payload.rms)

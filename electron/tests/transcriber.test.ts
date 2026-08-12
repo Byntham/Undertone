@@ -101,6 +101,7 @@ describe("transcription providers", () => {
   it("uses a keyless local multipart endpoint and collapses whitespace", async () => {
     const http = new FakeHttp();
     http.response = response(200, { text: " hello\n world \n" });
+    const controller = new AbortController();
     const transcriber = new Transcriber(http, {
       async withServer(_policy, callback) {
         return await callback("http://127.0.0.1:9");
@@ -112,15 +113,61 @@ describe("transcription providers", () => {
       language: "en",
       vocabulary: VOCABULARY,
       provider: "local",
+      signal: controller.signal,
+      timeoutMs: 10_000,
     })).toBe("hello world");
     const call = http.calls[0]!;
     expect(call.url).toBe("http://127.0.0.1:9/inference");
     expect(call.request.headers).toBeUndefined();
+    expect(call.request.signal).toBe(controller.signal);
+    expect(call.request.timeoutMs).toBe(10_000);
     const form = expectForm(call.request.body);
     expect(form.get("response_format")).toBe("json");
     expect(form.get("language")).toBe("en");
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
+  });
+
+  it("requests timestamped deterministic output for local preview", async () => {
+    const http = new FakeHttp();
+    http.response = response(200, {
+      text: " hello world ",
+      segments: [{
+        tokens: [101, 102],
+        words: [
+          { word: " hello", start: 0.1, end: 0.4, probability: 0.9 },
+          { word: " world", start: 0.5, end: 0.9, probability: 0.8 },
+        ],
+      }],
+    });
+    const transcriber = new Transcriber(http, local);
+    const controller = new AbortController();
+
+    await expect(transcriber.transcribeLocalPreview({
+      wav: WAV,
+      language: "en",
+      prompt: "Earlier context",
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    })).resolves.toEqual({
+      text: "hello world",
+      tokens: [
+        { id: 101, text: " hello", startSeconds: 0.1, endSeconds: 0.4 },
+        { id: 102, text: " world", startSeconds: 0.5, endSeconds: 0.9 },
+      ],
+    });
+
+    const request = http.calls[0]!.request;
+    expect(request.signal).toBe(controller.signal);
+    expect(request.timeoutMs).toBe(10_000);
+    const form = expectForm(request.body);
+    expect(form.get("response_format")).toBe("verbose_json");
+    expect(form.get("prompt")).toBe("Earlier context");
+    expect(form.get("temperature_inc")).toBe("0");
+    expect(form.get("best_of")).toBe("1");
+    expect(form.get("beam_size")).toBe("1");
+    expect(form.get("token_timestamps")).toBe("true");
+    expect(form.get("no_language_probabilities")).toBe("true");
   });
 
   it("rejects missing keys before making a request", async () => {

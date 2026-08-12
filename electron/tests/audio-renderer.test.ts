@@ -139,7 +139,7 @@ describe("audio renderer resource ownership", () => {
       resolveStream = resolve;
     }));
 
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
     commandListener?.({ type: "cue", name: "start" });
     await flushPromises();
@@ -160,7 +160,7 @@ describe("audio renderer resource ownership", () => {
 
   it("launches cues in order without waiting for their duration", async () => {
     commandListener?.({ type: "cue", name: "start" });
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
 
     const cueContext = FakeAudioContext.instances[0];
@@ -186,7 +186,7 @@ describe("audio renderer resource ownership", () => {
     await flushPromises();
     FakeAudioContext.failConstruction = false;
 
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
 
     expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
@@ -206,6 +206,7 @@ describe("audio renderer resource ownership", () => {
       captureId: 1,
       deviceName: "Selected microphone",
       stream: false,
+      retain: true,
     });
     await flushPromises();
 
@@ -226,9 +227,43 @@ describe("audio renderer resource ownership", () => {
     await flushPromises();
   });
 
+  it("streams live chunks while retaining the complete recording for final transcription", async () => {
+    commandListener?.({
+      type: "start",
+      captureId: 7,
+      deviceName: "",
+      stream: true,
+      retain: true,
+    });
+    await flushPromises();
+
+    const port = FakeAudioWorkletNode.instances.at(-1)?.port;
+    const first = new Float32Array(4_800).fill(0.25);
+    const tail = new Float32Array(480).fill(-0.25);
+    port?.onmessage?.({ data: first } as MessageEvent<Float32Array>);
+    port?.onmessage?.({ data: tail } as MessageEvent<Float32Array>);
+    commandListener?.({ type: "stop", requestId: 7 });
+    await flushPromises();
+
+    const chunkEvents = emit.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "chunk");
+    expect(chunkEvents).toHaveLength(2);
+    const stopped = emit.mock.calls.map(([event]) => event).find((event) => event.type === "stopped");
+    expect(stopped).toMatchObject({ type: "stopped", requestId: 7 });
+    if (stopped?.type !== "stopped" || stopped.wav === undefined) {
+      throw new Error("Expected retained WAV audio");
+    }
+    const wav = new Uint8Array(stopped.wav);
+    expect(new DataView(stopped.wav).getUint32(24, true)).toBe(16_000);
+    expect(wav.byteLength).toBe(44 + 1_760 * 2);
+    expect(new DataView(stopped.wav).getInt16(44, true)).toBeCloseTo(8_192, -1);
+    expect(new DataView(stopped.wav).getInt16(wav.byteLength - 2, true)).toBeCloseTo(-8_192, -1);
+  });
+
   it("releases the input when capture setup fails", async () => {
     FakeAudioContext.failWorklet = true;
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
 
     expect(stopTrack).toHaveBeenCalledOnce();
@@ -238,7 +273,7 @@ describe("audio renderer resource ownership", () => {
 
   it("releases the worklet when a later setup step fails", async () => {
     FakeAudioContext.failResume = true;
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
 
     expect(stopTrack).toHaveBeenCalledOnce();
@@ -250,7 +285,7 @@ describe("audio renderer resource ownership", () => {
 
   it("stops the stream if AudioContext construction fails", async () => {
     FakeAudioContext.failConstruction = true;
-    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });
+    commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false, retain: true });
     await flushPromises();
 
     expect(stopTrack).toHaveBeenCalledOnce();

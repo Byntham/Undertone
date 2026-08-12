@@ -88,6 +88,10 @@ describe("settings model", () => {
 
     const xai = normalizeConfig({ provider: "xai", live_transcription: true });
     expect(settingsSnapshot(xai, "1.8.1").sttModel).toBe("");
+
+    const local = normalizeConfig({ provider: "local", live_transcription: true });
+    expect(settingsSnapshot(local, "1.8.1").sttModel)
+      .toBe("ggml-large-v3-turbo.bin");
   });
 
   it("allows subscription cleanup without exposing it as transcription", () => {

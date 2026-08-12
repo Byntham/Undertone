@@ -35,6 +35,7 @@ import {
   LiveTranscriber,
   type LiveTranscriptionSession,
 } from "../core/liveTranscriber";
+import { LocalLiveTranscriber } from "../core/localLiveTranscriber";
 import { OverlayController } from "../core/overlayController";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
@@ -106,7 +107,7 @@ interface CapturedAudio {
 }
 
 interface LiveCapture {
-  provider: "openai" | "xai";
+  provider: "openai" | "xai" | "local";
   session: LiveTranscriptionSession;
   encoder: StreamingPcm16Encoder;
   text: string;
@@ -169,6 +170,7 @@ if (!gotLock) {
   let localInstaller: LocalInstaller | null = null;
   let appUpdateService: AppUpdateService | null = null;
   let transcriberClient: Transcriber | null = null;
+  let localLiveTranscriber: LocalLiveTranscriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   let openAiSubscription: OpenAiSubscription | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
@@ -725,6 +727,16 @@ if (!gotLock) {
   const failLiveCapture = (captureId: number, error: Error): void => {
     const capture = liveCaptures.get(captureId);
     if (capture === undefined) return;
+    if (capture.provider === "local") {
+      capture.text = "";
+      console.warn(`Local live transcription failed: ${error.message}`);
+      showDictationFeedback(
+        captureId,
+        "Local preview unavailable - recording continues",
+        "warning",
+      );
+      return;
+    }
     const shouldCancelRecording = activeAudioCaptureId === captureId;
     liveCaptures.delete(captureId);
     const pending = pendingAudioFinalizations.get(captureId);
@@ -756,10 +768,27 @@ if (!gotLock) {
       clearTurnDraftSignal();
       if (streamLive) {
         try {
-          const provider = config.provider === "openai" ? "openai" : "xai";
-          const liveCapture: LiveCapture = {
-            provider,
-            session: liveTranscriber.start({
+          const provider = config.provider === "openai"
+            ? "openai"
+            : config.provider === "xai" ? "xai" : "local";
+          if (provider === "local") localStt?.warm();
+          const session = provider === "local"
+            ? localLiveTranscriber?.start(config.language, {
+              partial: (text) => {
+                const active = liveCaptures.get(captureId);
+                if (active === undefined) return;
+                active.text = text;
+                publishTurnDraft();
+              },
+              failed: (error) => failLiveCapture(captureId, error),
+              timing: (pass, windowSeconds, totalSeconds, inferenceMs) => {
+                console.log(
+                  `Local preview ${pass} transcribed ${windowSeconds.toFixed(1)}s window `
+                  + `at ${totalSeconds.toFixed(1)}s in ${inferenceMs}ms`,
+                );
+              },
+            })
+            : liveTranscriber.start({
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
@@ -772,7 +801,11 @@ if (!gotLock) {
                 publishTurnDraft();
               },
               failed: (error) => failLiveCapture(captureId, error),
-            }),
+            });
+          if (session === undefined) throw new Error("Local transcription service is not ready.");
+          const liveCapture: LiveCapture = {
+            provider,
+            session,
             encoder: new StreamingPcm16Encoder(provider === "openai" ? 24_000 : 16_000),
             text: "",
             state: "listening",
@@ -794,6 +827,7 @@ if (!gotLock) {
         captureId,
         deviceName: config.input_device,
         stream: streamLive,
+        retain: !streamLive || config.provider === "local",
       });
       playCue("start");
       setTrayRecording(true);
@@ -824,7 +858,7 @@ if (!gotLock) {
         pendingAudioFinalizations.set(captureId, {
           resolve: resolveAudio,
           timer,
-          streamed: liveCapture !== undefined,
+          streamed: liveCapture !== undefined && liveCapture.provider !== "local",
           liveFailed: false,
         });
         const pending = Promise.all([audio, target]).then<PendingDictation | null>(
@@ -839,25 +873,38 @@ if (!gotLock) {
               try {
                 activeLive.session.append(activeLive.encoder.finish());
                 const text = await activeLive.session.finish();
-                if (text.length === 0) {
-                  showDictationFeedback(captureId, "No speech detected", "error");
-                  abandonLiveCapture(captureId);
-                  return null;
+                if (activeLive.provider === "local") {
+                  if (captured.wav === null) return null;
+                  input = { type: "audio", wav: captured.wav, captureId };
+                } else {
+                  if (text.length === 0) {
+                    showDictationFeedback(captureId, "No speech detected", "error");
+                    abandonLiveCapture(captureId);
+                    return null;
+                  }
+                  activeLive.text = text;
+                  console.log(
+                    `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
+                  );
+                  publishTurnDraft();
+                  input = { type: "transcript", text, previewId: captureId };
                 }
-                activeLive.text = text;
-                console.log(
-                  `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
-                );
-                publishTurnDraft();
-                input = { type: "transcript", text, previewId: captureId };
               } catch (error) {
-                if (liveCaptures.has(captureId)) {
+                if (activeLive.provider === "local" && captured.wav !== null) {
                   failLiveCapture(
                     captureId,
                     error instanceof Error ? error : new Error(String(error)),
                   );
+                  input = { type: "audio", wav: captured.wav, captureId };
+                } else {
+                  if (liveCaptures.has(captureId)) {
+                    failLiveCapture(
+                      captureId,
+                      error instanceof Error ? error : new Error(String(error)),
+                    );
+                  }
+                  return null;
                 }
-                return null;
               }
             } else if (captured.wav !== null) {
               input = { type: "audio", wav: captured.wav, captureId };
@@ -1168,6 +1215,7 @@ if (!gotLock) {
       appVersion: app.getVersion(),
     });
     transcriberClient = new Transcriber(http, localStt);
+    localLiveTranscriber = new LocalLiveTranscriber(transcriberClient);
     cleanupClient = new CleanupClient(http, localCleanup, openAiSubscription);
     const paster = new ClipboardPaster(
       {
@@ -1196,12 +1244,10 @@ if (!gotLock) {
       {
         dictate: async (input, destination, snapshot, overlayRevision) => {
           const captureId = input.type === "transcript" ? input.previewId : input.captureId;
-          if (input.type === "transcript") {
-            const capture = liveCaptures.get(input.previewId);
-            if (capture !== undefined) {
-              capture.latchedText = composeTurnDraftText(input.previewId);
-              capture.state = "processing";
-            }
+          const capture = captureId === undefined ? undefined : liveCaptures.get(captureId);
+          if (capture !== undefined) {
+            capture.latchedText = composeTurnDraftText(captureId);
+            capture.state = "processing";
             publishTurnDraft();
           }
           try {
@@ -1225,14 +1271,14 @@ if (!gotLock) {
               && captureId !== undefined
               && turnDraftSignal?.captureId !== captureId) {
               beginTurnDraftDismissal(captureId);
-            } else if (input.type === "transcript") {
-              liveCaptures.delete(input.previewId);
+            } else if (captureId !== undefined) {
+              liveCaptures.delete(captureId);
               publishTurnDraft();
             } else {
               publishTurnDraft();
             }
           } catch (error) {
-            if (input.type === "transcript") liveCaptures.delete(input.previewId);
+            if (captureId !== undefined) liveCaptures.delete(captureId);
             publishTurnDraft();
             throw error;
           }
@@ -2069,7 +2115,7 @@ function toFloat32Array(value: unknown): Float32Array | null {
 
 function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
-    && (config.provider === "openai" || config.provider === "xai");
+    && (config.provider === "openai" || config.provider === "xai" || config.provider === "local");
 }
 
 function actionShortcut(shortcut: string): string {

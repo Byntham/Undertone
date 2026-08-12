@@ -5,6 +5,7 @@ import {
   joinFloat32,
   resampleLinear,
   StreamingPcm16Encoder,
+  wrapPcm16Wav,
 } from "../src/core/audio";
 
 describe("audio conversion", () => {
@@ -41,6 +42,16 @@ describe("audio conversion", () => {
     expect(view.getInt16(44, true)).toBe(-32_768);
     expect(view.getInt16(46, true)).toBe(0);
     expect(view.getInt16(48, true)).toBe(32_767);
+  });
+
+  it("wraps an existing PCM16 stream without changing its samples", () => {
+    const pcm = Uint8Array.of(0, 128, 255, 127);
+    const wav = wrapPcm16Wav(pcm, 16_000);
+    const view = new DataView(wav.buffer);
+    expect(new TextDecoder().decode(wav.slice(0, 4))).toBe("RIFF");
+    expect(view.getUint32(24, true)).toBe(16_000);
+    expect(view.getUint32(40, true)).toBe(pcm.length);
+    expect(wav.slice(44)).toEqual(pcm);
   });
 
   it("rejects invalid sample rates", () => {

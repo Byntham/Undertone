@@ -2,6 +2,7 @@ export interface HttpRequest {
   headers?: Readonly<Record<string, string>>;
   body: BodyInit;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 
 export interface HttpResponse {
@@ -16,6 +17,9 @@ export interface HttpClient {
 export class FetchHttpClient implements HttpClient {
   async post(url: string, request: HttpRequest): Promise<HttpResponse> {
     const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    request.signal?.addEventListener("abort", abort, { once: true });
+    if (request.signal?.aborted === true) controller.abort();
     const timer = setTimeout(() => controller.abort(), request.timeoutMs);
     try {
       const init: RequestInit = {
@@ -28,6 +32,7 @@ export class FetchHttpClient implements HttpClient {
       return { status: response.status, body: await response.text() };
     } finally {
       clearTimeout(timer);
+      request.signal?.removeEventListener("abort", abort);
     }
   }
 }

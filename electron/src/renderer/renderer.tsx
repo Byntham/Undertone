@@ -366,12 +366,12 @@ function General({
           </SettingRow>
           <SettingRow
             title="Live text preview"
-            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. OpenAI and xAI only."
+            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. Available with OpenAI, xAI, and local Whisper."
           >
             <Toggle
               label="Show live text preview"
               checked={settings.liveTranscription}
-              disabled={settings.provider !== "openai" && settings.provider !== "xai"}
+              disabled={settings.provider === "openrouter"}
               onChange={(liveTranscription) => { void update({ liveTranscription }); }}
             />
           </SettingRow>
