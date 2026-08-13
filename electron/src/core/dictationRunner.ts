@@ -63,7 +63,7 @@ export class DictationJobRunner {
     destination: DictationDestination,
     config: UndertoneConfig,
     feedback: DictationFeedback = this.dependencies.feedback,
-  ): Promise<string | null> {
+  ): Promise<void> {
     const provider = config.provider;
     let transcript: string;
     try {
@@ -79,10 +79,9 @@ export class DictationJobRunner {
       const message = error instanceof Error ? error.message : String(error);
       this.dependencies.history.registerFailure(message, wav);
       feedback.message({ text: message, tone: "error" });
-      return null;
+      return;
     }
     await this.runTranscript(transcript, destination, config, feedback);
-    return transcript;
   }
 
   async runTranscript(

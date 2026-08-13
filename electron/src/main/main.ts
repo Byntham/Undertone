@@ -36,10 +36,6 @@ import {
   type LiveTranscriptionCallbacks,
   type LiveTranscriptionSession,
 } from "../core/liveTranscriber";
-import {
-  LocalLiveTranscriber,
-  type LocalPreviewDiagnosticEvent,
-} from "../core/localLiveTranscriber";
 import { NemotronLiveTranscriber } from "../core/nemotronLiveTranscriber";
 import { OverlayController } from "../core/overlayController";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
@@ -68,10 +64,6 @@ import { AppUpdateService } from "./appUpdater";
 import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
-  ensureLocalPreviewDiagnosticFolder,
-  saveLocalPreviewDiagnostic,
-} from "./localPreviewDiagnostics";
-import {
   OpenAiSubscription,
   type OpenAiSubscriptionCredentials,
 } from "./openAiSubscription";
@@ -84,7 +76,6 @@ import {
 } from "./localRuntime";
 import { FetchHttpClient } from "../platform/http";
 import { WindowsHost, type InputMode } from "../platform/windowsHost";
-import { LOCAL_STT_MODEL } from "../shared/models";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
@@ -128,13 +119,6 @@ interface LiveCapture {
   state: "listening" | "finalizing" | "processing";
   /** Stable text through this capture, latched before the turn buffer changes. */
   latchedText?: string;
-}
-
-interface ActiveLocalPreviewDiagnostic {
-  createdAt: string;
-  language: string;
-  previewAtStop: string;
-  events: LocalPreviewDiagnosticEvent[];
 }
 
 interface TurnDraftDismissal {
@@ -192,7 +176,6 @@ if (!gotLock) {
   let localInstaller: LocalInstaller | null = null;
   let appUpdateService: AppUpdateService | null = null;
   let transcriberClient: Transcriber | null = null;
-  let localLiveTranscriber: LocalLiveTranscriber | null = null;
   let nemotronLiveTranscriber: NemotronLiveTranscriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   let openAiSubscription: OpenAiSubscription | null = null;
@@ -224,12 +207,6 @@ if (!gotLock) {
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
   const liveCaptures = new Map<number, LiveCapture>();
-  const localPreviewDiagnostics = new Map<number, ActiveLocalPreviewDiagnostic>();
-  const localPreviewDiagnosticsRoot = path.join(
-    process.env.LOCALAPPDATA ?? app.getPath("appData"),
-    "Undertone",
-    "diagnostics",
-  );
   const activeDictationCaptureIds = new Set<number>();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
@@ -747,12 +724,8 @@ if (!gotLock) {
 
   const abandonLiveCapture = (captureId: number): void => {
     const capture = liveCaptures.get(captureId);
-    if (capture === undefined) {
-      localPreviewDiagnostics.delete(captureId);
-      return;
-    }
+    if (capture === undefined) return;
     liveCaptures.delete(captureId);
-    localPreviewDiagnostics.delete(captureId);
     capture.session.cancel();
     publishTurnDraft();
   };
@@ -805,57 +778,24 @@ if (!gotLock) {
             ? "openai"
             : config.provider === "xai" ? "xai" : "local";
           const localEngine = provider === "local" ? config.local_stt_engine : undefined;
-          const diagnostic: ActiveLocalPreviewDiagnostic | undefined = provider === "local"
-            && localEngine === "whisper"
-            && config.local_preview_diagnostics
-            ? {
-              createdAt: new Date().toISOString(),
-              language: config.language,
-              previewAtStop: "",
-              events: [],
-            }
-            : undefined;
           if (provider === "local") selectedLocalSttRuntime()?.warm();
-          const localCallbacks: LiveTranscriptionCallbacks = {
-              partial: (text) => {
-                const active = liveCaptures.get(captureId);
-                if (active === undefined) return;
-                active.text = text;
-                publishTurnDraft();
-              },
-              failed: (error) => failLiveCapture(captureId, error),
+          const callbacks: LiveTranscriptionCallbacks = {
+            partial: (text) => {
+              const active = liveCaptures.get(captureId);
+              if (active === undefined) return;
+              active.text = text;
+              publishTurnDraft();
+            },
+            failed: (error) => failLiveCapture(captureId, error),
           };
           const session = provider === "local"
-            ? localEngine === "nemotron"
-              ? nemotronLiveTranscriber?.start(config.language, localCallbacks)
-              : localLiveTranscriber?.start(config.language, {
-              ...localCallbacks,
-              ...(diagnostic === undefined ? {} : {
-                diagnostic: (event: LocalPreviewDiagnosticEvent) => {
-                  diagnostic.events.push(event);
-                },
-              }),
-              timing: (pass, windowSeconds, totalSeconds, inferenceMs) => {
-                console.log(
-                  `Local preview ${pass} transcribed ${windowSeconds.toFixed(1)}s window `
-                  + `at ${totalSeconds.toFixed(1)}s in ${inferenceMs}ms`,
-                );
-              },
-            })
+            ? nemotronLiveTranscriber?.start(config.language, callbacks)
             : liveTranscriber.start({
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
               vocabulary: xaiVocabularyHints(config),
-            }, {
-              partial: (text) => {
-                const active = liveCaptures.get(captureId);
-                if (active === undefined) return;
-                active.text = text;
-                publishTurnDraft();
-              },
-              failed: (error) => failLiveCapture(captureId, error),
-            });
+            }, callbacks);
           if (session === undefined) throw new Error("Local transcription service is not ready.");
           const liveCapture: LiveCapture = {
             provider,
@@ -866,7 +806,6 @@ if (!gotLock) {
             state: "listening",
           };
           liveCaptures.set(captureId, liveCapture);
-          if (diagnostic !== undefined) localPreviewDiagnostics.set(captureId, diagnostic);
         } catch (error) {
           showFeedback(
             `Live transcription failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -929,29 +868,17 @@ if (!gotLock) {
               try {
                 activeLive.session.append(activeLive.encoder.finish());
                 const text = await activeLive.session.finish();
-                const diagnostic = localPreviewDiagnostics.get(captureId);
-                if (diagnostic !== undefined) diagnostic.previewAtStop = text;
-                if (activeLive.provider === "local" && activeLive.localEngine !== "nemotron") {
-                  if (captured.wav === null) return null;
-                  input = {
-                    type: "audio",
-                    wav: captured.wav,
-                    captureId,
-                    localEngine: activeLive.localEngine ?? "whisper",
-                  };
-                } else {
-                  if (text.length === 0) {
-                    showDictationFeedback(captureId, "No speech detected", "error");
-                    abandonLiveCapture(captureId);
-                    return null;
-                  }
-                  activeLive.text = text;
-                  console.log(
-                    `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
-                  );
-                  publishTurnDraft();
-                  input = { type: "transcript", text, previewId: captureId };
+                if (text.length === 0) {
+                  showDictationFeedback(captureId, "No speech detected", "error");
+                  abandonLiveCapture(captureId);
+                  return null;
                 }
+                activeLive.text = text;
+                console.log(
+                  `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
+                );
+                publishTurnDraft();
+                input = { type: "transcript", text, previewId: captureId };
               } catch (error) {
                 if (activeLive.provider === "local" && captured.wav !== null) {
                   failLiveCapture(
@@ -962,7 +889,7 @@ if (!gotLock) {
                     type: "audio",
                     wav: captured.wav,
                     captureId,
-                    localEngine: activeLive.localEngine ?? "whisper",
+                    localEngine: activeLive.localEngine ?? "nemotron",
                   };
                 } else {
                   if (liveCaptures.has(captureId)) {
@@ -1289,7 +1216,6 @@ if (!gotLock) {
       http,
       createLocalSttRouter(localWhisperStt, localNemotronStt),
     );
-    localLiveTranscriber = new LocalLiveTranscriber(transcriberClient);
     nemotronLiveTranscriber = new NemotronLiveTranscriber(localNemotronStt);
     cleanupClient = new CleanupClient(http, localCleanup, openAiSubscription);
     const paster = new ClipboardPaster(
@@ -1340,38 +1266,12 @@ if (!gotLock) {
               const transcriptionSnapshot = input.localEngine === undefined
                 ? snapshot
                 : { ...snapshot, local_stt_engine: input.localEngine };
-              const finalTranscript = await runner.run(
+              await runner.run(
                 input.wav,
                 destination,
                 transcriptionSnapshot,
                 feedback,
               );
-              if (captureId !== undefined) {
-                const diagnostic = localPreviewDiagnostics.get(captureId);
-                if (diagnostic !== undefined) {
-                  try {
-                    const directory = await saveLocalPreviewDiagnostic(
-                      localPreviewDiagnosticsRoot,
-                      {
-                        captureId,
-                        createdAt: diagnostic.createdAt,
-                        appVersion: app.getVersion(),
-                        language: diagnostic.language,
-                        model: LOCAL_STT_MODEL,
-                        wav: input.wav,
-                        previewAtStop: diagnostic.previewAtStop,
-                        finalTranscript,
-                        events: diagnostic.events,
-                      },
-                    );
-                    console.log(`Local preview diagnostic saved to ${directory}`);
-                  } catch (error) {
-                    console.warn("Could not save local preview diagnostic", error);
-                  } finally {
-                    localPreviewDiagnostics.delete(captureId);
-                  }
-                }
-              }
             } else {
               await runner.runTranscript(input.text, destination, snapshot, feedback);
             }
@@ -1389,7 +1289,6 @@ if (!gotLock) {
           } catch (error) {
             if (captureId !== undefined) {
               liveCaptures.delete(captureId);
-              localPreviewDiagnostics.delete(captureId);
             }
             publishTurnDraft();
             throw error;
@@ -1473,7 +1372,6 @@ if (!gotLock) {
     pendingAudioFinalizations.clear();
     for (const capture of liveCaptures.values()) capture.session.cancel();
     liveCaptures.clear();
-    localPreviewDiagnostics.clear();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -1827,12 +1725,7 @@ if (!gotLock) {
     const settingsRoot = path.join(app.getPath("appData"), "Undertone");
     const target = value.action === "openLog"
       ? path.join(settingsRoot, "app.log")
-      : value.action === "openDiagnosticsFolder"
-        ? localPreviewDiagnosticsRoot
-        : settingsRoot;
-    if (value.action === "openDiagnosticsFolder") {
-      await ensureLocalPreviewDiagnosticFolder(localPreviewDiagnosticsRoot);
-    }
+      : settingsRoot;
     const result = await shell.openPath(target);
     if (result.length > 0 && value.action === "openLog") {
       const fallback = await shell.openPath(settingsRoot);
@@ -2194,8 +2087,7 @@ function isHistoryAction(value: unknown): value is HistoryAction {
 
 function isSystemAction(value: unknown): value is SystemAction {
   return value === "openSettingsFolder"
-    || value === "openLog"
-    || value === "openDiagnosticsFolder";
+    || value === "openLog";
 }
 
 function providerName(provider: string): string {
@@ -2256,7 +2148,9 @@ function toFloat32Array(value: unknown): Float32Array | null {
 
 function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
-    && (config.provider === "openai" || config.provider === "xai" || config.provider === "local");
+    && (config.provider === "openai"
+      || config.provider === "xai"
+      || (config.provider === "local" && config.local_stt_engine === "nemotron"));
 }
 
 function actionShortcut(shortcut: string): string {

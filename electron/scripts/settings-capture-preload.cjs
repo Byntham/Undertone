@@ -18,7 +18,6 @@ const snapshot = {
   discardHotkey: "ctrl+alt+shift+backspace",
   shortcutWarning: null,
   liveTranscription: false,
-  localPreviewDiagnostics: false,
   openTurnCleanupStrategy: "live-full",
   inputDevice: "",
   microphones: ["Microphone Array (Realtek Audio)", "USB Podcast Mic"],

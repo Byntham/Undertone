@@ -27,7 +27,7 @@ export type ShortcutSetting =
   | "scratchHotkey"
   | "discardHotkey";
 export type HistoryAction = "copy" | "repaste" | "retry";
-export type SystemAction = "openSettingsFolder" | "openLog" | "openDiagnosticsFolder";
+export type SystemAction = "openSettingsFolder" | "openLog";
 export type ProviderTestKind = "stt" | "cleanup";
 export type AppUpdatePhase =
   | "unavailable"
@@ -71,7 +71,6 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   liveTranscription: boolean;
-  localPreviewDiagnostics: boolean;
   openTurnCleanupStrategy: OpenTurnCleanupStrategy;
   inputDevice: string;
   microphones: string[];
@@ -111,7 +110,6 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   liveTranscription?: boolean;
-  localPreviewDiagnostics?: boolean;
   openTurnCleanupStrategy?: OpenTurnCleanupStrategy;
   inputDevice?: string;
   provider?: TranscriptionProviderId;

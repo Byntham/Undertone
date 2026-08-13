@@ -19,7 +19,6 @@ describe("settings model", () => {
       discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
       liveTranscription: false,
-      localPreviewDiagnostics: false,
       openTurnCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
@@ -92,10 +91,15 @@ describe("settings model", () => {
     expect(settingsSnapshot(xai, "1.8.1").sttModel).toBe("");
 
     const local = normalizeConfig({ provider: "local", live_transcription: true });
+    expect(local.live_transcription).toBe(false);
     expect(settingsSnapshot(local, "1.8.1").sttModel)
       .toBe("ggml-large-v3-turbo.bin");
 
-    const nemotron = applySettingsPatch(local, { localSttEngine: "nemotron" });
+    const nemotron = normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+    });
     expect(settingsSnapshot(nemotron, "1.8.1").sttModel)
       .toBe("nemotron-speech-streaming-en-0.6b.q8_0.gguf");
     expect(nemotron.language).toBe("en");
@@ -143,7 +147,7 @@ describe("settings model", () => {
   });
 
   it("applies supported fields without mutating the existing config", () => {
-    const config = normalizeConfig(undefined);
+    const config = normalizeConfig({ provider: "openai" });
     const next = applySettingsPatch(config, {
       language: "fr",
       aiCleanup: false,
@@ -157,7 +161,6 @@ describe("settings model", () => {
       corrections: { "under tone": "Undertone" },
       openTurnCleanupStrategy: "commit-full",
       liveTranscription: true,
-      localPreviewDiagnostics: true,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -174,8 +177,18 @@ describe("settings model", () => {
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(next.live_transcription).toBe(true);
-    expect(next.local_preview_diagnostics).toBe(true);
     expect(config.language).toBe("en");
+  });
+
+  it("turns live preview off when local Whisper is selected", () => {
+    const config = normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+    });
+    const next = applySettingsPatch(config, { localSttEngine: "whisper" });
+    expect(next.live_transcription).toBe(false);
+    expect(next.local_stt_engine).toBe("whisper");
   });
 
   it("normalizes shortcut updates and rejects collisions", () => {

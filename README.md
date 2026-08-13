@@ -73,7 +73,8 @@ NeMo-Speech.cpp revision. Downloads resume after a connection interruption.
 Restart Undertone after the first setup so it inherits CUDA's system path, then
 choose **Nemotron Streaming 0.6B** under **Settings → Speech & AI → Local
 transcription engine**. Whisper and Nemotron are never loaded as transcription
-engines at the same time.
+engines at the same time. Local live preview is Nemotron-only; Whisper Large V3
+Turbo remains available for completed, non-live recordings.
 
 ## Privacy
 

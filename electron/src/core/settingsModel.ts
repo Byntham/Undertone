@@ -43,7 +43,6 @@ const PATCH_FIELDS = new Set([
   "scratchHotkey",
   "discardHotkey",
   "liveTranscription",
-  "localPreviewDiagnostics",
   "openTurnCleanupStrategy",
   "inputDevice",
   "provider",
@@ -82,7 +81,6 @@ export function settingsSnapshot(
     discardHotkey: config.discard_hotkey,
     shortcutWarning: shortcutWarning(config),
     liveTranscription: config.live_transcription,
-    localPreviewDiagnostics: config.local_preview_diagnostics,
     openTurnCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
     microphones: [...microphones],
@@ -186,12 +184,6 @@ export function applySettingsPatch(
   if (value.liveTranscription !== undefined) {
     next.live_transcription = booleanField(value.liveTranscription, "liveTranscription");
   }
-  if (value.localPreviewDiagnostics !== undefined) {
-    next.local_preview_diagnostics = booleanField(
-      value.localPreviewDiagnostics,
-      "localPreviewDiagnostics",
-    );
-  }
   if (value.openTurnCleanupStrategy !== undefined) {
     if (value.openTurnCleanupStrategy !== "live-full"
       && value.openTurnCleanupStrategy !== "commit-full") {
@@ -235,6 +227,9 @@ export function applySettingsPatch(
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
   if (next.local_stt_engine === "nemotron") next.language = "en";
+  if (next.provider === "local" && next.local_stt_engine === "whisper") {
+    next.live_transcription = false;
+  }
   return next;
 }
 

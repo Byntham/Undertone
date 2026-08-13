@@ -366,28 +366,14 @@ function General({
           </SettingRow>
           <SettingRow
             title="Live text preview"
-            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. Available with OpenAI, xAI, and local transcription."
+            description="Show text in the open turn while you speak. Available with OpenAI, xAI, and local Nemotron."
           >
             <Toggle
               label="Show live text preview"
               checked={settings.liveTranscription}
-              disabled={settings.provider === "openrouter"}
+              disabled={settings.provider === "openrouter"
+                || (settings.provider === "local" && settings.localSttEngine === "whisper")}
               onChange={(liveTranscription) => { void update({ liveTranscription }); }}
-            />
-          </SettingRow>
-          <SettingRow
-            title="Preview diagnostics"
-            description="Save microphone audio and detailed local-preview timing for debugging. Keeps the newest 10 recordings on this computer."
-          >
-            <Toggle
-              label="Save local preview diagnostics"
-              checked={settings.localPreviewDiagnostics}
-              disabled={settings.provider !== "local"
-                || settings.localSttEngine !== "whisper"
-                || !settings.liveTranscription}
-              onChange={(localPreviewDiagnostics) => {
-                void update({ localPreviewDiagnostics });
-              }}
             />
           </SettingRow>
         </div>
@@ -448,11 +434,10 @@ function General({
             />
           </SettingRow>
           <AppUpdates appVersion={settings.appVersion} />
-          <SettingRow title="Diagnostics" description="Settings, logs, and saved local-preview recordings">
+          <SettingRow title="Diagnostics" description="Settings folder and application log">
             <div className="buttonGroup">
               <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Settings</button>
               <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>Log</button>
-              <button type="button" className="smallButton" onClick={() => { void systemAction("openDiagnosticsFolder"); }}>Preview recordings</button>
             </div>
           </SettingRow>
         </div>
@@ -791,7 +776,7 @@ function SpeechAi({
             title="Local transcription engine"
             description={settings.localSttEngine === "nemotron"
               ? "Experimental true streaming. The same model produces both the preview and final transcript."
-              : "Whisper Large V3 Turbo with a rolling live preview and full final pass."}
+              : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
           >
             <select
               aria-label="Local transcription engine"
@@ -802,8 +787,8 @@ function SpeechAi({
                 });
               }}
             >
-              <option value="whisper">Whisper Large V3 Turbo</option>
-              <option value="nemotron">Nemotron 0.6B</option>
+              <option value="whisper">Whisper (non-live)</option>
+              <option value="nemotron">Nemotron (live + non-live)</option>
             </select>
           </SettingRow>}
           <SettingRow title="Use AI cleanup">

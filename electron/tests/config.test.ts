@@ -40,7 +40,6 @@ describe("configuration", () => {
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
     expect(second.live_transcription).toBe(false);
-    expect(second.local_preview_diagnostics).toBe(false);
     expect(second.cleanup_reasoning_effort).toBe("none");
     expect(second.cleanup_service_tier).toBe("priority");
     expect(second.hotkey).toBe("left ctrl+left windows");
@@ -81,7 +80,6 @@ describe("configuration", () => {
       scratch_hotkey: 42,
       discard_hotkey: [],
       live_transcription: "true",
-      local_preview_diagnostics: "true",
       stack_cleanup_strategy: "sometimes",
       local_loaded: "false",
       local_idle_minutes: 7,
@@ -141,11 +139,16 @@ describe("configuration", () => {
 
   it("repairs a malformed live-transcription flag", () => {
     expect(normalizeConfig({ live_transcription: "false" }).live_transcription).toBe(false);
-    expect(normalizeConfig({ live_transcription: true }).live_transcription).toBe(true);
-    expect(normalizeConfig({ local_preview_diagnostics: "true" }).local_preview_diagnostics)
-      .toBe(false);
-    expect(normalizeConfig({ local_preview_diagnostics: true }).local_preview_diagnostics)
-      .toBe(true);
+    expect(normalizeConfig({ live_transcription: true }).live_transcription).toBe(false);
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+    }).live_transcription).toBe(true);
+    expect(normalizeConfig({
+      provider: "openai",
+      live_transcription: true,
+    }).live_transcription).toBe(true);
   });
 
   it("persists only supported local transcription engines", () => {
@@ -155,6 +158,11 @@ describe("configuration", () => {
       .toBe("en");
     expect(normalizeConfig({ local_stt_engine: "other" }).local_stt_engine)
       .toBe("whisper");
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "whisper",
+      live_transcription: true,
+    }).live_transcription).toBe(false);
   });
 
   it("repairs invalid Luna request settings and migrates fast to priority", () => {

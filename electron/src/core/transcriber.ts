@@ -31,28 +31,6 @@ export interface TranscribeOptions {
   vocabulary: readonly string[];
   provider: TranscriptionProviderId;
   localEngine?: LocalSttEngineId;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-export interface LocalPreviewTranscribeOptions {
-  wav: Uint8Array;
-  language: string;
-  prompt: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-export interface LocalPreviewToken {
-  id: number;
-  text: string;
-  startSeconds: number;
-  endSeconds: number;
-}
-
-export interface LocalPreviewResult {
-  text: string;
-  tokens: readonly LocalPreviewToken[];
 }
 
 export class Transcriber {
@@ -82,34 +60,6 @@ export class Transcriber {
       case "openai": return await this.transcribeOpenAi(normalized);
       case "openrouter": return await this.transcribeOpenRouter(normalized);
       case "local": return await this.transcribeLocal(normalized);
-    }
-  }
-
-  async transcribeLocalPreview(
-    options: LocalPreviewTranscribeOptions,
-  ): Promise<LocalPreviewResult> {
-    try {
-      return await this.local.withServer("whisper", "wait", async (baseUrl) => {
-        const form = audioForm(options.wav);
-        form.append("response_format", "verbose_json");
-        form.append("language", options.language);
-        form.append("prompt", options.prompt);
-        form.append("temperature", "0");
-        form.append("temperature_inc", "0");
-        form.append("best_of", "1");
-        form.append("beam_size", "1");
-        form.append("token_timestamps", "true");
-        form.append("no_language_probabilities", "true");
-        const payload = await this.postJson(`${baseUrl}/inference`, "Local", {
-          body: form,
-          timeoutMs: options.timeoutMs ?? STT_TIMEOUT_MS,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-        }, localConnectionMessage());
-        return localPreviewFromPayload(payload);
-      });
-    } catch (error) {
-      if (error instanceof TranscriptionError) throw error;
-      throw new TranscriptionError(errorMessage(error), { cause: error });
     }
   }
 
@@ -190,8 +140,7 @@ export class Transcriber {
         const endpoint = engine === "nemotron" ? "/v1/audio/transcriptions" : "/inference";
         const payload = await this.postJson(`${baseUrl}${endpoint}`, "Local", {
           body: form,
-          timeoutMs: options.timeoutMs ?? STT_TIMEOUT_MS,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          timeoutMs: STT_TIMEOUT_MS,
         }, localConnectionMessage());
         const text = textFromPayload(payload);
         return text.split(/\s+/u).filter(Boolean).join(" ");
@@ -277,46 +226,6 @@ function textFromPayload(payload: unknown): string {
   return isRecord(payload) && typeof payload.text === "string"
     ? payload.text.trim()
     : "";
-}
-
-function localPreviewFromPayload(payload: unknown): LocalPreviewResult {
-  const text = textFromPayload(payload).split(/\s+/u).filter(Boolean).join(" ");
-  if (!isRecord(payload) || !Array.isArray(payload.segments)) {
-    throw new TranscriptionError("Local preview returned an unexpected response.");
-  }
-  const tokens: LocalPreviewToken[] = [];
-  for (const segment of payload.segments) {
-    if (!isRecord(segment) || !Array.isArray(segment.tokens) || !Array.isArray(segment.words)) {
-      continue;
-    }
-    const count = Math.min(segment.tokens.length, segment.words.length);
-    for (let index = 0; index < count; index += 1) {
-      const id = segment.tokens[index];
-      const word = segment.words[index];
-      if (typeof id !== "number"
-          || !Number.isSafeInteger(id)
-          || !isRecord(word)
-          || typeof word.word !== "string"
-          || !isFiniteNumber(word.start)
-          || !isFiniteNumber(word.end)
-          || word.start < 0
-          || word.end < word.start) continue;
-      tokens.push({
-        id,
-        text: word.word,
-        startSeconds: word.start,
-        endSeconds: word.end,
-      });
-    }
-  }
-  if (text.length > 0 && tokens.length === 0) {
-    throw new TranscriptionError("Local preview did not return timestamped tokens.");
-  }
-  return { text, tokens };
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
 }
 
 function localConnectionMessage(): string {
