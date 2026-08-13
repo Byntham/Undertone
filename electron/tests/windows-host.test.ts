@@ -59,7 +59,7 @@ describe("Windows host", () => {
     } finally {
       await host.stop();
     }
-  });
+  }, 10_000);
 
   it("requires guarded target identity fields and accepts only explicit input modes", async () => {
     const child = spawn(resolveWindowsHost(), [], {

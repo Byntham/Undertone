@@ -83,7 +83,7 @@ export class WindowsHost {
 
   constructor(options: WindowsHostOptions = {}) {
     this.executable = options.executable ?? resolveWindowsHost();
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 2_000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
   }
 
   async start(): Promise<HostReady> {
