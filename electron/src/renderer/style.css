@@ -215,6 +215,7 @@ input::placeholder { color: var(--faint); }
   gap: 6px;
   align-items: center;
 }
+.serviceControl { min-width: 215px; }
 .microphoneControl select, .serviceControl select { width: 100%; min-width: 0; }
 .microphoneControl small, .serviceControl small {
   grid-column: 1 / -1;
