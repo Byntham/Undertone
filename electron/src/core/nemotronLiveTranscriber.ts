@@ -132,7 +132,7 @@ class NemotronLiveSession implements LiveTranscriptionSession {
     } else if (value.type === "conversation.item.input_audio_transcription.delta"
       && typeof value.delta === "string") {
       if (value.delta.length === 0) return;
-      this.partial += value.delta;
+      this.partial = reconcilePartial(this.partial, value.delta);
       this.callbacks.partial(this.displayText());
     } else if (value.type === "conversation.item.input_audio_transcription.completed"
       && typeof value.transcript === "string") {
@@ -241,4 +241,24 @@ function apiError(value: Record<string, unknown>): string {
     return value.error.message;
   }
   return "Nemotron streaming transcription failed.";
+}
+
+function reconcilePartial(previous: string, delta: string): string {
+  if (previous.length === 0 || delta.startsWith(previous)) return delta;
+  // NeMo sends an append-only suffix while a hypothesis grows, but sends the
+  // complete new hypothesis when recognition revises earlier text. The
+  // protocol has no explicit reset flag, so recognize a replacement by its
+  // substantial overlap with the prior hypothesis.
+  if (!/^\s/u.test(delta) && hasSubstantialOverlap(previous, delta)) return delta;
+  return previous + delta;
+}
+
+function hasSubstantialOverlap(left: string, right: string): boolean {
+  const shorterLength = Math.min(left.length, right.length);
+  if (shorterLength < 8 || right.length * 2 < left.length) return false;
+  const runLength = Math.max(4, Math.floor(shorterLength / 2));
+  for (let start = 0; start + runLength <= left.length; start += 1) {
+    if (right.includes(left.slice(start, start + runLength))) return true;
+  }
+  return false;
 }

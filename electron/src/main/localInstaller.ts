@@ -169,8 +169,15 @@ export class LocalInstaller {
     const work = path.join(this.root, ".install-work");
     await rm(work, { recursive: true, force: true });
     await mkdir(work, { recursive: true });
+    const componentsByTarget = new Map<string, LocalArtifactComponent[]>();
     for (const component of this.components) {
-      await recoverComponentBackup(this.root, component);
+      const target = path.resolve(component.target);
+      const variants = componentsByTarget.get(target) ?? [];
+      variants.push(component);
+      componentsByTarget.set(target, variants);
+    }
+    for (const variants of componentsByTarget.values()) {
+      await recoverComponentBackup(this.root, variants);
     }
   }
 
@@ -246,8 +253,13 @@ export class LocalInstaller {
 
 async function recoverComponentBackup(
   root: string,
-  component: LocalArtifactComponent,
+  components: readonly LocalArtifactComponent[],
 ): Promise<void> {
+  const component = components[0];
+  if (component === undefined) return;
+  if (components.some((variant) => variant.target !== component.target)) {
+    throw new Error("Local artifact variants do not share an install target");
+  }
   if (!isWithin(root, component.target)) {
     throw new Error(`Local artifact target is outside the install root: ${component.id}`);
   }
@@ -276,9 +288,12 @@ async function recoverComponentBackup(
     .sort((left, right) => right.modified - left.modified);
 
   let restored: string | null = null;
-  if (!componentOutputsExist(component)) {
+  if (!components.some((variant) => componentOutputsExist(variant))) {
     restored = candidates.find(({ candidate, restorable }) => restorable
-      && componentOutputsExist({ ...component, target: candidate }))?.candidate ?? null;
+      && components.some((variant) => componentOutputsExist({
+        ...variant,
+        target: candidate,
+      })))?.candidate ?? null;
     if (restored !== null) {
       await rm(component.target, { recursive: true, force: true });
       await rename(restored, component.target);

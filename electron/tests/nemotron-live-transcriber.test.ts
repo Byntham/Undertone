@@ -86,6 +86,60 @@ describe("Nemotron live transcriber", () => {
     await expect(session.finish()).rejects.toThrow("Nemotron is not installed");
   });
 
+  it("replaces a revised non-prefix hypothesis instead of duplicating it", () => {
+    const socket = new FakeSocket();
+    const partial = vi.fn();
+    const runtime: NemotronRealtimeRuntime = {
+      async withServer(_policy, callback) {
+        return await callback("http://127.0.0.1:8123");
+      },
+    };
+    new NemotronLiveTranscriber(runtime, () => socket)
+      .start("en", { partial, failed: vi.fn() });
+    socket.message({ type: "session.created" });
+    socket.message({ type: "session.updated" });
+
+    socket.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "hello wor",
+    });
+    socket.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "yellow world",
+    });
+
+    expect(partial).toHaveBeenLastCalledWith("yellow world");
+  });
+
+  it("still appends ordinary word and mid-word suffix deltas", () => {
+    const socket = new FakeSocket();
+    const partial = vi.fn();
+    const runtime: NemotronRealtimeRuntime = {
+      async withServer(_policy, callback) {
+        return await callback("http://127.0.0.1:8123");
+      },
+    };
+    new NemotronLiveTranscriber(runtime, () => socket)
+      .start("en", { partial, failed: vi.fn() });
+    socket.message({ type: "session.created" });
+    socket.message({ type: "session.updated" });
+
+    socket.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "Go",
+    });
+    socket.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: "ing",
+    });
+    socket.message({
+      type: "conversation.item.input_audio_transcription.delta",
+      delta: " forward now",
+    });
+
+    expect(partial).toHaveBeenLastCalledWith("Going forward now");
+  });
+
   it("starts the finalization timeout only after the streaming session is ready", async () => {
     vi.useFakeTimers();
     try {

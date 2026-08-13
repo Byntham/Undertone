@@ -75,8 +75,13 @@ import {
   createNemotronSttRuntime,
   type LocalServerRuntime,
 } from "./localRuntime";
+import { settleTranscriptionRuntimeChange } from "./transcriptionRuntimeChange";
 import { FetchHttpClient } from "../platform/http";
-import { WindowsHost, type InputMode } from "../platform/windowsHost";
+import {
+  getCudaStatusBestEffort,
+  WindowsHost,
+  type InputMode,
+} from "../platform/windowsHost";
 import { LOCAL_NEMOTRON_STT_MODEL } from "../shared/models";
 import type {
   LocalEngineKind,
@@ -1162,7 +1167,9 @@ if (!gotLock) {
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
     const localRoot = path.join(localAppData, "Undertone");
-    const cudaStatus = await windowsHost.getCudaStatus();
+    const cudaStatus = await getCudaStatusBestEffort(windowsHost, (error) => {
+      console.warn("CUDA compatibility probe failed; defaulting to CPU", error);
+    });
     localInstaller = new LocalInstaller(
       windowsHost, localRoot, fetch, process.env.SystemRoot ?? "C:\\Windows",
       undefined, cudaStatus.deviceCount > 0, cudaStatus.compatible,
@@ -1457,17 +1464,22 @@ if (!gotLock) {
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
-      if (previousLocalSttEngine !== config.local_stt_engine) {
-        const previousRuntime = previousLocalSttEngine === "nemotron"
-          ? localNemotronStt
-          : localWhisperStt;
-        await previousRuntime?.eject();
-      }
-      if ((previousProvider !== config.provider
-        || previousLiveTranscription !== config.live_transcription)
-        && gestures.state !== GestureState.idle) {
-        gestures.cancel();
-      }
+      await settleTranscriptionRuntimeChange({
+        previous: {
+          provider: previousProvider,
+          local_stt_engine: previousLocalSttEngine,
+          live_transcription: previousLiveTranscription,
+        },
+        next: config,
+        recordingActive: gestures.state !== GestureState.idle,
+        cancelRecording: () => gestures.cancel(),
+        ejectEngine: async (engine) => {
+          const previousRuntime = engine === "nemotron"
+            ? localNemotronStt
+            : localWhisperStt;
+          await previousRuntime?.eject();
+        },
+      });
       if (config.hotkey !== previousHotkey
         || config.repaste_hotkey !== previousRepaste
         || config.commit_hotkey !== previousCommit

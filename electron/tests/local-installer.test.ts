@@ -494,6 +494,55 @@ describe("local installer", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("restores a valid CUDA backup before repairing the shared Nemotron target", async () => {
+    const root = await temporaryDirectory();
+    const systemRoot = await temporaryDirectory();
+    const target = path.join(root, "runtime", "nemotron");
+    const backup = `${target}.previous-1-100`;
+    const bytes = Buffer.from("runtime", "utf8");
+    const common = {
+      kind: "stt" as const,
+      applicable: true,
+      format: "archive" as const,
+      artifacts: [testArtifact("runtime", bytes)],
+      target,
+      workspaceBytes: bytes.byteLength,
+      sttEngine: "nemotron" as const,
+    };
+    const components: readonly LocalArtifactComponent[] = [
+      {
+        ...common,
+        id: "nemotron-cpu",
+        requiredOutputs: [{ pattern: "runtime-cpu.dll" }],
+        build: "cpu",
+      },
+      {
+        ...common,
+        id: "nemotron-cuda",
+        requiredOutputs: [{ pattern: "runtime-cuda.dll" }],
+        build: "cuda",
+      },
+    ];
+    await touch(path.join(backup, "runtime-cuda.dll"));
+    const installer = new LocalInstaller(
+      { extractSubset: async () => 0 },
+      root,
+      async () => { throw new Error("stop after recovery"); },
+      systemRoot,
+      components,
+    );
+
+    await expect(installer.install(
+      "stt",
+      () => undefined,
+      "nemotron",
+      "cpu",
+    )).rejects.toThrow("Download failed");
+
+    expect(existsSync(path.join(target, "runtime-cuda.dll"))).toBe(true);
+    expect(existsSync(backup)).toBe(false);
+  });
+
   it("shares first-use cleanup so a concurrent prepare cannot delete active work", async () => {
     const root = await temporaryDirectory();
     const systemRoot = await temporaryDirectory();

@@ -6,9 +6,28 @@ import readline from "node:readline";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveWindowsHost, WindowsHost } from "../src/platform/windowsHost";
+import {
+  getCudaStatusBestEffort,
+  resolveWindowsHost,
+  WindowsHost,
+} from "../src/platform/windowsHost";
 
 describe("Windows host", () => {
+  it("treats an unavailable optional CUDA probe as no compatible GPU", async () => {
+    const errors: unknown[] = [];
+    await expect(getCudaStatusBestEffort({
+      async getCudaStatus() {
+        throw new Error("CUDA probe timed out");
+      },
+    }, (error) => errors.push(error))).resolves.toEqual({
+      driverPresent: false,
+      compatible: false,
+      driverApiVersion: 0,
+      deviceCount: 0,
+    });
+    expect(errors).toHaveLength(1);
+  });
+
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     try {

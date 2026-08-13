@@ -39,6 +39,13 @@ export interface CudaStatus {
   deviceCount: number;
 }
 
+export const NO_CUDA_STATUS: Readonly<CudaStatus> = {
+  driverPresent: false,
+  compatible: false,
+  driverApiVersion: 0,
+  deviceCount: 0,
+};
+
 type ForegroundInfo = {
   window: string;
   focus: string;
@@ -439,6 +446,18 @@ export class WindowsHost {
     this.readyResolve = null;
     this.readyReject = null;
     reject?.(error);
+  }
+}
+
+export async function getCudaStatusBestEffort(
+  host: Pick<WindowsHost, "getCudaStatus">,
+  onError: (error: unknown) => void = () => undefined,
+): Promise<CudaStatus> {
+  try {
+    return await host.getCudaStatus();
+  } catch (error) {
+    onError(error);
+    return { ...NO_CUDA_STATUS };
   }
 }
 
