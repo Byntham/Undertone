@@ -15,7 +15,6 @@ declare global {
 interface CaptureSession {
   captureId: number;
   streamLive: boolean;
-  retainAudio: boolean;
   input: AudioInput;
   source: MediaStreamAudioSourceNode;
   worklet: AudioWorkletNode;
@@ -45,12 +44,7 @@ window.undertoneAudio.onCommand((command) => {
       }
     }
     else if (command.type === "start") {
-      await startCapture(
-        command.deviceName ?? "",
-        command.captureId,
-        command.stream,
-        command.retain,
-      );
+      await startCapture(command.deviceName ?? "", command.captureId, command.stream);
     }
     else if (command.type === "meter") {
       try {
@@ -113,7 +107,6 @@ async function startCapture(
   deviceName: string,
   captureId: number,
   streamLive: boolean,
-  retainAudio: boolean,
 ): Promise<void> {
   if (session !== null) return;
   const input = await openInput(deviceName);
@@ -135,7 +128,6 @@ async function startCapture(
     const levelWindowSamples = Math.max(1, Math.round(context.sampleRate / 20));
     worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
       const chunk = event.data;
-      if (retainAudio) chunks.push(chunk);
       if (streamLive) {
         streamChunks.push(chunk);
         streamSampleCount += chunk.length;
@@ -144,6 +136,8 @@ async function startCapture(
           streamChunks.length = 0;
           streamSampleCount = 0;
         }
+      } else {
+        chunks.push(chunk);
       }
       for (const sample of chunk) levelSquareSum += sample * sample;
       levelSampleCount += chunk.length;
@@ -161,7 +155,6 @@ async function startCapture(
     session = {
       captureId,
       streamLive,
-      retainAudio,
       input,
       source,
       worklet,
@@ -264,10 +257,10 @@ async function stopCapture(discard: boolean, requestId?: number): Promise<void> 
   const durationMs = Math.round(performance.now() - active.startedAt);
   if (active.streamLive) {
     emitLiveChunk(active.captureId, active.streamChunks, active.input.context.sampleRate);
-    if (!active.retainAudio && requestId !== undefined) {
+    if (requestId !== undefined) {
       window.undertoneAudio.emit({ type: "stopped", requestId, durationMs });
     }
-    if (!active.retainAudio) return;
+    return;
   }
   const sourceSamples = joinFloat32(active.chunks);
   const samples = resampleLinear(sourceSamples, active.input.context.sampleRate, 16_000);

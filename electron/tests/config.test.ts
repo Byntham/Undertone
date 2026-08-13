@@ -156,6 +156,11 @@ describe("configuration", () => {
       .toBe("nemotron");
     expect(normalizeConfig({ local_stt_engine: "nemotron", language: "fr" }).language)
       .toBe("en");
+    expect(normalizeConfig({
+      provider: "openai",
+      local_stt_engine: "nemotron",
+      language: "fr",
+    }).language).toBe("fr");
     expect(normalizeConfig({ local_stt_engine: "other" }).local_stt_engine)
       .toBe("whisper");
     expect(normalizeConfig({

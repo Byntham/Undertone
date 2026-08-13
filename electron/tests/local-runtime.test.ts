@@ -23,6 +23,7 @@ import { WindowsHost } from "../src/platform/windowsHost";
 import { FetchHttpClient } from "../src/platform/http";
 import { encodePcm16Wav } from "../src/core/audio";
 import { CleanupClient } from "../src/core/cleanup";
+import { NemotronLiveTranscriber } from "../src/core/nemotronLiveTranscriber";
 import { Transcriber } from "../src/core/transcriber";
 
 const temporaryDirectories: string[] = [];
@@ -480,15 +481,31 @@ describe("local runtime", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_LOCAL_RUNTIME_E2E !== "1")(
-    "runs inference through installed whisper.cpp and llama.cpp servers",
+    "runs inference through installed Whisper, Nemotron, and cleanup servers",
     async () => {
       const localAppData = process.env.LOCALAPPDATA;
       if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
       const root = path.join(localAppData, "Undertone");
       const host = new WindowsHost({ requestTimeoutMs: 5_000 });
       const installer = new LocalInstaller(host, root);
+      const externalNemotron = process.env.UNDERTONE_NEMOTRON_RUNTIME_E2E_EXE?.trim();
+      const usesExternalNemotron = externalNemotron !== undefined
+        && externalNemotron.length > 0;
+      const priorNemotronExecutable = process.env.UNDERTONE_NEMO_SPEECH_EXE;
+      if (usesExternalNemotron) process.env.UNDERTONE_NEMO_SPEECH_EXE = externalNemotron;
       const stt = createLocalSttRuntime(host, root, {
         isInstalled: () => installer.isInstalled("stt"),
+      });
+      const nemotronBuild = usesExternalNemotron
+        ? "cpu"
+        : installer.installedNemotronBuild();
+      if (nemotronBuild === null) {
+        throw new Error("The managed Nemotron runtime is not installed");
+      }
+      const nemotron = createNemotronSttRuntime(host, root, {
+        isInstalled: () => usesExternalNemotron
+          || installer.installedNemotronBuild() !== null,
+        build: () => nemotronBuild,
       });
       const cleanup = createLocalCleanupRuntime(host, root, {
         isInstalled: () => installer.isInstalled("cleanup"),
@@ -510,6 +527,31 @@ describe("local runtime", () => {
         })).toBe("");
         await stt.eject();
 
+        expect(nemotron.isInstalled()).toBe(true);
+        await nemotron.load();
+        expect((await nemotron.status()).build).toBe(nemotronBuild);
+        const liveFailures: Error[] = [];
+        const liveSession = new NemotronLiveTranscriber(nemotron).start("en", {
+          partial: () => undefined,
+          failed: (error) => liveFailures.push(error),
+        });
+        liveSession.append(new Uint8Array(32_000));
+        expect(await liveSession.finish()).toBe("");
+        expect(liveFailures).toEqual([]);
+        const nemotronTranscriber = new Transcriber(
+          http,
+          createLocalSttRouter(stt, nemotron),
+        );
+        expect(await nemotronTranscriber.transcribe({
+          wav: silence,
+          apiKey: "",
+          provider: "local",
+          localEngine: "nemotron",
+          language: "en",
+          vocabulary: [],
+        })).toBe("");
+        await nemotron.eject();
+
         expect(cleanup.isInstalled()).toBe(true);
         await cleanup.load();
         expect((await cleanup.status()).build).toMatch(/^(cpu|cuda)$/u);
@@ -524,11 +566,17 @@ describe("local runtime", () => {
         })).not.toBeNull();
       } finally {
         await cleanup.shutdown();
+        await nemotron.shutdown();
         await stt.shutdown();
         await host.stop();
+        if (priorNemotronExecutable === undefined) {
+          delete process.env.UNDERTONE_NEMO_SPEECH_EXE;
+        } else {
+          process.env.UNDERTONE_NEMO_SPEECH_EXE = priorNemotronExecutable;
+        }
       }
     },
-    150_000,
+    240_000,
   );
 });
 

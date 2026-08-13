@@ -197,6 +197,18 @@ describe("settings model", () => {
     expect(next.local_stt_engine).toBe("whisper");
   });
 
+  it("forces English only while local Nemotron is the active transcription provider", () => {
+    const cloud = applySettingsPatch(normalizeConfig({
+      provider: "openai",
+      local_stt_engine: "nemotron",
+      language: "fr",
+    }), { language: "de" });
+    expect(cloud.language).toBe("de");
+
+    const local = applySettingsPatch(cloud, { provider: "local" });
+    expect(local.language).toBe("en");
+  });
+
   it("normalizes shortcut updates and rejects collisions", () => {
     const config = normalizeConfig(undefined);
     const next = applySettingsPatch(config, {

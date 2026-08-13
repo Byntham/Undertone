@@ -54,7 +54,8 @@ export class LocalInstaller {
     private readonly fetcher: InstallFetch = fetch,
     private readonly systemRoot = process.env.SystemRoot ?? "C:\\Windows",
     components?: readonly LocalArtifactComponent[],
-    private readonly compatibleNvidiaGpu?: boolean,
+    private readonly nvidiaGpu?: boolean,
+    private readonly nemotronCompatibleGpu?: boolean,
   ) {
     this.components = components
       ?? createLocalArtifactPlan(root, this.hasNvidiaGpu());
@@ -78,7 +79,7 @@ export class LocalInstaller {
   }
 
   recommendedNemotronBuild(): LocalRuntimeBuild {
-    return this.hasNvidiaGpu() ? "cuda" : "cpu";
+    return this.hasNemotronCompatibleGpu() ? "cuda" : "cpu";
   }
 
   installedNemotronBuild(): LocalRuntimeBuild | null {
@@ -234,8 +235,12 @@ export class LocalInstaller {
   }
 
   private hasNvidiaGpu(): boolean {
-    return this.compatibleNvidiaGpu
+    return this.nvidiaGpu
       ?? existsSync(path.join(this.systemRoot, "System32", "nvcuda.dll"));
+  }
+
+  private hasNemotronCompatibleGpu(): boolean {
+    return this.nemotronCompatibleGpu ?? this.hasNvidiaGpu();
   }
 }
 

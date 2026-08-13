@@ -778,25 +778,6 @@ function SpeechAi({
               <option value="pt">Portuguese</option>
             </select>
           </SettingRow>
-          {settings.provider === "local" && <SettingRow
-            title="Local transcription engine"
-            description={settings.localSttEngine === "nemotron"
-              ? "True streaming. The same model produces both the preview and final transcript."
-              : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
-          >
-            <select
-              aria-label="Local transcription engine"
-              value={settings.localSttEngine}
-              onChange={(event) => {
-                void update({
-                  localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
-                });
-              }}
-            >
-              <option value="whisper">Whisper (non-live)</option>
-              <option value="nemotron">Nemotron (live + non-live)</option>
-            </select>
-          </SettingRow>}
           <SettingRow title="Use AI cleanup">
             <Toggle
               label="Use AI cleanup"
@@ -860,6 +841,27 @@ function SpeechAi({
 
       <div>
         <h2>On-device</h2>
+        <div className="card">
+          <SettingRow
+            title="Local transcription engine"
+            description={settings.localSttEngine === "nemotron"
+              ? "True streaming. The same model produces both the preview and final transcript."
+              : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
+          >
+            <select
+              aria-label="Local transcription engine"
+              value={settings.localSttEngine}
+              onChange={(event) => {
+                void update({
+                  localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
+                });
+              }}
+            >
+              <option value="whisper">Whisper</option>
+              <option value="nemotron">Nemotron</option>
+            </select>
+          </SettingRow>
+        </div>
         <div className="providerGrid">
           <LocalEngineCard
             kind="stt"
@@ -990,8 +992,8 @@ function LocalEngineCard({
     status.installedBuild ?? status.recommendedBuild ?? "cpu",
   );
   useEffect(() => {
-    if (!status.installed) setInstallBuild(status.recommendedBuild ?? "cpu");
-  }, [status.installed, status.recommendedBuild]);
+    setInstallBuild(status.installedBuild ?? status.recommendedBuild ?? "cpu");
+  }, [status.installedBuild, status.recommendedBuild]);
   const running = status.loaded || status.loading;
   const working = busy || status.installing;
   const nextAction: LocalEngineAction = running

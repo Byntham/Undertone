@@ -226,7 +226,7 @@ export function applySettingsPatch(
   if (value.corrections !== undefined) {
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
-  if (next.local_stt_engine === "nemotron") next.language = "en";
+  if (next.provider === "local" && next.local_stt_engine === "nemotron") next.language = "en";
   if (next.provider === "local" && next.local_stt_engine === "whisper") {
     next.live_transcription = false;
   }

@@ -1,8 +1,8 @@
 diff --git a/src/asr/CMakeLists.txt b/src/asr/CMakeLists.txt
-index 97fe0b0..6acfc70 100644
+index b410ba8..c9c8ccb 100644
 --- a/src/asr/CMakeLists.txt
 +++ b/src/asr/CMakeLists.txt
-@@ -110,7 +110,8 @@ if(WIN32)
+@@ -111,7 +111,8 @@ if(WIN32)
      find_package(absl CONFIG QUIET)
      if(absl_FOUND)
          target_link_libraries(nemo_speech_asr PRIVATE

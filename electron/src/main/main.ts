@@ -81,7 +81,6 @@ import { LOCAL_NEMOTRON_STT_MODEL } from "../shared/models";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
-  LocalSttEngineId,
   HistoryAction,
   ShortcutSetting,
   SystemAction,
@@ -115,7 +114,6 @@ interface CapturedAudio {
 interface LiveCapture {
   provider: "openai" | "xai" | "local";
   session: LiveTranscriptionSession;
-  localEngine?: LocalSttEngineId;
   encoder: StreamingPcm16Encoder;
   text: string;
   state: "listening" | "finalizing" | "processing";
@@ -735,16 +733,6 @@ if (!gotLock) {
   const failLiveCapture = (captureId: number, error: Error): void => {
     const capture = liveCaptures.get(captureId);
     if (capture === undefined) return;
-    if (capture.provider === "local") {
-      capture.text = "";
-      console.warn(`Local live transcription failed: ${error.message}`);
-      showDictationFeedback(
-        captureId,
-        "Local preview unavailable - recording continues",
-        "warning",
-      );
-      return;
-    }
     const shouldCancelRecording = activeAudioCaptureId === captureId;
     liveCaptures.delete(captureId);
     const pending = pendingAudioFinalizations.get(captureId);
@@ -779,7 +767,6 @@ if (!gotLock) {
           const provider = config.provider === "openai"
             ? "openai"
             : config.provider === "xai" ? "xai" : "local";
-          const localEngine = provider === "local" ? config.local_stt_engine : undefined;
           if (provider === "local") selectedLocalSttRuntime()?.warm();
           const callbacks: LiveTranscriptionCallbacks = {
             partial: (text) => {
@@ -802,7 +789,6 @@ if (!gotLock) {
           const liveCapture: LiveCapture = {
             provider,
             session,
-            ...(localEngine === undefined ? {} : { localEngine }),
             encoder: new StreamingPcm16Encoder(provider === "openai" ? 24_000 : 16_000),
             text: "",
             state: "listening",
@@ -824,7 +810,6 @@ if (!gotLock) {
         captureId,
         deviceName: config.input_device,
         stream: streamLive,
-        retain: !streamLive || config.provider === "local",
       });
       playCue("start");
       setTrayRecording(true);
@@ -855,7 +840,7 @@ if (!gotLock) {
         pendingAudioFinalizations.set(captureId, {
           resolve: resolveAudio,
           timer,
-          streamed: liveCapture !== undefined && liveCapture.provider !== "local",
+          streamed: liveCapture !== undefined,
           liveFailed: false,
         });
         const pending = Promise.all([audio, target]).then<PendingDictation | null>(
@@ -882,26 +867,13 @@ if (!gotLock) {
                 publishTurnDraft();
                 input = { type: "transcript", text, previewId: captureId };
               } catch (error) {
-                if (activeLive.provider === "local" && captured.wav !== null) {
+                if (liveCaptures.has(captureId)) {
                   failLiveCapture(
                     captureId,
                     error instanceof Error ? error : new Error(String(error)),
                   );
-                  input = {
-                    type: "audio",
-                    wav: captured.wav,
-                    captureId,
-                    localEngine: activeLive.localEngine ?? "nemotron",
-                  };
-                } else {
-                  if (liveCaptures.has(captureId)) {
-                    failLiveCapture(
-                      captureId,
-                      error instanceof Error ? error : new Error(String(error)),
-                    );
-                  }
-                  return null;
                 }
+                return null;
               }
             } else if (captured.wav !== null) {
               input = { type: "audio", wav: captured.wav, captureId };
@@ -1193,7 +1165,7 @@ if (!gotLock) {
     const cudaStatus = await windowsHost.getCudaStatus();
     localInstaller = new LocalInstaller(
       windowsHost, localRoot, fetch, process.env.SystemRoot ?? "C:\\Windows",
-      undefined, cudaStatus.compatible,
+      undefined, cudaStatus.deviceCount > 0, cudaStatus.compatible,
     );
     localWhisperStt = createLocalSttRuntime(windowsHost, localRoot, {
       isInstalled: () => localInstaller?.isInstalled("stt", "whisper") ?? false,
@@ -1276,13 +1248,10 @@ if (!gotLock) {
               dismiss: () => { overlayController.hide(overlayRevision); },
             };
             if (input.type === "audio") {
-              const transcriptionSnapshot = input.localEngine === undefined
-                ? snapshot
-                : { ...snapshot, local_stt_engine: input.localEngine };
               await runner.run(
                 input.wav,
                 destination,
-                transcriptionSnapshot,
+                snapshot,
                 feedback,
               );
             } else {
@@ -2074,11 +2043,15 @@ if (!gotLock) {
         throw new Error("Packaged smoke result path is invalid");
       }
       if (localRuntimeSmoke) {
-        if (localWhisperStt === null || localCleanup === null) {
+        if (localWhisperStt === null || localNemotronStt === null || localCleanup === null) {
           throw new Error("Local runtimes did not initialize");
         }
         await localWhisperStt.load();
         await localWhisperStt.eject();
+        if (localInstaller?.installedNemotronBuild() !== null) {
+          await localNemotronStt.load();
+          await localNemotronStt.eject();
+        }
         await localCleanup.load();
         await localCleanup.eject();
       }

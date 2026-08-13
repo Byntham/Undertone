@@ -70,6 +70,8 @@ Undertone downloads versioned, size- and SHA-256-pinned runtime and model
 artifacts. Users do not need the CUDA Toolkit, Visual Studio, CMake, or other
 developer tools. Runtime packages and their provenance manifest are published
 in the [Undertone Nemotron runtime release](https://github.com/Byntham/Undertone/releases/tag/nemotron-runtime-v0.1.0).
+The model is provided under the
+[NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
 Whisper and Nemotron are never loaded as transcription engines at the same
 time. Local live preview is Nemotron-only; Whisper Large V3 Turbo remains
 available for completed, non-live recordings.

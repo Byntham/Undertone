@@ -92,9 +92,6 @@ class NemotronLiveSession implements LiveTranscriptionSession {
   async finish(): Promise<string> {
     if (!this.finishRequested && !this.settled) {
       this.finishRequested = true;
-      this.finalTimer = setTimeout(() => {
-        this.fail(new Error("Nemotron streaming finalization timed out."));
-      }, FINAL_TIMEOUT_MS);
       this.flushAndFinish();
     }
     return await this.finalPromise;
@@ -164,6 +161,9 @@ class NemotronLiveSession implements LiveTranscriptionSession {
     this.queuedBytes = 0;
     if (this.finishRequested && !this.finishSent) {
       this.finishSent = true;
+      this.finalTimer = setTimeout(() => {
+        this.fail(new Error("Nemotron streaming finalization timed out."));
+      }, FINAL_TIMEOUT_MS);
       this.transmit(JSON.stringify({ type: "input_audio_buffer.commit" }));
     }
   }

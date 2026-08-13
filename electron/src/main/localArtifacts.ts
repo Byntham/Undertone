@@ -42,6 +42,10 @@ export interface LocalArtifactComponent {
 const WHISPER_RELEASE = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1";
 const LLAMA_RELEASE = "https://github.com/ggml-org/llama.cpp/releases/download/b10064";
 const NEMOTRON_RELEASE = "https://github.com/Byntham/Undertone/releases/download/nemotron-runtime-v0.1.0";
+const WHISPER_MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
+const WHISPER_VAD_REVISION = "9ffd54a1e1ee413ddf265af9913beaf518d1639b";
+const CLEANUP_MODEL_REVISION = "a06e946bb6b655725eafa393f4a9745d460374c9";
+const NEMOTRON_MODEL_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50";
 
 export const STT_ARTIFACTS = {
   cpu_runtime: {
@@ -55,12 +59,12 @@ export const STT_ARTIFACTS = {
     size: 677_887_125,
   },
   model: {
-    url: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${LOCAL_STT_MODEL}`,
+    url: `https://huggingface.co/ggerganov/whisper.cpp/resolve/${WHISPER_MODEL_REVISION}/${LOCAL_STT_MODEL}`,
     sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
     size: 1_624_555_275,
   },
   vad_model: {
-    url: `https://huggingface.co/ggml-org/whisper-vad/resolve/main/${LOCAL_VAD_MODEL}`,
+    url: `https://huggingface.co/ggml-org/whisper-vad/resolve/${WHISPER_VAD_REVISION}/${LOCAL_VAD_MODEL}`,
     sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
     size: 885_098,
   },
@@ -69,16 +73,16 @@ export const STT_ARTIFACTS = {
 export const NEMOTRON_ARTIFACTS = {
   cpu_runtime: {
     url: `${NEMOTRON_RELEASE}/undertone-nemotron-runtime-0.1.0-windows-x64-cpu.zip`,
-    sha256: "10dd90d5fb07f9896de79b65ccad1117216de14642112ad8ff1b59e8378721d4",
-    size: 4_608_018,
+    sha256: "a38871b423601de43c5913229a6ce05b469b3d0cbd503115e45478c5d37c4e6f",
+    size: 4_589_022,
   },
   cuda_runtime: {
     url: `${NEMOTRON_RELEASE}/undertone-nemotron-runtime-0.1.0-windows-x64-cuda.zip`,
-    sha256: "6dfa36ec91f8832dbb063099d93710373e94de7d10f461fcf68c8dd73d92b49a",
-    size: 739_233_685,
+    sha256: "914bddfdef78be98c8a6a0942827c49a41f468f6db073f3004e36e6cd001ab4a",
+    size: 739_223_089,
   },
   model: {
-    url: `https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/main/${LOCAL_NEMOTRON_STT_MODEL}`,
+    url: `https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/${NEMOTRON_MODEL_REVISION}/${LOCAL_NEMOTRON_STT_MODEL}`,
     sha256: "d9a01898d2a611c8764e23a1c2f45e70bbd5a425dc4de93692ac951dd603812d",
     size: 699_872_960,
   },
@@ -101,7 +105,7 @@ export const CLEANUP_ARTIFACTS = {
     size: 391_443_627,
   },
   model: {
-    url: `https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/${LOCAL_CLEANUP_MODEL}`,
+    url: `https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/${CLEANUP_MODEL_REVISION}/${LOCAL_CLEANUP_MODEL}`,
     sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
     size: 2_497_281_120,
   },
@@ -254,7 +258,7 @@ export function componentIdentity(component: LocalArtifactComponent): string {
     id: component.id,
     kind: component.kind,
     format: component.format,
-    artifacts: component.artifacts,
+    artifacts: component.artifacts.map(({ sha256, size }) => ({ sha256, size })),
     outputs: component.requiredOutputs,
   })).digest("hex");
 }
@@ -301,7 +305,17 @@ export function isComponentCurrent(
 ): boolean {
   const receipt = readReceipt(receiptPath(root, component));
   if (receipt !== null) {
-    return receipt.identity === componentIdentity(component) && componentOutputsExist(component);
+    if (!componentOutputsExist(component)) return false;
+    if (receipt.identity === componentIdentity(component)) return true;
+    if (legacyComponentIdentities(component).includes(receipt.identity)) {
+      try {
+        writeComponentReceipt(root, component, receipt.provenance);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
   const receiptExists = existsSync(receiptPath(root, component));
   if (!receiptExists && adoptLegacy && componentOutputsExist(component)) {
@@ -313,6 +327,31 @@ export function isComponentCurrent(
     }
   }
   return false;
+}
+
+function legacyComponentIdentities(component: LocalArtifactComponent): readonly string[] {
+  const identities = [legacyComponentIdentity(component, component.artifacts)];
+  const mainArtifacts = component.artifacts.map((artifact) => ({
+    ...artifact,
+    url: artifact.url.replace(/\/resolve\/[0-9a-f]{40}\//u, "/resolve/main/"),
+  }));
+  if (mainArtifacts.some((artifact, index) => artifact.url !== component.artifacts[index]?.url)) {
+    identities.push(legacyComponentIdentity(component, mainArtifacts));
+  }
+  return identities;
+}
+
+function legacyComponentIdentity(
+  component: LocalArtifactComponent,
+  artifacts: readonly InstallArtifact[],
+): string {
+  return createHash("sha256").update(JSON.stringify({
+    id: component.id,
+    kind: component.kind,
+    format: component.format,
+    artifacts,
+    outputs: component.requiredOutputs,
+  })).digest("hex");
 }
 
 export function writeComponentReceipt(
@@ -330,6 +369,7 @@ export function writeComponentReceipt(
   };
   try {
     writeFileSync(temporary, `${JSON.stringify(receipt)}\n`, { encoding: "utf8", flag: "wx" });
+    rmSync(destination, { force: true });
     renameSync(temporary, destination);
   } catch (error) {
     rmSync(temporary, { force: true });

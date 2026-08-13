@@ -128,7 +128,9 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
       8_192,
     ),
     hotkey: persistedString(input.hotkey, DEFAULT_CONFIG.hotkey, 256),
-    language: selectedLocalSttEngine === "nemotron" ? "en" : language(input.language),
+    language: selectedProvider === "local" && selectedLocalSttEngine === "nemotron"
+      ? "en"
+      : language(input.language),
     restore_clipboard: booleanValue(input.restore_clipboard, DEFAULT_CONFIG.restore_clipboard),
     input_device: persistedString(input.input_device, DEFAULT_CONFIG.input_device, 512),
     provider: selectedProvider,

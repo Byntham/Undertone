@@ -25,6 +25,7 @@ import {
   componentIdentity,
   componentOutputsExist,
   createLocalArtifactPlan,
+  isComponentCurrent,
   NEMOTRON_ARTIFACTS,
   receiptPath,
   STT_ARTIFACTS,
@@ -193,6 +194,90 @@ describe("local installer", () => {
       await temporaryDirectory(),
     );
     expect(installer.recommendedNemotronBuild()).toBe("cpu");
+  });
+
+  it("keeps general CUDA installs available when the GPU is not a Nemotron build target", async () => {
+    const installer = new LocalInstaller(
+      { extractSubset: async () => 0 },
+      await temporaryDirectory(),
+      fetch,
+      await temporaryDirectory(),
+      undefined,
+      true,
+      false,
+    );
+
+    expect(installer.recommendedNemotronBuild()).toBe("cpu");
+    expect(installer.installSize("stt", "whisper")).toBe(
+      STT_ARTIFACTS.cpu_runtime.size
+      + STT_ARTIFACTS.cuda_runtime.size
+      + STT_ARTIFACTS.model.size
+      + STT_ARTIFACTS.vad_model.size,
+    );
+    expect(installer.installSize("cleanup")).toBe(
+      CLEANUP_ARTIFACTS.cpu_runtime.size
+      + CLEANUP_ARTIFACTS.cuda_runtime.size
+      + CLEANUP_ARTIFACTS.cudart.size
+      + CLEANUP_ARTIFACTS.model.size,
+    );
+  });
+
+  it("pins every Hugging Face artifact URL to an immutable revision", () => {
+    const modelArtifacts = [
+      STT_ARTIFACTS.model,
+      STT_ARTIFACTS.vad_model,
+      NEMOTRON_ARTIFACTS.model,
+      CLEANUP_ARTIFACTS.model,
+    ];
+    for (const artifact of modelArtifacts) {
+      expect(artifact.url).toMatch(/\/resolve\/[0-9a-f]{40}\//u);
+      expect(artifact.url).not.toContain("/resolve/main/");
+    }
+  });
+
+  it("keeps receipts current when only an artifact download URL changes", async () => {
+    const root = await temporaryDirectory();
+    const target = path.join(root, "models", "model.bin");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "model", "utf8");
+    const component: LocalArtifactComponent = {
+      id: "model",
+      kind: "stt",
+      applicable: true,
+      format: "file",
+      artifacts: [{
+        url: `https://huggingface.co/example/model/resolve/${"a".repeat(40)}/model.bin`,
+        sha256: "b".repeat(64),
+        size: 5,
+      }],
+      target,
+      requiredOutputs: [{ pattern: "model.bin", size: 5 }],
+      workspaceBytes: 0,
+    };
+    const oldArtifacts = component.artifacts.map((artifact) => ({
+      ...artifact,
+      url: artifact.url.replace(/\/resolve\/[0-9a-f]{40}\//u, "/resolve/main/"),
+    }));
+    const oldIdentity = createHash("sha256").update(JSON.stringify({
+      id: component.id,
+      kind: component.kind,
+      format: component.format,
+      artifacts: oldArtifacts,
+      outputs: component.requiredOutputs,
+    })).digest("hex");
+    const receipt = receiptPath(root, component);
+    await mkdir(path.dirname(receipt), { recursive: true });
+    await writeFile(receipt, `${JSON.stringify({
+      schema: 1,
+      identity: oldIdentity,
+      provenance: "pinned",
+    })}\n`, "utf8");
+
+    expect(isComponentCurrent(root, component)).toBe(true);
+    expect(JSON.parse(await readFile(receipt, "utf8"))).toMatchObject({
+      identity: componentIdentity(component),
+      provenance: "pinned",
+    });
   });
 
   it("estimates download, extraction coexistence, and reserve from missing artifacts", async () => {
@@ -475,6 +560,33 @@ describe("local installer", () => {
     expect(existsSync(path.join(root, "runtime", "cpu", "whisper-server.exe"))).toBe(true);
     expect((await readFile(path.join(root, "models", LOCAL_VAD_MODEL))).byteLength)
       .toBe(STT_ARTIFACTS.vad_model.size);
+  }, 120_000);
+
+  networkTest("installs and receipts the pinned Nemotron CPU runtime", async () => {
+    const root = await temporaryDirectory();
+    const components = createLocalArtifactPlan(root, false)
+      .filter(({ id }) => id === "nemotron-cpu");
+    const installer = new LocalInstaller(
+      new WindowsHost({ requestTimeoutMs: 5_000 }),
+      root,
+      fetch,
+      await temporaryDirectory(),
+      components,
+      false,
+      false,
+    );
+
+    await installer.install("stt", () => undefined, "nemotron", "cpu");
+
+    expect(installer.isInstalled("stt", "nemotron", "cpu")).toBe(true);
+    expect(existsSync(receiptPath(root, components[0]!))).toBe(true);
+    expect(existsSync(path.join(root, "runtime", "nemotron", "nemo-speech.exe"))).toBe(true);
+    expect(existsSync(path.join(
+      root,
+      "runtime",
+      "nemotron",
+      "undertone-nemotron-cpu.txt",
+    ))).toBe(true);
   }, 120_000);
 });
 

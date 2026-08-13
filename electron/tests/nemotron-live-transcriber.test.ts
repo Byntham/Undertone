@@ -85,6 +85,42 @@ describe("Nemotron live transcriber", () => {
     await vi.waitFor(() => expect(failed).toHaveBeenCalledWith(failure));
     await expect(session.finish()).rejects.toThrow("Nemotron is not installed");
   });
+
+  it("starts the finalization timeout only after the streaming session is ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const failed = vi.fn();
+      const runtime: NemotronRealtimeRuntime = {
+        async withServer(_policy, callback) {
+          return await callback("http://127.0.0.1:8123");
+        },
+      };
+      const session = new NemotronLiveTranscriber(runtime, () => socket)
+        .start("en", { partial: vi.fn(), failed });
+
+      const final = session.finish();
+      let settled = false;
+      void final.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(settled).toBe(false);
+      expect(failed).not.toHaveBeenCalled();
+      expect(jsonMessages(socket)).not.toContainEqual({ type: "input_audio_buffer.commit" });
+
+      socket.message({ type: "session.created" });
+      socket.message({ type: "session.updated" });
+      expect(jsonMessages(socket).at(-1)).toEqual({ type: "input_audio_buffer.commit" });
+
+      await vi.advanceTimersByTimeAsync(15_001);
+      await expect(final).rejects.toThrow("finalization timed out");
+      expect(failed).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 class FakeSocket implements LiveSocket {

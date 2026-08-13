@@ -1,6 +1,5 @@
 import { cloneConfig, type UndertoneConfig } from "./config";
 import type { PasteTarget } from "./clipboardPaster";
-import type { LocalSttEngineId } from "../shared/settings";
 
 export type DictationTarget = PasteTarget;
 
@@ -19,7 +18,7 @@ export interface PendingDictation {
 }
 
 export type DictationInput =
-  | { type: "audio"; wav: Uint8Array; captureId?: number; localEngine?: LocalSttEngineId }
+  | { type: "audio"; wav: Uint8Array; captureId?: number }
   | { type: "transcript"; text: string; previewId: number };
 
 export interface PipelineHandlers {
