@@ -2,6 +2,7 @@ import { isRecord } from "./config";
 import type { HttpClient, HttpRequest, HttpResponse } from "../platform/http";
 import {
   isTranscriptionProvider,
+  type LocalSttEngineId,
   type TranscriptionProviderId,
 } from "../shared/settings";
 import { DEFAULT_STT_MODELS } from "../shared/models";
@@ -17,6 +18,7 @@ export class TranscriptionError extends Error {
 
 export interface LocalSttRuntime {
   withServer<T>(
+    engine: LocalSttEngineId,
     policy: "wait",
     callback: (baseUrl: string) => Promise<T> | T,
   ): Promise<T>;
@@ -28,6 +30,7 @@ export interface TranscribeOptions {
   language: string;
   vocabulary: readonly string[];
   provider: TranscriptionProviderId;
+  localEngine?: LocalSttEngineId;
 }
 
 export class Transcriber {
@@ -129,15 +132,16 @@ export class Transcriber {
 
   private async transcribeLocal(options: NormalizedOptions): Promise<string> {
     try {
-      return await this.local.withServer("wait", async (baseUrl) => {
+      const engine = options.localEngine ?? "whisper";
+      return await this.local.withServer(engine, "wait", async (baseUrl) => {
         const form = audioForm(options.wav);
         form.append("response_format", "json");
         form.append("language", options.language);
-        const payload = await this.postJson(`${baseUrl}/inference`, "Local", {
+        const endpoint = engine === "nemotron" ? "/v1/audio/transcriptions" : "/inference";
+        const payload = await this.postJson(`${baseUrl}${endpoint}`, "Local", {
           body: form,
           timeoutMs: STT_TIMEOUT_MS,
-        }, "The local transcription engine stopped responding — try Eject then Load "
-          + "in Settings → Speech & AI.");
+        }, localConnectionMessage());
         const text = textFromPayload(payload);
         return text.split(/\s+/u).filter(Boolean).join(" ");
       });
@@ -222,6 +226,11 @@ function textFromPayload(payload: unknown): string {
   return isRecord(payload) && typeof payload.text === "string"
     ? payload.text.trim()
     : "";
+}
+
+function localConnectionMessage(): string {
+  return "The local transcription engine stopped responding — try Eject then Load "
+    + "in Settings → Speech & AI.";
 }
 
 function errorMessage(error: unknown): string {

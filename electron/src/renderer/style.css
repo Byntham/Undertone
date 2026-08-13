@@ -119,13 +119,14 @@ h2 { margin: 25px 0 11px 2px; color: var(--muted); font-size: 11.5px; font-weigh
 .settingRow {
   min-height: 72px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 15px 17px;
 }
 .settingRow + .settingRow { border-top: 1px solid var(--line-soft); }
-.settingRow > div:first-child { min-width: 0; }
+.settingRow > div:first-child { min-width: 0; flex: 1 1 140px; }
 .settingRow h3, .shortcutItem h3 {
   margin: 0;
   color: var(--text);
@@ -139,7 +140,12 @@ h2 { margin: 25px 0 11px 2px; color: var(--muted); font-size: 11.5px; font-weigh
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
-.control { min-width: 0; flex: 0 1 auto; }
+.control {
+  min-width: 0;
+  flex: 1 1 145px;
+  display: flex;
+  justify-content: flex-end;
+}
 
 .shortcutGrid {
   display: grid;
@@ -209,6 +215,7 @@ input::placeholder { color: var(--faint); }
   gap: 6px;
   align-items: center;
 }
+.serviceControl { min-width: 215px; }
 .microphoneControl select, .serviceControl select { width: 100%; min-width: 0; }
 .microphoneControl small, .serviceControl small {
   grid-column: 1 / -1;
@@ -291,23 +298,36 @@ input::placeholder { color: var(--faint); }
 .updateControl progress::-webkit-progress-bar { background: var(--control); }
 .updateControl progress::-webkit-progress-value { background: var(--accent); }
 
-.providerGrid { display: grid; gap: 8px; }
+.providerGrid { min-width: 0; display: grid; gap: 8px; }
 .localEngineCard, .keyCard {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
 }
 .localEngineCard {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 15px 16px;
 }
+.localEngineCard > div:first-child { min-width: 0; flex: 1 1 auto; }
+.localEngineCard[data-build-selector="true"] { flex-wrap: wrap; }
+.localEngineCard[data-build-selector="true"] > div:first-child { flex: 1 1 120px; }
 .localEngineCard strong, .localEngineCard span { display: block; }
 .localEngineCard strong { color: var(--text); font-size: 12.5px; }
 .localEngineCard span { margin-top: 5px; color: var(--faint); font-size: 10.5px; }
 .localEngineCard span[data-running="true"], .localEngineCard span[data-installing="true"] { color: var(--accent); }
+.localEngineActions { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.localEngineCard[data-build-selector="true"] .localEngineActions { flex: 1 1 240px; }
+.localEngineActions select { width: auto; max-width: 190px; }
+.localEngineCard[data-build-selector="true"] .localEngineActions select {
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  flex: 1 1 auto;
+}
 .keyCard { padding: 16px 17px; }
 .keyHead { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 11px; }
 .keyHead strong { color: var(--text); font-size: 12.5px; }

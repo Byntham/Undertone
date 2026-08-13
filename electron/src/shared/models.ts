@@ -1,9 +1,11 @@
 import type {
+  LocalSttEngineId,
   SettingsProviderId,
   TranscriptionProviderId,
 } from "./settings";
 
 export const LOCAL_STT_MODEL = "ggml-large-v3-turbo.bin";
+export const LOCAL_NEMOTRON_STT_MODEL = "nemotron-speech-streaming-en-0.6b.q8_0.gguf";
 export const LOCAL_VAD_MODEL = "ggml-silero-v6.2.0.bin";
 export const LOCAL_CLEANUP_MODEL = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
 
@@ -13,6 +15,11 @@ export const DEFAULT_STT_MODELS = {
   openrouter: "openai/gpt-transcribe",
   local: LOCAL_STT_MODEL,
 } as const satisfies Readonly<Record<TranscriptionProviderId, string>>;
+
+export const LOCAL_STT_MODELS = {
+  whisper: LOCAL_STT_MODEL,
+  nemotron: LOCAL_NEMOTRON_STT_MODEL,
+} as const satisfies Readonly<Record<LocalSttEngineId, string>>;
 
 export const LIVE_STT_MODELS = {
   openai: "gpt-live-transcribe",

@@ -24,6 +24,7 @@ describe("settings model", () => {
       microphones: [],
       appVersion: "1.3.0",
       provider: "local",
+      localSttEngine: "whisper",
       cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
       openAiSubscriptionConnected: false,
@@ -44,6 +45,9 @@ describe("settings model", () => {
           installPhase: "",
           installFraction: 0,
           installBytes: 0,
+          recommendedBuild: null,
+          installedBuild: null,
+          installBytesByBuild: null,
         },
         cleanup: {
           installed: false,
@@ -54,6 +58,9 @@ describe("settings model", () => {
           installPhase: "",
           installFraction: 0,
           installBytes: 0,
+          recommendedBuild: null,
+          installedBuild: null,
+          installBytesByBuild: null,
         },
       },
     });
@@ -88,6 +95,20 @@ describe("settings model", () => {
 
     const xai = normalizeConfig({ provider: "xai", live_transcription: true });
     expect(settingsSnapshot(xai, "1.8.1").sttModel).toBe("");
+
+    const local = normalizeConfig({ provider: "local", live_transcription: true });
+    expect(local.live_transcription).toBe(false);
+    expect(settingsSnapshot(local, "1.8.1").sttModel)
+      .toBe("ggml-large-v3-turbo.bin");
+
+    const nemotron = normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+    });
+    expect(settingsSnapshot(nemotron, "1.8.1").sttModel)
+      .toBe("nemotron-speech-streaming-en-0.6b.q8_0.gguf");
+    expect(nemotron.language).toBe("en");
   });
 
   it("allows subscription cleanup without exposing it as transcription", () => {
@@ -132,7 +153,7 @@ describe("settings model", () => {
   });
 
   it("applies supported fields without mutating the existing config", () => {
-    const config = normalizeConfig(undefined);
+    const config = normalizeConfig({ provider: "openai" });
     const next = applySettingsPatch(config, {
       language: "fr",
       aiCleanup: false,
@@ -163,6 +184,29 @@ describe("settings model", () => {
     expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(next.live_transcription).toBe(true);
     expect(config.language).toBe("en");
+  });
+
+  it("turns live preview off when local Whisper is selected", () => {
+    const config = normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+    });
+    const next = applySettingsPatch(config, { localSttEngine: "whisper" });
+    expect(next.live_transcription).toBe(false);
+    expect(next.local_stt_engine).toBe("whisper");
+  });
+
+  it("forces English only while local Nemotron is the active transcription provider", () => {
+    const cloud = applySettingsPatch(normalizeConfig({
+      provider: "openai",
+      local_stt_engine: "nemotron",
+      language: "fr",
+    }), { language: "de" });
+    expect(cloud.language).toBe("de");
+
+    const local = applySettingsPatch(cloud, { provider: "local" });
+    expect(local.language).toBe("en");
   });
 
   it("normalizes shortcut updates and rejects collisions", () => {

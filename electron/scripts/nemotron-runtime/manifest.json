@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "platform": "windows-x64",
+  "source": {
+    "repository": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+    "commit": "9bc876635af36df537d9bc6d3f57ad1b76e4f74a",
+    "ggmlCommit": "c03b4e2bcece5134827881af90242086daf75be5",
+    "patches": [
+      "NeMo-Speech.cpp ggml-patches/0001-0016",
+      "electron/scripts/nemotron-runtime/abseil-flags.patch"
+    ]
+  },
+  "build": {
+    "compiler": "MSVC 19.44.35228.0",
+    "generator": "Ninja",
+    "configuration": "Release",
+    "cpuBaseline": "x86-64 SSE2",
+    "cmake": {
+      "GGML_NATIVE": "OFF",
+      "GGML_SSE42": "OFF",
+      "GGML_AVX": "OFF",
+      "GGML_AVX2": "OFF",
+      "GGML_BMI2": "OFF"
+    }
+  },
+  "cuda": {
+    "toolkit": "12.8.93",
+    "architectures": ["75", "86", "89", "120a"]
+  },
+  "model": {
+    "name": "nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+    "repository": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b",
+    "revision": "ebe59e5a817142986528bbbee5dba8db7b38ed50",
+    "url": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/ebe59e5a817142986528bbbee5dba8db7b38ed50/nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+    "license": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+    "size": 699872960,
+    "sha256": "d9a01898d2a611c8764e23a1c2f45e70bbd5a425dc4de93692ac951dd603812d"
+  },
+  "assets": [
+    {
+      "name": "undertone-nemotron-runtime-0.1.0-windows-x64-cpu.zip",
+      "size": 4589022,
+      "sha256": "a38871b423601de43c5913229a6ce05b469b3d0cbd503115e45478c5d37c4e6f"
+    },
+    {
+      "name": "undertone-nemotron-runtime-0.1.0-windows-x64-cuda.zip",
+      "size": 739223089,
+      "sha256": "914bddfdef78be98c8a6a0942827c49a41f468f6db073f3004e36e6cd001ab4a"
+    }
+  ]
+}

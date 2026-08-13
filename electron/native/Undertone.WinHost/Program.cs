@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 8;
+    private const int ProtocolVersion = 9;
     private const int FocusReadAttempts = 3;
     private const int FocusReadTimeoutMs = 150;
     private const int FocusRetryDelayMs = 50;
@@ -302,6 +302,17 @@ internal static class Program
                 Respond(requestId, "processRunning", new Dictionary<string, object>
                 {
                     { "running", _supervisor.IsRunning(processId) }
+                });
+            }
+            else if (type == "getCudaStatus")
+            {
+                var status = CudaProbe.Detect();
+                Respond(requestId, "cudaStatus", new Dictionary<string, object>
+                {
+                    { "driverPresent", status.DriverPresent },
+                    { "compatible", status.Compatible },
+                    { "driverApiVersion", status.DriverApiVersion },
+                    { "deviceCount", status.DeviceCount }
                 });
             }
             else if (type == "shutdown")

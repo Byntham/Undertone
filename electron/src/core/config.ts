@@ -2,6 +2,7 @@ import {
   isCleanupProvider,
   isTranscriptionProvider,
   type CleanupProviderId,
+  type LocalSttEngineId,
   type OpenTurnCleanupStrategy,
   type TranscriptionProviderId,
 } from "../shared/settings";
@@ -23,6 +24,7 @@ export interface UndertoneConfig {
   restore_clipboard: boolean;
   input_device: string;
   provider: TranscriptionProviderId;
+  local_stt_engine: LocalSttEngineId;
   ai_cleanup: boolean;
   cleanup_provider: CleanupProviderId;
   sound_cues: boolean;
@@ -56,6 +58,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   restore_clipboard: true,
   input_device: "",
   provider: "local",
+  local_stt_engine: "whisper",
   ai_cleanup: true,
   cleanup_provider: "local",
   sound_cues: true,
@@ -90,6 +93,10 @@ export const SECRET_FIELDS = [
 
 export function normalizeConfig(value: unknown): UndertoneConfig {
   const input = isRecord(value) ? value : {};
+  const selectedLocalSttEngine = localSttEngine(input.local_stt_engine);
+  const selectedProvider = isTranscriptionProvider(input.provider)
+    ? input.provider
+    : DEFAULT_CONFIG.provider;
   return {
     api_key: persistedString(input.api_key, DEFAULT_CONFIG.api_key, 8_192),
     openai_api_key: persistedString(input.openai_api_key, DEFAULT_CONFIG.openai_api_key, 8_192),
@@ -121,10 +128,13 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
       8_192,
     ),
     hotkey: persistedString(input.hotkey, DEFAULT_CONFIG.hotkey, 256),
-    language: language(input.language),
+    language: selectedProvider === "local" && selectedLocalSttEngine === "nemotron"
+      ? "en"
+      : language(input.language),
     restore_clipboard: booleanValue(input.restore_clipboard, DEFAULT_CONFIG.restore_clipboard),
     input_device: persistedString(input.input_device, DEFAULT_CONFIG.input_device, 512),
-    provider: isTranscriptionProvider(input.provider) ? input.provider : DEFAULT_CONFIG.provider,
+    provider: selectedProvider,
+    local_stt_engine: selectedLocalSttEngine,
     ai_cleanup: booleanValue(input.ai_cleanup, DEFAULT_CONFIG.ai_cleanup),
     cleanup_provider: isCleanupProvider(input.cleanup_provider)
       ? input.cleanup_provider
@@ -137,10 +147,8 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     commit_hotkey: persistedString(input.commit_hotkey, DEFAULT_CONFIG.commit_hotkey, 256),
     scratch_hotkey: persistedString(input.scratch_hotkey, DEFAULT_CONFIG.scratch_hotkey, 256),
     discard_hotkey: persistedString(input.discard_hotkey, DEFAULT_CONFIG.discard_hotkey, 256),
-    live_transcription: booleanValue(
-      input.live_transcription,
-      DEFAULT_CONFIG.live_transcription,
-    ),
+    live_transcription: booleanValue(input.live_transcription, DEFAULT_CONFIG.live_transcription)
+      && !(selectedProvider === "local" && selectedLocalSttEngine === "whisper"),
     stack_cleanup_strategy: openTurnCleanupStrategy(input.stack_cleanup_strategy),
     local_loaded: booleanValue(input.local_loaded, DEFAULT_CONFIG.local_loaded),
     local_idle_minutes: localIdleMinutes(input.local_idle_minutes),
@@ -153,6 +161,10 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     cleanup_reasoning_effort: cleanupReasoningEffort(input.cleanup_reasoning_effort),
     cleanup_service_tier: cleanupServiceTier(input.cleanup_service_tier),
   };
+}
+
+function localSttEngine(value: unknown): LocalSttEngineId {
+  return value === "nemotron" ? "nemotron" : "whisper";
 }
 
 export function providerKey(

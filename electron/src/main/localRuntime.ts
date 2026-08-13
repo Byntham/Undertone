@@ -4,13 +4,15 @@ import path from "node:path";
 
 import type { LocalCleanupRuntime } from "../core/cleanup";
 import type { LocalSttRuntime } from "../core/transcriber";
+import type { LocalRuntimeBuild, LocalSttEngineId } from "../shared/settings";
 import {
   LOCAL_CLEANUP_MODEL,
+  LOCAL_NEMOTRON_STT_MODEL,
   LOCAL_STT_MODEL,
   LOCAL_VAD_MODEL,
 } from "../shared/models";
 
-export type LocalBuild = "cpu" | "cuda";
+export type LocalBuild = LocalRuntimeBuild;
 
 export interface LocalProcessHost {
   spawnSupervised(
@@ -43,6 +45,7 @@ export interface LocalRuntimeOptions {
   fetch?: LocalFetch;
   onNotice?: (message: string) => void;
   isInstalled?: () => boolean;
+  build?: () => LocalBuild;
 }
 
 type LocalServerUsePolicy = "wait" | "fallback";
@@ -58,6 +61,7 @@ interface EngineSpec {
   unavailableMessage: string;
   failedMessage: string;
   fallbackNotice: string;
+  builds?(): readonly LocalBuild[];
 }
 
 interface ActiveServer {
@@ -265,10 +269,14 @@ export class LocalServerRuntime {
     if (generation !== this.generation) throw new Error("Local model load was cancelled");
     await this.stopPendingProcesses();
     await this.stopActive();
-    const builds: LocalBuild[] = ["cpu"];
-    if (!this.cudaUnavailable && existsSync(this.spec.serverFile("cuda"))) {
-      builds.unshift("cuda");
-    }
+    const configuredBuilds = this.spec.builds?.();
+    const builds: readonly LocalBuild[] = configuredBuilds ?? (() => {
+      const detected: LocalBuild[] = ["cpu"];
+      if (!this.cudaUnavailable && existsSync(this.spec.serverFile("cuda"))) {
+        detected.unshift("cuda");
+      }
+      return detected;
+    })();
 
     let lastError: unknown;
     for (const build of builds) {
@@ -283,7 +291,7 @@ export class LocalServerRuntime {
       } catch (error) {
         lastError = error;
         if (generation !== this.generation) throw error;
-        if (build !== "cuda") break;
+        if (build !== "cuda" || !builds.includes("cpu")) break;
         this.cudaUnavailable = true;
         this.notice?.(this.spec.fallbackNotice);
       }
@@ -383,7 +391,7 @@ export function createLocalSttRuntime(
   host: LocalProcessHost,
   root: string,
   options: LocalRuntimeOptions = {},
-): LocalServerRuntime & LocalSttRuntime {
+): LocalServerRuntime {
   const runtime = path.join(root, "runtime");
   const models = path.join(root, "models");
   return new LocalServerRuntime(host, {
@@ -409,6 +417,65 @@ export function createLocalSttRuntime(
     failedMessage: "The local transcription engine failed to start — see server.log.",
     fallbackNotice: "GPU transcription failed — using CPU (slower).",
   }, options);
+}
+
+export function createNemotronSttRuntime(
+  host: LocalProcessHost,
+  root: string,
+  options: LocalRuntimeOptions = {},
+): LocalServerRuntime {
+  const bundledExecutable = path.join(root, "runtime", "nemotron", "nemo-speech.exe");
+  const legacyExecutable = path.join(
+    process.env.LOCALAPPDATA ?? root,
+    "Programs", "NeMoSpeech", "bin", "nemo-speech.exe",
+  );
+  const externalExecutable = process.env.UNDERTONE_NEMO_SPEECH_EXE?.trim();
+  const executable = (): string => externalExecutable
+    || (existsSync(bundledExecutable) ? bundledExecutable : legacyExecutable);
+  const model = path.join(root, "models", LOCAL_NEMOTRON_STT_MODEL);
+  const selectedBuild = (): LocalBuild => options.build?.() ?? "cuda";
+  return new LocalServerRuntime(host, {
+    logFile: path.join(root, "runtime", "nemotron-server.log"),
+    serverFile: () => executable(),
+    requiredFiles: () => [
+      executable(),
+      model,
+      ...(executable() === bundledExecutable
+        ? [path.join(root, "runtime", "nemotron", `undertone-nemotron-${selectedBuild()}.txt`)]
+        : []),
+    ],
+    arguments: (build, port) => [
+      "serve",
+      "--asr-model", model,
+      "--device", build === "cuda" ? "cuda:0" : "cpu",
+      "--host", "127.0.0.1",
+      "--port", String(port),
+      "--no-ui",
+    ],
+    readyUrl: (port) => `http://127.0.0.1:${port}/ready`,
+    ready: (response) => response.status === 200,
+    readyTimeoutMs: 120_000,
+    unavailableMessage: "Nemotron streaming isn't installed — download it in Settings → Speech & AI.",
+    failedMessage: "The Nemotron streaming engine failed to start - see nemotron-server.log.",
+    fallbackNotice: "",
+    builds: () => [selectedBuild()],
+  }, options);
+}
+
+export function createLocalSttRouter(
+  whisper: LocalServerRuntime,
+  nemotron: LocalServerRuntime,
+): LocalSttRuntime {
+  return {
+    async withServer<T>(
+      engine: LocalSttEngineId,
+      policy: "wait",
+      callback: (baseUrl: string) => Promise<T> | T,
+    ): Promise<T> {
+      const runtime = engine === "nemotron" ? nemotron : whisper;
+      return await runtime.withServer(policy, callback);
+    },
+  };
 }
 
 export function createLocalCleanupRuntime(

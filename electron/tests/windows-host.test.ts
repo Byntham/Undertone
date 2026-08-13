@@ -6,14 +6,33 @@ import readline from "node:readline";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveWindowsHost, WindowsHost } from "../src/platform/windowsHost";
+import {
+  getCudaStatusBestEffort,
+  resolveWindowsHost,
+  WindowsHost,
+} from "../src/platform/windowsHost";
 
 describe("Windows host", () => {
+  it("treats an unavailable optional CUDA probe as no compatible GPU", async () => {
+    const errors: unknown[] = [];
+    await expect(getCudaStatusBestEffort({
+      async getCudaStatus() {
+        throw new Error("CUDA probe timed out");
+      },
+    }, (error) => errors.push(error))).resolves.toEqual({
+      driverPresent: false,
+      compatible: false,
+      driverApiVersion: 0,
+      deviceCount: 0,
+    });
+    expect(errors).toHaveLength(1);
+  });
+
   it("negotiates protocol and handles lifecycle commands", async () => {
     const host = new WindowsHost();
     try {
       const ready = await host.start();
-      expect(ready.protocol).toBe(8);
+      expect(ready.protocol).toBe(9);
       expect(ready.keyboardHook).toBe(true);
       expect(ready.mouseHook).toBe(true);
       const foreground = await host.getForeground();
@@ -29,6 +48,11 @@ describe("Windows host", () => {
       expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
       expect(await host.unprotectSecret("plaintext")).toBe("");
       expect(await host.unprotectSecret("dpapi:not-base64")).toBe("");
+      const cuda = await host.getCudaStatus();
+      expect(typeof cuda.driverPresent).toBe("boolean");
+      expect(typeof cuda.compatible).toBe("boolean");
+      expect(cuda.driverApiVersion).toBeGreaterThanOrEqual(0);
+      expect(cuda.deviceCount).toBeGreaterThanOrEqual(0);
       await host.setInputMode("listen");
       await host.setInputMode("shortcut-capture");
       await host.setInputMode("off");
@@ -51,7 +75,7 @@ describe("Windows host", () => {
       const id = String(++requestId);
       child.stdin.write(`${JSON.stringify({
         ...values,
-        protocol: 8,
+        protocol: 9,
         type,
         requestId: id,
       })}\n`);
@@ -174,7 +198,7 @@ describe("Windows host", () => {
       child.stdout.resume();
       child.stderr.resume();
       child.stdin.write(`${JSON.stringify({
-        protocol: 8,
+        protocol: 9,
         zipFiles: [archive],
         patterns: ["large-model.bin"],
         targetDirectory: disconnectedTarget,
@@ -279,7 +303,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 8,
+        protocol: 9,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),

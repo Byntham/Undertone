@@ -226,6 +226,31 @@ describe("audio renderer resource ownership", () => {
     await flushPromises();
   });
 
+  it("streams live audio without retaining a batch recording", async () => {
+    commandListener?.({
+      type: "start",
+      captureId: 8,
+      deviceName: "",
+      stream: true,
+    });
+    await flushPromises();
+
+    const port = FakeAudioWorkletNode.instances.at(-1)?.port;
+    port?.onmessage?.({ data: new Float32Array(4_800).fill(0.25) } as MessageEvent<Float32Array>);
+    commandListener?.({ type: "stop", requestId: 8 });
+    await flushPromises();
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: "chunk",
+      captureId: 8,
+    }));
+    expect(emit).toHaveBeenCalledWith({
+      type: "stopped",
+      requestId: 8,
+      durationMs: expect.any(Number),
+    });
+  });
+
   it("releases the input when capture setup fails", async () => {
     FakeAudioContext.failWorklet = true;
     commandListener?.({ type: "start", captureId: 1, deviceName: "", stream: false });

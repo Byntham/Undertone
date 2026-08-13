@@ -13,6 +13,7 @@ import {
   Tray,
 } from "electron";
 import electronUpdater = require("electron-updater");
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -33,8 +34,10 @@ import {
 import { GestureState, TapStateMachine } from "../core/gestures";
 import {
   LiveTranscriber,
+  type LiveTranscriptionCallbacks,
   type LiveTranscriptionSession,
 } from "../core/liveTranscriber";
+import { NemotronLiveTranscriber } from "../core/nemotronLiveTranscriber";
 import { OverlayController } from "../core/overlayController";
 import { applySettingsPatch, settingsSnapshot } from "../core/settingsModel";
 import {
@@ -67,11 +70,19 @@ import {
 } from "./openAiSubscription";
 import {
   createLocalCleanupRuntime,
+  createLocalSttRouter,
   createLocalSttRuntime,
+  createNemotronSttRuntime,
   type LocalServerRuntime,
 } from "./localRuntime";
+import { settleTranscriptionRuntimeChange } from "./transcriptionRuntimeChange";
 import { FetchHttpClient } from "../platform/http";
-import { WindowsHost, type InputMode } from "../platform/windowsHost";
+import {
+  getCudaStatusBestEffort,
+  WindowsHost,
+  type InputMode,
+} from "../platform/windowsHost";
+import { LOCAL_NEMOTRON_STT_MODEL } from "../shared/models";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
@@ -106,7 +117,7 @@ interface CapturedAudio {
 }
 
 interface LiveCapture {
-  provider: "openai" | "xai";
+  provider: "openai" | "xai" | "local";
   session: LiveTranscriptionSession;
   encoder: StreamingPcm16Encoder;
   text: string;
@@ -164,11 +175,13 @@ if (!gotLock) {
   let autostartUpdateChain: Promise<void> = Promise.resolve();
   let startWithWindows = false;
   let pipeline: DictationPipelineQueue | null = null;
-  let localStt: LocalServerRuntime | null = null;
+  let localWhisperStt: LocalServerRuntime | null = null;
+  let localNemotronStt: LocalServerRuntime | null = null;
   let localCleanup: LocalServerRuntime | null = null;
   let localInstaller: LocalInstaller | null = null;
   let appUpdateService: AppUpdateService | null = null;
   let transcriberClient: Transcriber | null = null;
+  let nemotronLiveTranscriber: NemotronLiveTranscriber | null = null;
   let cleanupClient: CleanupClient | null = null;
   let openAiSubscription: OpenAiSubscription | null = null;
   const localInstallState: Record<LocalEngineKind, InstallProgress & { installing: boolean }> = {
@@ -760,23 +773,31 @@ if (!gotLock) {
       clearTurnDraftSignal();
       if (streamLive) {
         try {
-          const provider = config.provider === "openai" ? "openai" : "xai";
-          const liveCapture: LiveCapture = {
-            provider,
-            session: liveTranscriber.start({
+          const provider = config.provider === "openai"
+            ? "openai"
+            : config.provider === "xai" ? "xai" : "local";
+          if (provider === "local") selectedLocalSttRuntime()?.warm();
+          const callbacks: LiveTranscriptionCallbacks = {
+            partial: (text) => {
+              const active = liveCaptures.get(captureId);
+              if (active === undefined) return;
+              active.text = text;
+              publishTurnDraft();
+            },
+            failed: (error) => failLiveCapture(captureId, error),
+          };
+          const session = provider === "local"
+            ? nemotronLiveTranscriber?.start(config.language, callbacks)
+            : liveTranscriber.start({
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
               vocabulary: xaiVocabularyHints(config),
-            }, {
-              partial: (text) => {
-                const active = liveCaptures.get(captureId);
-                if (active === undefined) return;
-                active.text = text;
-                publishTurnDraft();
-              },
-              failed: (error) => failLiveCapture(captureId, error),
-            }),
+            }, callbacks);
+          if (session === undefined) throw new Error("Local transcription service is not ready.");
+          const liveCapture: LiveCapture = {
+            provider,
+            session,
             encoder: new StreamingPcm16Encoder(provider === "openai" ? 24_000 : 16_000),
             text: "",
             state: "listening",
@@ -1144,9 +1165,25 @@ if (!gotLock) {
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
     const localRoot = path.join(localAppData, "Undertone");
-    localInstaller = new LocalInstaller(windowsHost, localRoot);
-    localStt = createLocalSttRuntime(windowsHost, localRoot, {
-      isInstalled: () => localInstaller?.isInstalled("stt") ?? false,
+    const cudaStatus = await getCudaStatusBestEffort(windowsHost, (error) => {
+      console.warn("CUDA compatibility probe failed; defaulting to CPU", error);
+    });
+    localInstaller = new LocalInstaller(
+      windowsHost, localRoot, fetch, process.env.SystemRoot ?? "C:\\Windows",
+      undefined, cudaStatus.deviceCount > 0, cudaStatus.compatible,
+    );
+    localWhisperStt = createLocalSttRuntime(windowsHost, localRoot, {
+      isInstalled: () => localInstaller?.isInstalled("stt", "whisper") ?? false,
+      onNotice: (message) => showFeedback(message, "warning"),
+    });
+    localNemotronStt = createNemotronSttRuntime(windowsHost, localRoot, {
+      isInstalled: () => localInstaller?.installedNemotronBuild() !== null
+        || (existsSync(path.join(
+          localAppData, "Programs", "NeMoSpeech", "bin", "nemo-speech.exe",
+        )) && existsSync(path.join(localRoot, "models", LOCAL_NEMOTRON_STT_MODEL))),
+      build: () => localInstaller?.installedNemotronBuild()
+        ?? localInstaller?.recommendedNemotronBuild()
+        ?? "cpu",
       onNotice: (message) => showFeedback(message, "warning"),
     });
     localCleanup = createLocalCleanupRuntime(windowsHost, localRoot, {
@@ -1165,7 +1202,11 @@ if (!gotLock) {
       },
       appVersion: app.getVersion(),
     });
-    transcriberClient = new Transcriber(http, localStt);
+    transcriberClient = new Transcriber(
+      http,
+      createLocalSttRouter(localWhisperStt, localNemotronStt),
+    );
+    nemotronLiveTranscriber = new NemotronLiveTranscriber(localNemotronStt);
     cleanupClient = new CleanupClient(http, localCleanup, openAiSubscription);
     const paster = new ClipboardPaster(
       {
@@ -1194,12 +1235,10 @@ if (!gotLock) {
       {
         dictate: async (input, destination, snapshot, overlayRevision) => {
           const captureId = input.type === "transcript" ? input.previewId : input.captureId;
-          if (input.type === "transcript") {
-            const capture = liveCaptures.get(input.previewId);
-            if (capture !== undefined) {
-              capture.latchedText = composeTurnDraftText(input.previewId);
-              capture.state = "processing";
-            }
+          const capture = captureId === undefined ? undefined : liveCaptures.get(captureId);
+          if (capture !== undefined) {
+            capture.latchedText = composeTurnDraftText(captureId);
+            capture.state = "processing";
             publishTurnDraft();
           }
           try {
@@ -1214,7 +1253,12 @@ if (!gotLock) {
               dismiss: () => { overlayController.hide(overlayRevision); },
             };
             if (input.type === "audio") {
-              await runner.run(input.wav, destination, snapshot, feedback);
+              await runner.run(
+                input.wav,
+                destination,
+                snapshot,
+                feedback,
+              );
             } else {
               await runner.runTranscript(input.text, destination, snapshot, feedback);
             }
@@ -1223,14 +1267,16 @@ if (!gotLock) {
               && captureId !== undefined
               && turnDraftSignal?.captureId !== captureId) {
               beginTurnDraftDismissal(captureId);
-            } else if (input.type === "transcript") {
-              liveCaptures.delete(input.previewId);
+            } else if (captureId !== undefined) {
+              liveCaptures.delete(captureId);
               publishTurnDraft();
             } else {
               publishTurnDraft();
             }
           } catch (error) {
-            if (input.type === "transcript") liveCaptures.delete(input.previewId);
+            if (captureId !== undefined) {
+              liveCaptures.delete(captureId);
+            }
             publishTurnDraft();
             throw error;
           }
@@ -1283,15 +1329,20 @@ if (!gotLock) {
 
   function configureLocalResidency(): void {
     const idleSeconds = Math.max(0, Number(config.local_idle_minutes) || 0) * 60;
-    localStt?.setIdleTimeout(idleSeconds);
+    localWhisperStt?.setIdleTimeout(idleSeconds);
+    localNemotronStt?.setIdleTimeout(idleSeconds);
     localCleanup?.setIdleTimeout(idleSeconds);
     if (!config.local_loaded) return;
     if (config.provider === "local") {
-      localStt?.warm();
+      selectedLocalSttRuntime()?.warm();
     }
     if (config.ai_cleanup && config.cleanup_provider === "local") {
       localCleanup?.warm();
     }
+  }
+
+  function selectedLocalSttRuntime(): LocalServerRuntime | null {
+    return config.local_stt_engine === "nemotron" ? localNemotronStt : localWhisperStt;
   }
 
   async function shutdownServices(): Promise<void> {
@@ -1315,7 +1366,8 @@ if (!gotLock) {
     }
     await windowsHost.setInputMode(desiredInputMode()).catch(() => undefined);
     await Promise.all([
-      localStt?.shutdown() ?? Promise.resolve(),
+      localWhisperStt?.shutdown() ?? Promise.resolve(),
+      localNemotronStt?.shutdown() ?? Promise.resolve(),
       localCleanup?.shutdown() ?? Promise.resolve(),
     ]);
     await windowsHost.stop();
@@ -1339,7 +1391,22 @@ if (!gotLock) {
         installing: install.installing,
         installPhase: install.phase,
         installFraction: install.fraction,
-        installBytes: localInstaller?.installSize(kind) ?? 0,
+        installBytes: localInstaller?.installSize(
+          kind,
+          kind === "stt" ? config.local_stt_engine : "whisper",
+        ) ?? 0,
+        recommendedBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? localInstaller?.recommendedNemotronBuild() ?? "cpu"
+          : null,
+        installedBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? localInstaller?.installedNemotronBuild() ?? null
+          : null,
+        installBytesByBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? {
+              cpu: localInstaller?.installSize("stt", "nemotron", "cpu") ?? 0,
+              cuda: localInstaller?.installSize("stt", "nemotron", "cuda") ?? 0,
+            }
+          : null,
       };
       if (runtime === null) {
         return {
@@ -1370,7 +1437,7 @@ if (!gotLock) {
       }
     };
     const [stt, cleanup] = await Promise.all([
-      engineSnapshot("stt", localStt),
+      engineSnapshot("stt", selectedLocalSttRuntime()),
       engineSnapshot("cleanup", localCleanup),
     ]);
     return settingsSnapshot(config, app.getVersion(), {
@@ -1390,15 +1457,27 @@ if (!gotLock) {
       const previousScratch = config.scratch_hotkey;
       const previousDiscard = config.discard_hotkey;
       const previousProvider = config.provider;
+      const previousLocalSttEngine = config.local_stt_engine;
       const previousLiveTranscription = config.live_transcription;
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
-      if ((previousProvider !== config.provider
-        || previousLiveTranscription !== config.live_transcription)
-        && gestures.state !== GestureState.idle) {
-        gestures.cancel();
-      }
+      await settleTranscriptionRuntimeChange({
+        previous: {
+          provider: previousProvider,
+          local_stt_engine: previousLocalSttEngine,
+          live_transcription: previousLiveTranscription,
+        },
+        next: config,
+        recordingActive: gestures.state !== GestureState.idle,
+        cancelRecording: () => gestures.cancel(),
+        ejectEngine: async (engine) => {
+          const previousRuntime = engine === "nemotron"
+            ? localNemotronStt
+            : localWhisperStt;
+          await previousRuntime?.eject();
+        },
+      });
       if (config.hotkey !== previousHotkey
         || config.repaste_hotkey !== previousRepaste
         || config.commit_hotkey !== previousCommit
@@ -1569,17 +1648,23 @@ if (!gotLock) {
         && value.action !== "eject")) {
       throw new Error("Invalid local engine action");
     }
+    if (value.build !== undefined && value.build !== "cpu" && value.build !== "cuda") {
+      throw new Error("Invalid local runtime build");
+    }
     const kind = value.kind;
-    const runtime = value.kind === "stt" ? localStt : localCleanup;
+    const runtime = value.kind === "stt" ? selectedLocalSttRuntime() : localCleanup;
     if (runtime === null) throw new Error("Local engine service is not ready");
     if (value.action === "install") {
       if (localInstaller === null) throw new Error("Local installer is not ready");
+      const build = kind === "stt" && config.local_stt_engine === "nemotron"
+        ? value.build ?? localInstaller.recommendedNemotronBuild()
+        : localInstaller.recommendedNemotronBuild();
       localInstallState[kind] = { installing: true, phase: "Preparing", fraction: 0 };
       try {
         await runtime.eject();
         await localInstaller.install(kind, (progress) => {
           localInstallState[kind] = { installing: true, ...progress };
-        });
+        }, kind === "stt" ? config.local_stt_engine : "whisper", build);
       } finally {
         localInstallState[kind] = { installing: false, phase: "", fraction: 0 };
       }
@@ -1670,6 +1755,7 @@ if (!gotLock) {
         language: config.language,
         vocabulary: [],
         provider,
+        localEngine: config.local_stt_engine,
       });
       return `Transcription works (${providerName(provider)}).`;
     }
@@ -1967,11 +2053,15 @@ if (!gotLock) {
         throw new Error("Packaged smoke result path is invalid");
       }
       if (localRuntimeSmoke) {
-        if (localStt === null || localCleanup === null) {
+        if (localWhisperStt === null || localNemotronStt === null || localCleanup === null) {
           throw new Error("Local runtimes did not initialize");
         }
-        await localStt.load();
-        await localStt.eject();
+        await localWhisperStt.load();
+        await localWhisperStt.eject();
+        if (localInstaller?.installedNemotronBuild() !== null) {
+          await localNemotronStt.load();
+          await localNemotronStt.eject();
+        }
         await localCleanup.load();
         await localCleanup.eject();
       }
@@ -2006,7 +2096,8 @@ function isHistoryAction(value: unknown): value is HistoryAction {
 }
 
 function isSystemAction(value: unknown): value is SystemAction {
-  return value === "openSettingsFolder" || value === "openLog";
+  return value === "openSettingsFolder"
+    || value === "openLog";
 }
 
 function providerName(provider: string): string {
@@ -2067,7 +2158,9 @@ function toFloat32Array(value: unknown): Float32Array | null {
 
 function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
-    && (config.provider === "openai" || config.provider === "xai");
+    && (config.provider === "openai"
+      || config.provider === "xai"
+      || (config.provider === "local" && config.local_stt_engine === "nemotron"));
 }
 
 function actionShortcut(shortcut: string): string {

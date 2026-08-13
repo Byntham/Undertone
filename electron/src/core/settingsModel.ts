@@ -8,11 +8,13 @@ import {
   DEFAULT_CLEANUP_MODELS,
   DEFAULT_STT_MODELS,
   LIVE_STT_MODELS,
+  LOCAL_STT_MODELS,
 } from "../shared/models";
 import type {
   CloudProviderId,
   CleanupProviderId,
   LocalEngineSnapshot,
+  LocalSttEngineId,
   SettingsSnapshot,
   TranscriptionProviderId,
 } from "../shared/settings";
@@ -44,6 +46,7 @@ const PATCH_FIELDS = new Set([
   "openTurnCleanupStrategy",
   "inputDevice",
   "provider",
+  "localSttEngine",
   "cleanupProvider",
   "providerKey",
   "localLoaded",
@@ -83,6 +86,7 @@ export function settingsSnapshot(
     microphones: [...microphones],
     appVersion,
     provider,
+    localSttEngine: config.local_stt_engine,
     cleanupProvider,
     keyConfigured: {
       xai: providerKey(config, "xai").trim().length > 0,
@@ -110,7 +114,9 @@ function activeSttModel(config: UndertoneConfig, provider: TranscriptionProvider
   if (config.live_transcription && (provider === "openai" || provider === "xai")) {
     return LIVE_STT_MODELS[provider] ?? "";
   }
-  return DEFAULT_STT_MODELS[provider];
+  return provider === "local"
+    ? LOCAL_STT_MODELS[config.local_stt_engine]
+    : DEFAULT_STT_MODELS[provider];
 }
 
 export function applySettingsPatch(
@@ -191,6 +197,9 @@ export function applySettingsPatch(
   if (value.provider !== undefined) {
     next.provider = providerField(value.provider, "provider", isTranscriptionProvider);
   }
+  if (value.localSttEngine !== undefined) {
+    next.local_stt_engine = localSttEngineField(value.localSttEngine);
+  }
   if (value.cleanupProvider !== undefined) {
     next.cleanup_provider = providerField(value.cleanupProvider, "cleanupProvider", isCleanupProvider);
   }
@@ -217,6 +226,10 @@ export function applySettingsPatch(
   if (value.corrections !== undefined) {
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
+  if (next.provider === "local" && next.local_stt_engine === "nemotron") next.language = "en";
+  if (next.provider === "local" && next.local_stt_engine === "whisper") {
+    next.live_transcription = false;
+  }
   return next;
 }
 
@@ -229,6 +242,9 @@ const EMPTY_LOCAL_ENGINE: LocalEngineSnapshot = {
   installPhase: "",
   installFraction: 0,
   installBytes: 0,
+  recommendedBuild: null,
+  installedBuild: null,
+  installBytesByBuild: null,
 };
 
 const EMPTY_LOCAL_ENGINES = {
@@ -243,6 +259,13 @@ function providerField<T extends string>(
 ): T {
   if (!supported(value)) {
     throw new Error(`${name} is not a supported provider`);
+  }
+  return value;
+}
+
+function localSttEngineField(value: unknown): LocalSttEngineId {
+  if (value !== "whisper" && value !== "nemotron") {
+    throw new Error("localSttEngine is not a supported local transcription engine");
   }
   return value;
 }

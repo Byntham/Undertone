@@ -88,6 +88,18 @@ app.whenReady().then(async () => {
       sectionWidth: document.querySelector('main section')?.getBoundingClientRect().width ?? 0,
       hasContentHorizontalOverflow: (document.querySelector('main')?.scrollWidth ?? 0)
         > (document.querySelector('main')?.clientWidth ?? 0),
+      clippedControls: [...document.querySelectorAll(
+        '.card select, .card button, .localEngineCard select, .localEngineCard button'
+      )].flatMap((control) => {
+        const card = control.closest('.card, .localEngineCard');
+        if (!card) return [];
+        const controlBounds = control.getBoundingClientRect();
+        const cardBounds = card.getBoundingClientRect();
+        if (controlBounds.left >= cardBounds.left && controlBounds.right <= cardBounds.right) {
+          return [];
+        }
+        return [control.getAttribute('aria-label') || control.textContent?.trim() || control.tagName];
+      }),
       title: document.querySelector('h1')?.textContent ?? ''
     })`);
     if (metrics.title.trim() !== section.label) {
@@ -95,6 +107,11 @@ app.whenReady().then(async () => {
     }
     if (metrics.hasHorizontalOverflow || metrics.hasContentHorizontalOverflow) {
       throw new Error(`${section.label} has horizontal overflow at ${scale * 100}% scaling`);
+    }
+    if (metrics.clippedControls.length > 0) {
+      throw new Error(`${section.label} clips controls at ${scale * 100}% scaling: ${
+        metrics.clippedControls.join(', ')
+      }`);
     }
     const image = await win.webContents.capturePage();
     await writeFile(path.join(output, `${section.filename}.png`), image.toPNG());

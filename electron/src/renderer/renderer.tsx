@@ -8,6 +8,7 @@ import type {
   LocalEngineAction,
   LocalEngineKind,
   LocalEngineSnapshot,
+  LocalRuntimeBuild,
   HistoryAction,
   HistorySnapshotEntry,
   OpenAiSubscriptionAction,
@@ -177,8 +178,9 @@ function SettingsApp(): React.JSX.Element {
   const localAction = async (
     kind: LocalEngineKind,
     action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
   ): Promise<boolean> => {
-    return settingsAction(() => settingsApi.localAction(kind, action), kind);
+    return settingsAction(() => settingsApi.localAction(kind, action, build), kind);
   };
 
   const openAiSubscriptionAction = async (
@@ -366,12 +368,13 @@ function General({
           </SettingRow>
           <SettingRow
             title="Live text preview"
-            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. OpenAI and xAI only."
+            description="Show text in the open turn while you speak. Available with OpenAI, xAI, and local Nemotron."
           >
             <Toggle
               label="Show live text preview"
               checked={settings.liveTranscription}
-              disabled={settings.provider !== "openai" && settings.provider !== "xai"}
+              disabled={settings.provider === "openrouter"
+                || (settings.provider === "local" && settings.localSttEngine === "whisper")}
               onChange={(liveTranscription) => { void update({ liveTranscription }); }}
             />
           </SettingRow>
@@ -693,7 +696,11 @@ function SpeechAi({
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
-  localAction: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+  localAction: (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ) => Promise<boolean>;
   openAiSubscriptionAction: (action: OpenAiSubscriptionAction) => Promise<boolean>;
 }): React.JSX.Element {
   const [testing, setTesting] = useState<ProviderTestKind | null>(null);
@@ -760,6 +767,7 @@ function SpeechAi({
             <select
               aria-label="Transcription language"
               value={settings.language}
+              disabled={settings.provider === "local" && settings.localSttEngine === "nemotron"}
               onChange={(event) => { void update({ language: event.target.value }); }}
             >
               <option value="en">English</option>
@@ -834,11 +842,33 @@ function SpeechAi({
       <div>
         <h2>On-device</h2>
         <div className="providerGrid">
+          <div className="card">
+            <SettingRow
+              title="Local transcription engine"
+              description={settings.localSttEngine === "nemotron"
+                ? "True streaming. The same model produces both the preview and final transcript."
+                : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
+            >
+              <select
+                aria-label="Local transcription engine"
+                value={settings.localSttEngine}
+                onChange={(event) => {
+                  void update({
+                    localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
+                  });
+                }}
+              >
+                <option value="whisper">Whisper</option>
+                <option value="nemotron">Nemotron</option>
+              </select>
+            </SettingRow>
+          </div>
           <LocalEngineCard
             kind="stt"
             name="Transcription model"
             status={settings.localEngines.stt}
             action={localAction}
+            buildChoice={settings.localSttEngine === "nemotron"}
           />
           <LocalEngineCard
             kind="cleanup"
@@ -945,55 +975,96 @@ function LocalEngineCard({
   name,
   status,
   action,
+  buildChoice = false,
 }: {
   kind: LocalEngineKind;
   name: string;
   status: LocalEngineSnapshot;
-  action: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+  action: (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ) => Promise<boolean>;
+  buildChoice?: boolean;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  const [installBuild, setInstallBuild] = useState<LocalRuntimeBuild>(
+    status.installedBuild ?? status.recommendedBuild ?? "cpu",
+  );
+  useEffect(() => {
+    setInstallBuild(status.installedBuild ?? status.recommendedBuild ?? "cpu");
+  }, [status.installedBuild, status.recommendedBuild]);
   const running = status.loaded || status.loading;
   const working = busy || status.installing;
-  const nextAction: LocalEngineAction = !status.installed
-    ? "install"
-    : running
-      ? "eject"
+  const nextAction: LocalEngineAction = running
+    ? "eject"
+    : !status.installed || (buildChoice && status.installedBuild !== installBuild)
+      ? "install"
       : "load";
   const label = status.installing
     ? `${status.installPhase || "Installing"} · ${Math.round(status.installFraction * 100)}%`
     : !status.installed
-      ? `Not installed · ${formatDownloadSize(status.installBytes)} download`
+      ? `Not installed · ${formatDownloadSize(
+          status.installBytesByBuild?.[installBuild] ?? status.installBytes,
+        )} download`
       : status.loading
         ? "Loading…"
         : status.loaded
-          ? `Loaded · ${status.build?.toUpperCase() ?? "READY"}`
-          : "Installed · Ejected";
+          ? `Loaded · ${status.build === "cuda" ? "NVIDIA GPU" : "CPU"}`
+          : status.installedBuild === "cuda"
+            ? "Installed · NVIDIA GPU"
+            : status.installedBuild === "cpu"
+              ? "Installed · CPU"
+              : "Installed · Ejected";
   const invoke = async (): Promise<void> => {
     setBusy(true);
     try {
-      await action(kind, nextAction);
+      await action(
+        kind,
+        nextAction,
+        nextAction === "install" && buildChoice ? installBuild : undefined,
+      );
     } finally {
       setBusy(false);
     }
   };
-  return <div className="localEngineCard">
+  const showBuildSelector = buildChoice && !running;
+  return <div className="localEngineCard" data-build-selector={showBuildSelector}>
     <div>
       <strong>{name}</strong>
       <span data-running={running} data-installing={status.installing}>{label}</span>
     </div>
-    <button
-      type="button"
-      className="smallButton accent"
-      disabled={working}
-      onClick={() => { void invoke(); }}
-    >
-      {working ? "Working…" : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
-    </button>
+    <div className="localEngineActions">
+      {showBuildSelector && <select
+        aria-label="Nemotron runtime"
+        value={installBuild}
+        disabled={working}
+        onChange={(event) => {
+          setInstallBuild(event.target.value === "cuda" ? "cuda" : "cpu");
+        }}
+      >
+        <option value="cuda">
+          NVIDIA{status.recommendedBuild === "cuda" ? " (Recommended)" : " GPU"}
+        </option>
+        <option value="cpu">
+          CPU{status.recommendedBuild === "cpu" ? " (Recommended)" : ""}
+        </option>
+      </select>}
+      <button
+        type="button"
+        className="smallButton accent"
+        disabled={working}
+        onClick={() => { void invoke(); }}
+      >
+        {working ? "Working…" : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
+      </button>
+    </div>
   </div>;
 }
 
 function formatDownloadSize(bytes: number): string {
   if (bytes <= 0) return "no additional";
+  if (bytes < 100 * 1024 * 1024) return `${Math.ceil(bytes / (1 << 20))} MB`;
   return `${(bytes / (1 << 30)).toFixed(1)} GB`;
 }
 

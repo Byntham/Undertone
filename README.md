@@ -57,6 +57,25 @@ run.bat
 `run.bat` builds and launches from source. `build.bat` produces the NSIS
 installer. For package and smoke commands, see `AGENTS.md`.
 
+### Nemotron streaming
+
+Undertone can use NVIDIA Nemotron Streaming 0.6B as one local model for both
+live preview and the completed transcript. Choose **Nemotron** under
+**Settings → Speech & AI → Local transcription engine**, then install the
+recommended runtime. Undertone recommends NVIDIA when it detects a supported
+GPU and sufficiently recent normal NVIDIA graphics driver; otherwise it
+recommends CPU. Either choice can be overridden.
+
+Undertone downloads versioned, size- and SHA-256-pinned runtime and model
+artifacts. Users do not need the CUDA Toolkit, Visual Studio, CMake, or other
+developer tools. Runtime packages and their provenance manifest are published
+in the [Undertone Nemotron runtime release](https://github.com/Byntham/Undertone/releases/tag/nemotron-runtime-v0.1.0).
+The model is provided under the
+[NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+Whisper and Nemotron are never loaded as transcription engines at the same
+time. Local live preview is Nemotron-only; Whisper Large V3 Turbo remains
+available for completed, non-live recordings.
+
 ## Privacy
 
 Audio goes only to the selected transcription provider (local keeps it on this
