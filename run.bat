@@ -11,6 +11,10 @@ if defined UNDERTONE_INSTALL_NEEDED (
     if errorlevel 1 exit /b 1
 )
 if not exist "node_modules\electron\dist\electron.exe" (
+    call "node_modules\.bin\install-electron.cmd" --no
+    if errorlevel 1 exit /b 1
+)
+if not exist "node_modules\electron\dist\electron.exe" (
     echo Electron runtime installation did not produce electron.exe. 1>&2
     exit /b 1
 )
