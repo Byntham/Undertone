@@ -74,7 +74,7 @@ afterEach(async () => {
 });
 
 describe("local runtime", () => {
-  it("starts the pinned Nemotron server as a CUDA-only realtime runtime", async () => {
+  it("starts the selected pinned Nemotron runtime", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "undertone-nemotron-runtime-"));
     temporaryDirectories.push(root);
     const executable = path.join(root, "external", "nemo-speech.exe");
@@ -84,18 +84,47 @@ describe("local runtime", () => {
     process.env.UNDERTONE_NEMO_SPEECH_EXE = executable;
     try {
       const host = new FakeHost();
-      const runtime = createNemotronSttRuntime(host, root, { fetch: readyFetch });
+      const runtime = createNemotronSttRuntime(host, root, {
+        fetch: readyFetch,
+        build: () => "cpu",
+      });
       await runtime.load();
-      expect((await runtime.status()).build).toBe("cuda");
+      expect((await runtime.status()).build).toBe("cpu");
       expect(host.starts[0]?.file).toBe(executable);
       expect(host.starts[0]?.argumentsValue).toContain("serve");
-      expect(host.starts[0]?.argumentsValue).toContain("--device cuda:0");
+      expect(host.starts[0]?.argumentsValue).toContain("--device cpu");
       expect(host.starts[0]?.argumentsValue).not.toContain("--endpointing");
       expect(host.starts[0]?.argumentsValue).toContain(LOCAL_NEMOTRON_STT_MODEL);
       await runtime.shutdown();
     } finally {
       if (previous === undefined) delete process.env.UNDERTONE_NEMO_SPEECH_EXE;
       else process.env.UNDERTONE_NEMO_SPEECH_EXE = previous;
+    }
+  });
+
+  it("discovers a managed Nemotron runtime installed after startup", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "undertone-nemotron-late-install-"));
+    temporaryDirectories.push(root);
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = path.join(root, "legacy-root");
+    try {
+      const host = new FakeHost();
+      const runtime = createNemotronSttRuntime(host, root, {
+        fetch: readyFetch,
+        build: () => "cpu",
+      });
+      const managed = path.join(root, "runtime", "nemotron");
+      await touch(path.join(managed, "nemo-speech.exe"));
+      await touch(path.join(managed, "undertone-nemotron-cpu.txt"));
+      await touch(path.join(root, "models", LOCAL_NEMOTRON_STT_MODEL));
+
+      await runtime.load();
+      expect(host.starts[0]?.file).toBe(path.join(managed, "nemo-speech.exe"));
+      expect(host.starts[0]?.argumentsValue).toContain("--device cpu");
+      await runtime.shutdown();
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
     }
   });
 

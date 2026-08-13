@@ -4,6 +4,7 @@ import type {
   AppUpdateSnapshot,
   LocalEngineAction,
   LocalEngineKind,
+  LocalRuntimeBuild,
   HistoryAction,
   OpenAiSubscriptionAction,
   ProviderTestKind,
@@ -28,8 +29,12 @@ const api: SettingsApi = {
       ReturnType<SettingsApi["captureShortcut"]>
     >
   ),
-  localAction: async (kind: LocalEngineKind, action: LocalEngineAction) => (
-    await ipcRenderer.invoke("local:action", { kind, action }) as Awaited<
+  localAction: async (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ) => (
+    await ipcRenderer.invoke("local:action", { kind, action, build }) as Awaited<
       ReturnType<SettingsApi["localAction"]>
     >
   ),

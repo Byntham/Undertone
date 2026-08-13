@@ -5,7 +5,11 @@ import path from "node:path";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
 
-import type { LocalEngineKind } from "../shared/settings";
+import type {
+  LocalEngineKind,
+  LocalRuntimeBuild,
+  LocalSttEngineId,
+} from "../shared/settings";
 import {
   componentOutputsExist,
   createLocalArtifactPlan,
@@ -40,7 +44,7 @@ interface InstallSpaceEstimate {
 
 
 export class LocalInstaller {
-  private readonly installs = new Map<LocalEngineKind, Promise<void>>();
+  private readonly installs = new Map<string, Promise<void>>();
   private readonly components: readonly LocalArtifactComponent[];
   private preparation: Promise<void> | null = null;
 
@@ -50,31 +54,59 @@ export class LocalInstaller {
     private readonly fetcher: InstallFetch = fetch,
     private readonly systemRoot = process.env.SystemRoot ?? "C:\\Windows",
     components?: readonly LocalArtifactComponent[],
+    private readonly compatibleNvidiaGpu?: boolean,
   ) {
     this.components = components
       ?? createLocalArtifactPlan(root, this.hasNvidiaGpu());
   }
 
-  installSize(kind: LocalEngineKind): number {
-    return this.estimateInstallSpace(kind).downloadBytes;
+  installSize(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId = "whisper",
+    build: LocalRuntimeBuild = this.recommendedNemotronBuild(),
+  ): number {
+    return this.estimateInstallSpace(kind, sttEngine, build).downloadBytes;
   }
 
-  isInstalled(kind: LocalEngineKind): boolean {
-    return this.componentsFor(kind).every((component) =>
+  isInstalled(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId = "whisper",
+    build: LocalRuntimeBuild = this.recommendedNemotronBuild(),
+  ): boolean {
+    return this.componentsFor(kind, sttEngine, build).every((component) =>
       isComponentCurrent(this.root, component));
   }
 
-  requiredInstallSpace(kind: LocalEngineKind): number {
-    const estimate = this.estimateInstallSpace(kind);
+  recommendedNemotronBuild(): LocalRuntimeBuild {
+    return this.hasNvidiaGpu() ? "cuda" : "cpu";
+  }
+
+  installedNemotronBuild(): LocalRuntimeBuild | null {
+    for (const build of ["cuda", "cpu"] as const) {
+      if (this.isInstalled("stt", "nemotron", build)) return build;
+    }
+    return null;
+  }
+
+  requiredInstallSpace(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId = "whisper",
+    build: LocalRuntimeBuild = this.recommendedNemotronBuild(),
+  ): number {
+    const estimate = this.estimateInstallSpace(kind, sttEngine, build);
     return estimate.downloadBytes
       + estimate.extractionWorkspaceBytes
       + INSTALL_SAFETY_RESERVE_BYTES;
   }
 
-  private estimateInstallSpace(kind: LocalEngineKind): InstallSpaceEstimate {
+  private estimateInstallSpace(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId,
+    build: LocalRuntimeBuild,
+  ): InstallSpaceEstimate {
     let downloadBytes = 0;
     let extractionWorkspaceBytes = 0;
-    for (const component of this.componentsFor(kind)) {
+    for (const component of this.componentsFor(kind, sttEngine, build)) {
       if (isComponentCurrent(this.root, component)) continue;
       downloadBytes += component.artifacts.reduce((total, artifact) => total + artifact.size, 0);
       extractionWorkspaceBytes += component.workspaceBytes;
@@ -82,33 +114,45 @@ export class LocalInstaller {
     return { downloadBytes, extractionWorkspaceBytes };
   }
 
-  async install(kind: LocalEngineKind, progress: InstallProgressListener): Promise<void> {
-    const existing = this.installs.get(kind);
+  async install(
+    kind: LocalEngineKind,
+    progress: InstallProgressListener,
+    sttEngine: LocalSttEngineId = "whisper",
+    build: LocalRuntimeBuild = this.recommendedNemotronBuild(),
+  ): Promise<void> {
+    const key = `${kind}:${sttEngine}:${build}`;
+    const existing = this.installs.get(key);
     if (existing !== undefined) return await existing;
-    const operation = this.installMissing(kind, progress);
-    this.installs.set(kind, operation);
+    const operation = this.installMissing(kind, sttEngine, build, progress);
+    this.installs.set(key, operation);
     try {
       await operation;
     } finally {
-      if (this.installs.get(kind) === operation) this.installs.delete(kind);
+      if (this.installs.get(key) === operation) this.installs.delete(key);
     }
   }
 
   private async installMissing(
     kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId,
+    build: LocalRuntimeBuild,
     progress: InstallProgressListener,
   ): Promise<void> {
-    await this.prepare(kind);
-    for (const component of this.componentsFor(kind)) {
+    await this.prepare(kind, sttEngine, build);
+    for (const component of this.componentsFor(kind, sttEngine, build)) {
       if (isComponentCurrent(this.root, component)) continue;
       await this.installComponent(component, progress);
     }
   }
 
-  private async prepare(kind: LocalEngineKind): Promise<void> {
+  private async prepare(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId,
+    build: LocalRuntimeBuild,
+  ): Promise<void> {
     this.preparation ??= this.recoverInterruptedInstalls();
     await this.preparation;
-    const required = BigInt(this.requiredInstallSpace(kind));
+    const required = BigInt(this.requiredInstallSpace(kind, sttEngine, build));
     const disk = await statfs(this.root, { bigint: true });
     const free = disk.bavail * disk.bsize;
     if (free < required) {
@@ -178,12 +222,20 @@ export class LocalInstaller {
     }
   }
 
-  private componentsFor(kind: LocalEngineKind): readonly LocalArtifactComponent[] {
-    return this.components.filter((component) => component.kind === kind && component.applicable);
+  private componentsFor(
+    kind: LocalEngineKind,
+    sttEngine: LocalSttEngineId,
+    build: LocalRuntimeBuild,
+  ): readonly LocalArtifactComponent[] {
+    return this.components.filter((component) => component.kind === kind
+      && component.applicable
+      && (kind !== "stt" || component.sttEngine === undefined || component.sttEngine === sttEngine)
+      && (component.build === undefined || sttEngine !== "nemotron" || component.build === build));
   }
 
   private hasNvidiaGpu(): boolean {
-    return existsSync(path.join(this.systemRoot, "System32", "nvcuda.dll"));
+    return this.compatibleNvidiaGpu
+      ?? existsSync(path.join(this.systemRoot, "System32", "nvcuda.dll"));
   }
 }
 

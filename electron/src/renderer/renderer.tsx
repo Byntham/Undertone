@@ -8,6 +8,7 @@ import type {
   LocalEngineAction,
   LocalEngineKind,
   LocalEngineSnapshot,
+  LocalRuntimeBuild,
   HistoryAction,
   HistorySnapshotEntry,
   OpenAiSubscriptionAction,
@@ -177,8 +178,9 @@ function SettingsApp(): React.JSX.Element {
   const localAction = async (
     kind: LocalEngineKind,
     action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
   ): Promise<boolean> => {
-    return settingsAction(() => settingsApi.localAction(kind, action), kind);
+    return settingsAction(() => settingsApi.localAction(kind, action, build), kind);
   };
 
   const openAiSubscriptionAction = async (
@@ -694,7 +696,11 @@ function SpeechAi({
 }: {
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
-  localAction: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+  localAction: (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ) => Promise<boolean>;
   openAiSubscriptionAction: (action: OpenAiSubscriptionAction) => Promise<boolean>;
 }): React.JSX.Element {
   const [testing, setTesting] = useState<ProviderTestKind | null>(null);
@@ -775,7 +781,7 @@ function SpeechAi({
           {settings.provider === "local" && <SettingRow
             title="Local transcription engine"
             description={settings.localSttEngine === "nemotron"
-              ? "Experimental true streaming. The same model produces both the preview and final transcript."
+              ? "True streaming. The same model produces both the preview and final transcript."
               : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
           >
             <select
@@ -860,7 +866,7 @@ function SpeechAi({
             name="Transcription model"
             status={settings.localEngines.stt}
             action={localAction}
-            installDisabled={settings.localSttEngine === "nemotron"}
+            buildChoice={settings.localSttEngine === "nemotron"}
           />
           <LocalEngineCard
             kind="cleanup"
@@ -967,37 +973,55 @@ function LocalEngineCard({
   name,
   status,
   action,
-  installDisabled = false,
+  buildChoice = false,
 }: {
   kind: LocalEngineKind;
   name: string;
   status: LocalEngineSnapshot;
-  action: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
-  installDisabled?: boolean;
+  action: (
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ) => Promise<boolean>;
+  buildChoice?: boolean;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  const [installBuild, setInstallBuild] = useState<LocalRuntimeBuild>(
+    status.installedBuild ?? status.recommendedBuild ?? "cpu",
+  );
+  useEffect(() => {
+    if (!status.installed) setInstallBuild(status.recommendedBuild ?? "cpu");
+  }, [status.installed, status.recommendedBuild]);
   const running = status.loaded || status.loading;
   const working = busy || status.installing;
-  const nextAction: LocalEngineAction = !status.installed
-    ? "install"
-    : running
-      ? "eject"
+  const nextAction: LocalEngineAction = running
+    ? "eject"
+    : !status.installed || (buildChoice && status.installedBuild !== installBuild)
+      ? "install"
       : "load";
   const label = status.installing
     ? `${status.installPhase || "Installing"} · ${Math.round(status.installFraction * 100)}%`
     : !status.installed
-      ? installDisabled
-        ? "Experimental runtime not installed"
-        : `Not installed · ${formatDownloadSize(status.installBytes)} download`
+      ? `Not installed · ${formatDownloadSize(
+          status.installBytesByBuild?.[installBuild] ?? status.installBytes,
+        )} download`
       : status.loading
         ? "Loading…"
         : status.loaded
-          ? `Loaded · ${status.build?.toUpperCase() ?? "READY"}`
-          : "Installed · Ejected";
+          ? `Loaded · ${status.build === "cuda" ? "NVIDIA GPU" : "CPU"}`
+          : status.installedBuild === "cuda"
+            ? "Installed · NVIDIA GPU"
+            : status.installedBuild === "cpu"
+              ? "Installed · CPU"
+              : "Installed · Ejected";
   const invoke = async (): Promise<void> => {
     setBusy(true);
     try {
-      await action(kind, nextAction);
+      await action(
+        kind,
+        nextAction,
+        nextAction === "install" && buildChoice ? installBuild : undefined,
+      );
     } finally {
       setBusy(false);
     }
@@ -1007,23 +1031,37 @@ function LocalEngineCard({
       <strong>{name}</strong>
       <span data-running={running} data-installing={status.installing}>{label}</span>
     </div>
-    <button
-      type="button"
-      className="smallButton accent"
-      disabled={working || (installDisabled && !status.installed)}
-      onClick={() => { void invoke(); }}
-    >
-      {working
-        ? "Working…"
-        : installDisabled && !status.installed
-          ? "Setup required"
-          : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
-    </button>
+    <div className="localEngineActions">
+      {buildChoice && !running && <select
+        aria-label="Nemotron runtime"
+        value={installBuild}
+        disabled={working}
+        onChange={(event) => {
+          setInstallBuild(event.target.value === "cuda" ? "cuda" : "cpu");
+        }}
+      >
+        <option value="cuda">
+          NVIDIA{status.recommendedBuild === "cuda" ? " (Recommended)" : " GPU"}
+        </option>
+        <option value="cpu">
+          CPU{status.recommendedBuild === "cpu" ? " (Recommended)" : ""}
+        </option>
+      </select>}
+      <button
+        type="button"
+        className="smallButton accent"
+        disabled={working}
+        onClick={() => { void invoke(); }}
+      >
+        {working ? "Working…" : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
+      </button>
+    </div>
   </div>;
 }
 
 function formatDownloadSize(bytes: number): string {
   if (bytes <= 0) return "no additional";
+  if (bytes < 100 * 1024 * 1024) return `${Math.ceil(bytes / (1 << 20))} MB`;
   return `${(bytes / (1 << 30)).toFixed(1)} GB`;
 }
 

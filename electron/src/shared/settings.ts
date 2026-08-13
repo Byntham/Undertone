@@ -2,6 +2,7 @@ export type CloudProviderId = "xai" | "openai" | "openrouter";
 export type ModelProviderId = CloudProviderId | "openai-subscription";
 export type TranscriptionProviderId = CloudProviderId | "local";
 export type LocalSttEngineId = "whisper" | "nemotron";
+export type LocalRuntimeBuild = "cpu" | "cuda";
 export type CleanupProviderId = ModelProviderId | "local";
 export type SettingsProviderId = CleanupProviderId;
 export type OpenTurnCleanupStrategy = "live-full" | "commit-full";
@@ -56,6 +57,9 @@ export interface LocalEngineSnapshot {
   installPhase: string;
   installFraction: number;
   installBytes: number;
+  recommendedBuild: LocalRuntimeBuild | null;
+  installedBuild: LocalRuntimeBuild | null;
+  installBytesByBuild: Record<LocalRuntimeBuild, number> | null;
 }
 
 export interface SettingsSnapshot {
@@ -128,7 +132,11 @@ export interface SettingsApi {
   update(patch: SettingsPatch): Promise<SettingsSnapshot>;
   setStartWithWindows(enabled: boolean): Promise<SettingsSnapshot>;
   captureShortcut(field: ShortcutSetting): Promise<SettingsSnapshot>;
-  localAction(kind: LocalEngineKind, action: LocalEngineAction): Promise<SettingsSnapshot>;
+  localAction(
+    kind: LocalEngineKind,
+    action: LocalEngineAction,
+    build?: LocalRuntimeBuild,
+  ): Promise<SettingsSnapshot>;
   history(): Promise<HistorySnapshotEntry[]>;
   historyAction(id: number, action: HistoryAction): Promise<void>;
   systemAction(action: SystemAction): Promise<void>;

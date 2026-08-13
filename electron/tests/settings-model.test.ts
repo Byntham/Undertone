@@ -45,6 +45,9 @@ describe("settings model", () => {
           installPhase: "",
           installFraction: 0,
           installBytes: 0,
+          recommendedBuild: null,
+          installedBuild: null,
+          installBytesByBuild: null,
         },
         cleanup: {
           installed: false,
@@ -55,6 +58,9 @@ describe("settings model", () => {
           installPhase: "",
           installFraction: 0,
           installBytes: 0,
+          recommendedBuild: null,
+          installedBuild: null,
+          installBytesByBuild: null,
         },
       },
     });

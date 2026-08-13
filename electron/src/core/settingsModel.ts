@@ -242,6 +242,9 @@ const EMPTY_LOCAL_ENGINE: LocalEngineSnapshot = {
   installPhase: "",
   installFraction: 0,
   installBytes: 0,
+  recommendedBuild: null,
+  installedBuild: null,
+  installBytesByBuild: null,
 };
 
 const EMPTY_LOCAL_ENGINES = {

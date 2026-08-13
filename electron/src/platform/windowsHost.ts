@@ -5,7 +5,7 @@ import readline from "node:readline";
 
 import type { GuardedPasteResult, PasteTarget } from "../core/clipboardPaster";
 
-const PROTOCOL_VERSION = 8;
+const PROTOCOL_VERSION = 9;
 const HOST_NAME = "Undertone.WinHost.exe";
 const EXTRACTION_TIMEOUT_MS = 300_000;
 
@@ -31,6 +31,13 @@ interface HostResponse extends Record<string, unknown> {
 }
 
 export type InputMode = "off" | "listen" | "shortcut-capture";
+
+export interface CudaStatus {
+  driverPresent: boolean;
+  compatible: boolean;
+  driverApiVersion: number;
+  deviceCount: number;
+}
 
 type ForegroundInfo = {
   window: string;
@@ -213,6 +220,22 @@ export class WindowsHost {
       throw new Error("Windows host returned an invalid process status");
     }
     return response.running;
+  }
+
+  async getCudaStatus(): Promise<CudaStatus> {
+    const response = await this.request("getCudaStatus", "cudaStatus");
+    if (typeof response.driverPresent !== "boolean"
+      || typeof response.compatible !== "boolean"
+      || typeof response.driverApiVersion !== "number"
+      || typeof response.deviceCount !== "number") {
+      throw new Error("Windows host returned an invalid CUDA status");
+    }
+    return {
+      driverPresent: response.driverPresent,
+      compatible: response.compatible,
+      driverApiVersion: response.driverApiVersion,
+      deviceCount: response.deviceCount,
+    };
   }
 
   async extractSubset(

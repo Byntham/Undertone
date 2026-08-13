@@ -25,6 +25,7 @@ import {
   componentIdentity,
   componentOutputsExist,
   createLocalArtifactPlan,
+  NEMOTRON_ARTIFACTS,
   receiptPath,
   STT_ARTIFACTS,
   type InstallArtifact,
@@ -168,6 +169,32 @@ describe("local installer", () => {
     );
   });
 
+  it("recommends NVIDIA for Nemotron but installs only the selected runtime", async () => {
+    const root = await temporaryDirectory();
+    const systemRoot = await temporaryDirectory();
+    await mkdir(path.join(systemRoot, "System32"), { recursive: true });
+    await writeFile(path.join(systemRoot, "System32", "nvcuda.dll"), "fake", "utf8");
+    const installer = new LocalInstaller({ extractSubset: async () => 0 }, root, fetch, systemRoot);
+
+    expect(installer.recommendedNemotronBuild()).toBe("cuda");
+    expect(installer.installSize("stt", "nemotron", "cuda")).toBe(
+      NEMOTRON_ARTIFACTS.cuda_runtime.size + NEMOTRON_ARTIFACTS.model.size,
+    );
+    expect(installer.installSize("stt", "nemotron", "cpu")).toBe(
+      NEMOTRON_ARTIFACTS.cpu_runtime.size + NEMOTRON_ARTIFACTS.model.size,
+    );
+  });
+
+  it("recommends CPU for Nemotron without an NVIDIA driver", async () => {
+    const installer = new LocalInstaller(
+      { extractSubset: async () => 0 },
+      await temporaryDirectory(),
+      fetch,
+      await temporaryDirectory(),
+    );
+    expect(installer.recommendedNemotronBuild()).toBe("cpu");
+  });
+
   it("estimates download, extraction coexistence, and reserve from missing artifacts", async () => {
     const root = await temporaryDirectory();
     const systemRoot = await temporaryDirectory();
@@ -179,7 +206,9 @@ describe("local installer", () => {
     const reserve = 200 * 1024 * 1024;
     const plan = createLocalArtifactPlan(root, true);
     const workspace = (kind: "stt" | "cleanup") => plan
-      .filter((component) => component.kind === kind && component.applicable)
+      .filter((component) => component.kind === kind
+        && component.applicable
+        && (kind !== "stt" || component.sttEngine === undefined || component.sttEngine === "whisper"))
       .reduce((total, component) => total + component.workspaceBytes, 0);
 
     expect(workspace("stt")).toBe((64 + 2_048) * 1024 * 1024);

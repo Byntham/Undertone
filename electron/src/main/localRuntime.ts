@@ -4,7 +4,7 @@ import path from "node:path";
 
 import type { LocalCleanupRuntime } from "../core/cleanup";
 import type { LocalSttRuntime } from "../core/transcriber";
-import type { LocalSttEngineId } from "../shared/settings";
+import type { LocalRuntimeBuild, LocalSttEngineId } from "../shared/settings";
 import {
   LOCAL_CLEANUP_MODEL,
   LOCAL_NEMOTRON_STT_MODEL,
@@ -12,7 +12,7 @@ import {
   LOCAL_VAD_MODEL,
 } from "../shared/models";
 
-export type LocalBuild = "cpu" | "cuda";
+export type LocalBuild = LocalRuntimeBuild;
 
 export interface LocalProcessHost {
   spawnSupervised(
@@ -45,6 +45,7 @@ export interface LocalRuntimeOptions {
   fetch?: LocalFetch;
   onNotice?: (message: string) => void;
   isInstalled?: () => boolean;
+  build?: () => LocalBuild;
 }
 
 type LocalServerUsePolicy = "wait" | "fallback";
@@ -423,17 +424,30 @@ export function createNemotronSttRuntime(
   root: string,
   options: LocalRuntimeOptions = {},
 ): LocalServerRuntime {
-  const executable = process.env.UNDERTONE_NEMO_SPEECH_EXE?.trim()
-    || path.join(process.env.LOCALAPPDATA ?? root, "Programs", "NeMoSpeech", "bin", "nemo-speech.exe");
+  const bundledExecutable = path.join(root, "runtime", "nemotron", "nemo-speech.exe");
+  const legacyExecutable = path.join(
+    process.env.LOCALAPPDATA ?? root,
+    "Programs", "NeMoSpeech", "bin", "nemo-speech.exe",
+  );
+  const externalExecutable = process.env.UNDERTONE_NEMO_SPEECH_EXE?.trim();
+  const executable = (): string => externalExecutable
+    || (existsSync(bundledExecutable) ? bundledExecutable : legacyExecutable);
   const model = path.join(root, "models", LOCAL_NEMOTRON_STT_MODEL);
+  const selectedBuild = (): LocalBuild => options.build?.() ?? "cuda";
   return new LocalServerRuntime(host, {
     logFile: path.join(root, "runtime", "nemotron-server.log"),
-    serverFile: () => executable,
-    requiredFiles: () => [executable, model],
-    arguments: (_build, port) => [
+    serverFile: () => executable(),
+    requiredFiles: () => [
+      executable(),
+      model,
+      ...(executable() === bundledExecutable
+        ? [path.join(root, "runtime", "nemotron", `undertone-nemotron-${selectedBuild()}.txt`)]
+        : []),
+    ],
+    arguments: (build, port) => [
       "serve",
       "--asr-model", model,
-      "--device", "cuda:0",
+      "--device", build === "cuda" ? "cuda:0" : "cpu",
       "--host", "127.0.0.1",
       "--port", String(port),
       "--no-ui",
@@ -441,10 +455,10 @@ export function createNemotronSttRuntime(
     readyUrl: (port) => `http://127.0.0.1:${port}/ready`,
     ready: (response) => response.status === 200,
     readyTimeoutMs: 120_000,
-    unavailableMessage: "Nemotron streaming isn't installed - run the experimental setup script first.",
+    unavailableMessage: "Nemotron streaming isn't installed — download it in Settings → Speech & AI.",
     failedMessage: "The Nemotron streaming engine failed to start - see nemotron-server.log.",
     fallbackNotice: "",
-    builds: () => ["cuda"],
+    builds: () => [selectedBuild()],
   }, options);
 }
 

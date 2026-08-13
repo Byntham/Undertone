@@ -57,24 +57,22 @@ run.bat
 `run.bat` builds and launches from source. `build.bat` produces the NSIS
 installer. For package and smoke commands, see `AGENTS.md`.
 
-### Experimental Nemotron streaming
+### Nemotron streaming
 
 Undertone can use NVIDIA Nemotron Streaming 0.6B as one local model for both
-live preview and the completed transcript. The experimental Windows runtime is
-not part of the normal installer yet. After installing CMake, Ninja, Visual
-Studio 2022 Build Tools, and the CUDA Toolkit, run:
+live preview and the completed transcript. Choose **Nemotron** under
+**Settings → Speech & AI → Local transcription engine**, then install the
+recommended runtime. Undertone recommends NVIDIA when it detects a supported
+GPU and sufficiently recent normal NVIDIA graphics driver; otherwise it
+recommends CPU. Either choice can be overridden.
 
-```powershell
-./electron/scripts/setup-nemotron-experimental.ps1
-```
-
-The script downloads and verifies the pinned model first, then builds a pinned
-NeMo-Speech.cpp revision. Downloads resume after a connection interruption.
-Restart Undertone after the first setup so it inherits CUDA's system path, then
-choose **Nemotron Streaming 0.6B** under **Settings → Speech & AI → Local
-transcription engine**. Whisper and Nemotron are never loaded as transcription
-engines at the same time. Local live preview is Nemotron-only; Whisper Large V3
-Turbo remains available for completed, non-live recordings.
+Undertone downloads versioned, size- and SHA-256-pinned runtime and model
+artifacts. Users do not need the CUDA Toolkit, Visual Studio, CMake, or other
+developer tools. Runtime packages and their provenance manifest are published
+in the [Undertone Nemotron runtime release](https://github.com/Byntham/Undertone/releases/tag/nemotron-runtime-v0.1.0).
+Whisper and Nemotron are never loaded as transcription engines at the same
+time. Local live preview is Nemotron-only; Whisper Large V3 Turbo remains
+available for completed, non-live recordings.
 
 ## Privacy
 

@@ -13,6 +13,7 @@ import {
   Tray,
 } from "electron";
 import electronUpdater = require("electron-updater");
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -76,6 +77,7 @@ import {
 } from "./localRuntime";
 import { FetchHttpClient } from "../platform/http";
 import { WindowsHost, type InputMode } from "../platform/windowsHost";
+import { LOCAL_NEMOTRON_STT_MODEL } from "../shared/models";
 import type {
   LocalEngineKind,
   LocalEngineSnapshot,
@@ -1188,12 +1190,23 @@ if (!gotLock) {
     const localAppData = process.env.LOCALAPPDATA;
     if (localAppData === undefined) throw new Error("LOCALAPPDATA is unavailable");
     const localRoot = path.join(localAppData, "Undertone");
-    localInstaller = new LocalInstaller(windowsHost, localRoot);
+    const cudaStatus = await windowsHost.getCudaStatus();
+    localInstaller = new LocalInstaller(
+      windowsHost, localRoot, fetch, process.env.SystemRoot ?? "C:\\Windows",
+      undefined, cudaStatus.compatible,
+    );
     localWhisperStt = createLocalSttRuntime(windowsHost, localRoot, {
-      isInstalled: () => localInstaller?.isInstalled("stt") ?? false,
+      isInstalled: () => localInstaller?.isInstalled("stt", "whisper") ?? false,
       onNotice: (message) => showFeedback(message, "warning"),
     });
     localNemotronStt = createNemotronSttRuntime(windowsHost, localRoot, {
+      isInstalled: () => localInstaller?.installedNemotronBuild() !== null
+        || (existsSync(path.join(
+          localAppData, "Programs", "NeMoSpeech", "bin", "nemo-speech.exe",
+        )) && existsSync(path.join(localRoot, "models", LOCAL_NEMOTRON_STT_MODEL))),
+      build: () => localInstaller?.installedNemotronBuild()
+        ?? localInstaller?.recommendedNemotronBuild()
+        ?? "cpu",
       onNotice: (message) => showFeedback(message, "warning"),
     });
     localCleanup = createLocalCleanupRuntime(windowsHost, localRoot, {
@@ -1404,9 +1417,22 @@ if (!gotLock) {
         installing: install.installing,
         installPhase: install.phase,
         installFraction: install.fraction,
-        installBytes: kind === "stt" && config.local_stt_engine === "nemotron"
-          ? 0
-          : localInstaller?.installSize(kind) ?? 0,
+        installBytes: localInstaller?.installSize(
+          kind,
+          kind === "stt" ? config.local_stt_engine : "whisper",
+        ) ?? 0,
+        recommendedBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? localInstaller?.recommendedNemotronBuild() ?? "cpu"
+          : null,
+        installedBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? localInstaller?.installedNemotronBuild() ?? null
+          : null,
+        installBytesByBuild: kind === "stt" && config.local_stt_engine === "nemotron"
+          ? {
+              cpu: localInstaller?.installSize("stt", "nemotron", "cpu") ?? 0,
+              cuda: localInstaller?.installSize("stt", "nemotron", "cuda") ?? 0,
+            }
+          : null,
       };
       if (runtime === null) {
         return {
@@ -1643,22 +1669,23 @@ if (!gotLock) {
         && value.action !== "eject")) {
       throw new Error("Invalid local engine action");
     }
+    if (value.build !== undefined && value.build !== "cpu" && value.build !== "cuda") {
+      throw new Error("Invalid local runtime build");
+    }
     const kind = value.kind;
     const runtime = value.kind === "stt" ? selectedLocalSttRuntime() : localCleanup;
     if (runtime === null) throw new Error("Local engine service is not ready");
     if (value.action === "install") {
-      if (kind === "stt" && config.local_stt_engine === "nemotron") {
-        throw new Error(
-          "Nemotron currently requires the experimental NeMo-Speech.cpp setup script.",
-        );
-      }
       if (localInstaller === null) throw new Error("Local installer is not ready");
+      const build = kind === "stt" && config.local_stt_engine === "nemotron"
+        ? value.build ?? localInstaller.recommendedNemotronBuild()
+        : localInstaller.recommendedNemotronBuild();
       localInstallState[kind] = { installing: true, phase: "Preparing", fraction: 0 };
       try {
         await runtime.eject();
         await localInstaller.install(kind, (progress) => {
           localInstallState[kind] = { installing: true, ...progress };
-        });
+        }, kind === "stt" ? config.local_stt_engine : "whisper", build);
       } finally {
         localInstallState[kind] = { installing: false, phase: "", fraction: 0 };
       }

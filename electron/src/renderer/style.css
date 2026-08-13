@@ -308,6 +308,8 @@ input::placeholder { color: var(--faint); }
 .localEngineCard strong { color: var(--text); font-size: 12.5px; }
 .localEngineCard span { margin-top: 5px; color: var(--faint); font-size: 10.5px; }
 .localEngineCard span[data-running="true"], .localEngineCard span[data-installing="true"] { color: var(--accent); }
+.localEngineActions { display: flex; align-items: center; gap: 7px; }
+.localEngineActions select { width: auto; max-width: 190px; }
 .keyCard { padding: 16px 17px; }
 .keyHead { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 11px; }
 .keyHead strong { color: var(--text); font-size: 12.5px; }
