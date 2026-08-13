@@ -9,9 +9,14 @@ internal static class TurnDraftNativeDriver
     private const uint MouseLeftUp = 0x0004;
     private const uint RootAncestor = 2;
     private const uint NonClientHitTest = 0x0084;
+    private const uint ExtendedStyleTopmost = 0x00000008;
+    private const uint WindowStylePopup = 0x80000000;
+    private const uint WindowStyleVisible = 0x10000000;
+    private const int ExtendedStyleIndex = -20;
     private const int HitClient = 1;
     private const int HitCaption = 2;
     private const string WindowTitle = "Undertone open turn native test";
+    private const string CoverWindowTitle = "Undertone turn draft z-order cover";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect
@@ -70,6 +75,27 @@ internal static class TurnDraftNativeDriver
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowEx(
+        uint extendedStyle,
+        string className,
+        string windowName,
+        uint style,
+        int x,
+        int y,
+        int width,
+        int height,
+        IntPtr parent,
+        IntPtr menu,
+        IntPtr instance,
+        IntPtr parameter);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyWindow(IntPtr window);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
     private static int Main(string[] args)
     {
         SetProcessDPIAware();
@@ -104,6 +130,8 @@ internal static class TurnDraftNativeDriver
                 initialScale);
             return 1;
         }
+        if (!RequireTopmostStyle(window, "initial")) return 1;
+        if (!RequireRecoveryFromTopmostCover(window, initial, "initial")) return 1;
 
         for (int cycle = 1; cycle <= cycles; cycle++)
         {
@@ -145,6 +173,11 @@ internal static class TurnDraftNativeDriver
             {
                 return Fail(cycle, "discard-reshow", snapped, Bounds(window));
             }
+            if (!RequireTopmostStyle(window, "discard-reshow")) return 1;
+            if (!RequireRecoveryFromTopmostCover(
+                window,
+                Bounds(window),
+                "discard-reshow")) return 1;
 
             Rect resizeBefore = Bounds(window);
             int edgeX = resizeBefore.Right - 2;
@@ -241,6 +274,73 @@ internal static class TurnDraftNativeDriver
             waited += 10;
         }
         return false;
+    }
+
+    private static bool RequireTopmostStyle(IntPtr window, string phase)
+    {
+        long extendedStyle = GetWindowLongPtr(window, ExtendedStyleIndex).ToInt64();
+        if ((extendedStyle & ExtendedStyleTopmost) != 0) return true;
+        Console.Error.WriteLine(
+            "FAIL phase={0} missing-topmost-style extendedStyle=0x{1:X}",
+            phase,
+            extendedStyle);
+        return false;
+    }
+
+    private static bool RequireRecoveryFromTopmostCover(
+        IntPtr draftWindow,
+        Rect draftBounds,
+        string phase)
+    {
+        int x = draftBounds.Left + draftBounds.Width / 2;
+        int y = draftBounds.Top + draftBounds.Height / 2;
+        IntPtr cover = CreateWindowEx(
+            ExtendedStyleTopmost,
+            "STATIC",
+            CoverWindowTitle,
+            WindowStylePopup | WindowStyleVisible,
+            x - 40,
+            y - 20,
+            80,
+            40,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero);
+        if (cover == IntPtr.Zero)
+        {
+            Console.Error.WriteLine(
+                "FAIL phase={0} cover-create error={1}",
+                phase,
+                Marshal.GetLastWin32Error());
+            return false;
+        }
+        try
+        {
+            Point point = new Point { X = x, Y = y };
+            IntPtr initialHit = GetAncestor(WindowFromPoint(point), RootAncestor);
+            if (initialHit != cover)
+            {
+                Console.Error.WriteLine(
+                    "FAIL phase={0} cover-not-raised expected={1} hit={2}",
+                    phase,
+                    cover,
+                    initialHit);
+                return false;
+            }
+            for (int waited = 0; waited <= 1500; waited += 25)
+            {
+                Thread.Sleep(25);
+                IntPtr hit = GetAncestor(WindowFromPoint(point), RootAncestor);
+                if (hit == draftWindow) return true;
+            }
+            Console.Error.WriteLine("FAIL phase={0} draft-remained-covered", phase);
+            return false;
+        }
+        finally
+        {
+            DestroyWindow(cover);
+        }
     }
 
     private static Rect WaitForStableBounds(IntPtr window, int timeoutMs)

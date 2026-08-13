@@ -360,7 +360,9 @@ if (!gotLock) {
     const draftWindow = turnDraftWindow;
     if (draftWindow === null || draftWindow.isDestroyed()) return;
     if (!turnDraftUserPositioned) positionTurnDraft(draftWindow);
+    draftWindow.setAlwaysOnTop(true, "screen-saver");
     if (!draftWindow.isVisible()) draftWindow.showInactive();
+    draftWindow.moveTop();
   };
 
   const isTurnDraftActivity = (state: OverlayState["state"]): boolean => {
@@ -1936,9 +1938,10 @@ if (!gotLock) {
       turnDraftWindow?.setTitle("Undertone open turn native test");
       const updateDraft = (): void => {
         const snapshot = turnBuffer.snapshot();
-        if (snapshot !== null) return;
-        const text = "Full-app native test fragment. ";
-        turnBuffer.append(text, text, "live-full");
+        if (snapshot === null) {
+          const text = "Full-app native test fragment. ";
+          turnBuffer.append(text, text, "live-full");
+        }
         publishTurnDraft();
       };
       updateDraft();
