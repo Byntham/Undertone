@@ -1028,13 +1028,14 @@ function LocalEngineCard({
       setBusy(false);
     }
   };
-  return <div className="localEngineCard" data-build-choice={buildChoice}>
+  const showBuildSelector = buildChoice && !running;
+  return <div className="localEngineCard" data-build-selector={showBuildSelector}>
     <div>
       <strong>{name}</strong>
       <span data-running={running} data-installing={status.installing}>{label}</span>
     </div>
     <div className="localEngineActions">
-      {buildChoice && !running && <select
+      {showBuildSelector && <select
         aria-label="Nemotron runtime"
         value={installBuild}
         disabled={working}
