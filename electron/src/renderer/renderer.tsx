@@ -841,28 +841,28 @@ function SpeechAi({
 
       <div>
         <h2>On-device</h2>
-        <div className="card">
-          <SettingRow
-            title="Local transcription engine"
-            description={settings.localSttEngine === "nemotron"
-              ? "True streaming. The same model produces both the preview and final transcript."
-              : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
-          >
-            <select
-              aria-label="Local transcription engine"
-              value={settings.localSttEngine}
-              onChange={(event) => {
-                void update({
-                  localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
-                });
-              }}
-            >
-              <option value="whisper">Whisper</option>
-              <option value="nemotron">Nemotron</option>
-            </select>
-          </SettingRow>
-        </div>
         <div className="providerGrid">
+          <div className="card">
+            <SettingRow
+              title="Local transcription engine"
+              description={settings.localSttEngine === "nemotron"
+                ? "True streaming. The same model produces both the preview and final transcript."
+                : "Whisper Large V3 Turbo for completed recordings. Live preview requires Nemotron."}
+            >
+              <select
+                aria-label="Local transcription engine"
+                value={settings.localSttEngine}
+                onChange={(event) => {
+                  void update({
+                    localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
+                  });
+                }}
+              >
+                <option value="whisper">Whisper</option>
+                <option value="nemotron">Nemotron</option>
+              </select>
+            </SettingRow>
+          </div>
           <LocalEngineCard
             kind="stt"
             name="Transcription model"
@@ -1028,7 +1028,7 @@ function LocalEngineCard({
       setBusy(false);
     }
   };
-  return <div className="localEngineCard">
+  return <div className="localEngineCard" data-build-choice={buildChoice}>
     <div>
       <strong>{name}</strong>
       <span data-running={running} data-installing={status.installing}>{label}</span>
