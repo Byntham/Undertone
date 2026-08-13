@@ -104,7 +104,6 @@ internal static class TurnDraftNativeDriver
                 initialScale);
             return 1;
         }
-
         for (int cycle = 1; cycle <= cycles; cycle++)
         {
             Rect before = Bounds(window);
@@ -145,7 +144,6 @@ internal static class TurnDraftNativeDriver
             {
                 return Fail(cycle, "discard-reshow", snapped, Bounds(window));
             }
-
             Rect resizeBefore = Bounds(window);
             int edgeX = resizeBefore.Right - 2;
             int edgeY = resizeBefore.Top + resizeBefore.Height / 2;

@@ -254,13 +254,17 @@ if (!gotLock) {
     );
   };
 
+  const presentAlwaysOnTop = (window: BrowserWindow): void => {
+    window.setAlwaysOnTop(true, "screen-saver");
+    if (!window.isVisible()) window.showInactive();
+    window.moveTop();
+  };
+
   const presentOverlayWindow = (): void => {
     const overlay = overlayWindow;
     if (overlay === null || overlay.isDestroyed()) return;
     positionOverlay(overlay);
-    overlay.setAlwaysOnTop(true, "screen-saver");
-    if (!overlay.isVisible()) overlay.showInactive();
-    overlay.moveTop();
+    presentAlwaysOnTop(overlay);
   };
 
   const defaultTurnDraftPosition = (width: number, height: number): Electron.Point => {
@@ -360,7 +364,7 @@ if (!gotLock) {
     const draftWindow = turnDraftWindow;
     if (draftWindow === null || draftWindow.isDestroyed()) return;
     if (!turnDraftUserPositioned) positionTurnDraft(draftWindow);
-    if (!draftWindow.isVisible()) draftWindow.showInactive();
+    presentAlwaysOnTop(draftWindow);
   };
 
   const isTurnDraftActivity = (state: OverlayState["state"]): boolean => {
@@ -924,7 +928,6 @@ if (!gotLock) {
       show: false,
       frame: false,
       transparent: true,
-      alwaysOnTop: true,
       focusable: false,
       resizable: false,
       skipTaskbar: true,
@@ -939,7 +942,6 @@ if (!gotLock) {
     });
     overlayWindow = overlay;
     overlay.setIgnoreMouseEvents(true);
-    overlay.setAlwaysOnTop(true, "screen-saver");
     overlay.webContents.on("did-finish-load", () => {
       renderOverlay(overlayController.current());
       publishTurnDraft();
@@ -951,9 +953,7 @@ if (!gotLock) {
     await overlay.loadFile(
       path.join(__dirname, "../../renderer/overlay/index.html"),
     );
-    positionOverlay(overlay);
-    overlay.showInactive();
-    overlay.moveTop();
+    presentOverlayWindow();
     const repositionOverlay = (): void => {
       overlayDisplayId = undefined;
       if (overlayController.current().state === "hidden") {
@@ -986,7 +986,6 @@ if (!gotLock) {
       show: false,
       frame: false,
       transparent: true,
-      alwaysOnTop: true,
       focusable: false,
       movable: true,
       resizable: true,
@@ -1002,7 +1001,6 @@ if (!gotLock) {
       },
     });
     turnDraftWindow = draftWindow;
-    draftWindow.setAlwaysOnTop(true, "screen-saver");
     draftWindow.on("will-move", () => {
       turnDraftUserPositioned = true;
     });
