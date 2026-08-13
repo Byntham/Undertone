@@ -57,6 +57,24 @@ run.bat
 `run.bat` builds and launches from source. `build.bat` produces the NSIS
 installer. For package and smoke commands, see `AGENTS.md`.
 
+### Experimental Nemotron streaming
+
+Undertone can use NVIDIA Nemotron Streaming 0.6B as one local model for both
+live preview and the completed transcript. The experimental Windows runtime is
+not part of the normal installer yet. After installing CMake, Ninja, Visual
+Studio 2022 Build Tools, and the CUDA Toolkit, run:
+
+```powershell
+./electron/scripts/setup-nemotron-experimental.ps1
+```
+
+The script downloads and verifies the pinned model first, then builds a pinned
+NeMo-Speech.cpp revision. Downloads resume after a connection interruption.
+Restart Undertone after the first setup so it inherits CUDA's system path, then
+choose **Nemotron Streaming 0.6B** under **Settings → Speech & AI → Local
+transcription engine**. Whisper and Nemotron are never loaded as transcription
+engines at the same time.
+
 ## Privacy
 
 Audio goes only to the selected transcription provider (local keeps it on this

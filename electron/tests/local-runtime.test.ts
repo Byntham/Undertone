@@ -5,14 +5,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createLocalSttRouter,
   createLocalCleanupRuntime,
   createLocalSttRuntime,
+  createNemotronSttRuntime,
   quoteWindowsArgument,
   type LocalProcessHost,
 } from "../src/main/localRuntime";
 import { LocalInstaller } from "../src/main/localInstaller";
 import {
   LOCAL_CLEANUP_MODEL,
+  LOCAL_NEMOTRON_STT_MODEL,
   LOCAL_STT_MODEL,
   LOCAL_VAD_MODEL,
 } from "../src/shared/models";
@@ -71,6 +74,31 @@ afterEach(async () => {
 });
 
 describe("local runtime", () => {
+  it("starts the pinned Nemotron server as a CUDA-only realtime runtime", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "undertone-nemotron-runtime-"));
+    temporaryDirectories.push(root);
+    const executable = path.join(root, "external", "nemo-speech.exe");
+    await touch(executable);
+    await touch(path.join(root, "models", LOCAL_NEMOTRON_STT_MODEL));
+    const previous = process.env.UNDERTONE_NEMO_SPEECH_EXE;
+    process.env.UNDERTONE_NEMO_SPEECH_EXE = executable;
+    try {
+      const host = new FakeHost();
+      const runtime = createNemotronSttRuntime(host, root, { fetch: readyFetch });
+      await runtime.load();
+      expect((await runtime.status()).build).toBe("cuda");
+      expect(host.starts[0]?.file).toBe(executable);
+      expect(host.starts[0]?.argumentsValue).toContain("serve");
+      expect(host.starts[0]?.argumentsValue).toContain("--device cuda:0");
+      expect(host.starts[0]?.argumentsValue).not.toContain("--endpointing");
+      expect(host.starts[0]?.argumentsValue).toContain(LOCAL_NEMOTRON_STT_MODEL);
+      await runtime.shutdown();
+    } finally {
+      if (previous === undefined) delete process.env.UNDERTONE_NEMO_SPEECH_EXE;
+      else process.env.UNDERTONE_NEMO_SPEECH_EXE = previous;
+    }
+  });
+
   it("starts, reuses, and ejects the installed CPU STT runtime", async () => {
     const root = await installedRoot("stt");
     const host = new FakeHost();
@@ -193,7 +221,7 @@ describe("local runtime", () => {
         posted.push(url);
         return { status: 200, body: JSON.stringify({ text: " restarted  okay " }) };
       },
-    }, runtime);
+    }, createLocalSttRouter(runtime, runtime));
 
     expect(await transcriber.transcribe({
       wav: new Uint8Array(64),
@@ -442,7 +470,7 @@ describe("local runtime", () => {
         await stt.load();
         expect((await stt.status()).build).toMatch(/^(cpu|cuda)$/u);
         const http = new FetchHttpClient();
-        const transcriber = new Transcriber(http, stt);
+        const transcriber = new Transcriber(http, createLocalSttRouter(stt, stt));
         const silence = new Uint8Array(encodePcm16Wav(new Float32Array(8_000), 16_000));
         expect(await transcriber.transcribe({
           wav: silence,

@@ -4,6 +4,7 @@ import {
   xaiVocabularyHints,
 } from "./config";
 import type { TranscriptionProviderId } from "../shared/settings";
+import type { LocalSttEngineId } from "../shared/settings";
 import type { OverlayTone } from "../shared/overlay";
 import type { TextPreparationResult } from "./textPreparation";
 import {
@@ -21,6 +22,7 @@ export interface TranscriberPort {
     language: string;
     vocabulary: readonly string[];
     provider: TranscriptionProviderId;
+    localEngine: LocalSttEngineId;
   }): Promise<string>;
 }
 export interface PasterPort {
@@ -61,7 +63,7 @@ export class DictationJobRunner {
     destination: DictationDestination,
     config: UndertoneConfig,
     feedback: DictationFeedback = this.dependencies.feedback,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const provider = config.provider;
     let transcript: string;
     try {
@@ -71,14 +73,16 @@ export class DictationJobRunner {
         language: config.language,
         vocabulary: xaiVocabularyHints(config),
         provider,
+        localEngine: config.local_stt_engine,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.dependencies.history.registerFailure(message, wav);
       feedback.message({ text: message, tone: "error" });
-      return;
+      return null;
     }
     await this.runTranscript(transcript, destination, config, feedback);
+    return transcript;
   }
 
   async runTranscript(

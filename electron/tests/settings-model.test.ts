@@ -19,11 +19,13 @@ describe("settings model", () => {
       discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
       liveTranscription: false,
+      localPreviewDiagnostics: false,
       openTurnCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
       appVersion: "1.3.0",
       provider: "local",
+      localSttEngine: "whisper",
       cleanupProvider: "local",
       keyConfigured: { xai: true, openai: false, openrouter: false },
       openAiSubscriptionConnected: false,
@@ -92,6 +94,11 @@ describe("settings model", () => {
     const local = normalizeConfig({ provider: "local", live_transcription: true });
     expect(settingsSnapshot(local, "1.8.1").sttModel)
       .toBe("ggml-large-v3-turbo.bin");
+
+    const nemotron = applySettingsPatch(local, { localSttEngine: "nemotron" });
+    expect(settingsSnapshot(nemotron, "1.8.1").sttModel)
+      .toBe("nemotron-speech-streaming-en-0.6b.q8_0.gguf");
+    expect(nemotron.language).toBe("en");
   });
 
   it("allows subscription cleanup without exposing it as transcription", () => {
@@ -150,6 +157,7 @@ describe("settings model", () => {
       corrections: { "under tone": "Undertone" },
       openTurnCleanupStrategy: "commit-full",
       liveTranscription: true,
+      localPreviewDiagnostics: true,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -166,6 +174,7 @@ describe("settings model", () => {
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(next.live_transcription).toBe(true);
+    expect(next.local_preview_diagnostics).toBe(true);
     expect(config.language).toBe("en");
   });
 

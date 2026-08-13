@@ -31,9 +31,9 @@ describe("local live transcriber", () => {
       failed: vi.fn(),
     });
 
-    session.append(new Uint8Array(QUARTER_SECOND - 2));
+    session.append(voicedPcm(QUARTER_SECOND - 2));
     expect(calls).toHaveLength(0);
-    session.append(Uint8Array.of(1, 2));
+    session.append(voicedPcm(2));
     await flushPromises();
 
     expect(calls).toHaveLength(1);
@@ -74,9 +74,9 @@ describe("local live transcriber", () => {
       failed: vi.fn(),
     });
 
-    session.append(new Uint8Array(QUARTER_SECOND));
-    session.append(new Uint8Array(ONE_SECOND));
-    session.append(new Uint8Array(ONE_SECOND * 2));
+    session.append(voicedPcm(QUARTER_SECOND));
+    session.append(voicedPcm(ONE_SECOND));
+    session.append(voicedPcm(ONE_SECOND * 2));
     expect(calls).toHaveLength(1);
     first.resolve(preview());
     await flushPromises();
@@ -107,15 +107,15 @@ describe("local live transcriber", () => {
       },
     }).start("en", { partial, failed: vi.fn() });
 
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
-    session.append(new Uint8Array(ONE_SECOND * 1.75));
+    session.append(voicedPcm(ONE_SECOND * 1.75));
     await flushPromises();
-    session.append(new Uint8Array(ONE_SECOND * 2));
+    session.append(voicedPcm(ONE_SECOND * 2));
     await flushPromises();
 
     expect(partial).toHaveBeenLastCalledWith("hello world again");
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
     expect(calls.at(-1)?.prompt).toBe("");
     expect(calls.at(-1)?.wav.byteLength).toBe(44 + ONE_SECOND * 4.25);
@@ -141,33 +141,25 @@ describe("local live transcriber", () => {
       async transcribeLocalPreview() { return results.shift() ?? preview(); },
     }).start("en", { partial, failed: vi.fn() });
 
-    session.append(new Uint8Array(ONE_SECOND * 5));
+    session.append(voicedPcm(ONE_SECOND * 5));
     await flushPromises();
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
 
     expect(partial).toHaveBeenLastCalledWith("first stable recent new");
     await session.finish();
   });
 
-  it("stitches a long matching draft despite an inaccurate timestamp seam", async () => {
+  it("replaces only the recent tail during a fast draft", async () => {
     const results = [
       preview(
-        token(1, " beginning", 0, 0.2),
-        token(2, " remain", 0.3, 0.5),
-        token(3, " coherent", 0.6, 0.8),
-        token(4, " stable", 0.8, 0.9),
-        token(5, " and", 0.9, 1),
-        token(6, " useful", 1, 1.1),
-        token(7, " stale", 1.1, 1.2),
+        token(1, " beginning", 0, 0.5),
+        token(2, " stays", 1, 1.5),
+        token(3, " stale", 4.2, 4.8),
       ),
       preview(
-        token(2, " remain", 2.5, 2.7),
-        token(3, " coherent", 2.7, 2.9),
-        token(4, " stable", 2.9, 3),
-        token(5, " and", 3, 3.1),
-        token(6, " useful", 3.1, 3.2),
-        token(8, " now", 3.2, 3.4),
+        token(9, " wrong beginning", 0, 0.5),
+        token(4, " now", 4.5, 4.9),
       ),
     ];
     const partial = vi.fn();
@@ -175,15 +167,112 @@ describe("local live transcriber", () => {
       async transcribeLocalPreview() { return results.shift() ?? preview(); },
     }).start("en", { partial, failed: vi.fn() });
 
-    session.append(new Uint8Array(ONE_SECOND * 5));
+    session.append(voicedPcm(ONE_SECOND * 5));
     await flushPromises();
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
 
     expect(partial).toHaveBeenLastCalledWith(
-      "beginning remain coherent stable and useful now",
+      "beginning stays now",
     );
     await session.finish();
+  });
+
+  it("runs one settling pass after speech and then stops during silence", async () => {
+    const transcribeLocalPreview = vi.fn(async () => preview(
+      token(1, " settled", 0, 0.2),
+    ));
+    const diagnostic = vi.fn();
+    const session = new LocalLiveTranscriber({ transcribeLocalPreview }).start("en", {
+      partial: vi.fn(),
+      failed: vi.fn(),
+      diagnostic,
+    });
+
+    session.append(new Uint8Array(ONE_SECOND * 2));
+    await flushPromises();
+    expect(transcribeLocalPreview).not.toHaveBeenCalled();
+
+    session.append(voicedPcm(QUARTER_SECOND));
+    await flushPromises();
+    expect(transcribeLocalPreview).toHaveBeenCalledTimes(1);
+
+    session.append(new Uint8Array(QUARTER_SECOND));
+    await flushPromises();
+    expect(transcribeLocalPreview).toHaveBeenCalledTimes(1);
+    session.append(new Uint8Array(QUARTER_SECOND));
+    await flushPromises();
+    expect(transcribeLocalPreview).toHaveBeenCalledTimes(2);
+    expect(diagnostic.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "request")
+      .at(-1)).toMatchObject({
+        pass: "reconcile",
+        settlingSilence: true,
+        windowStartSeconds: 0,
+      });
+
+    session.append(new Uint8Array(ONE_SECOND * 2));
+    await flushPromises();
+    expect(transcribeLocalPreview).toHaveBeenCalledTimes(2);
+
+    session.append(voicedPcm(QUARTER_SECOND));
+    await flushPromises();
+    expect(transcribeLocalPreview).toHaveBeenCalledTimes(3);
+    await session.finish();
+    expect(diagnostic.mock.calls.map(([event]) => event.type)).toContain("audio");
+    expect(diagnostic.mock.calls.map(([event]) => event.type)).toContain("request");
+    expect(diagnostic.mock.calls.map(([event]) => event.type)).toContain("result");
+    expect(diagnostic.mock.calls.map(([event]) => event.type)).toContain("display");
+    expect(diagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: "finish",
+      text: "settled",
+    });
+  });
+
+  it("accepts words completed by the silence-settling reconciliation", async () => {
+    const results = [
+      preview(
+        token(1, " it waits", 0.2, 1),
+        token(2, " until I", 2, 3),
+      ),
+      preview(
+        token(1, " it waits", 0.2, 1),
+        token(2, " until I", 2, 3),
+        token(3, " say the next word", 3.05, 3.6),
+      ),
+    ];
+    const partial = vi.fn();
+    const session = new LocalLiveTranscriber({
+      async transcribeLocalPreview() { return results.shift() ?? preview(); },
+    }).start("en", { partial, failed: vi.fn() });
+
+    session.append(voicedPcm(ONE_SECOND * 5));
+    await flushPromises();
+    expect(partial).toHaveBeenLastCalledWith("it waits until I");
+
+    session.append(new Uint8Array(ONE_SECOND / 2));
+    await flushPromises();
+
+    expect(partial).toHaveBeenLastCalledWith("it waits until I say the next word");
+    await session.finish();
+  });
+
+  it("does not let a diagnostic callback failure break transcription", async () => {
+    const partial = vi.fn();
+    const session = new LocalLiveTranscriber({
+      async transcribeLocalPreview() { return preview(token(1, " works", 0, 0.2)); },
+    }).start("en", {
+      partial,
+      failed: vi.fn(),
+      diagnostic() { throw new Error("diagnostic writer failed"); },
+    });
+
+    session.append(voicedPcm(QUARTER_SECOND));
+    await flushPromises();
+
+    expect(partial).toHaveBeenCalledWith("works");
+    await expect(session.finish()).resolves.toBe("works");
   });
 
   it("cuts decoder loops after three repeated token runs", async () => {
@@ -202,7 +291,7 @@ describe("local live transcriber", () => {
       async transcribeLocalPreview() { return preview(...repeated); },
     }).start("en", { partial, failed: vi.fn() });
 
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
 
     expect(partial).toHaveBeenCalledWith("phrase here phrase here phrase here");
@@ -220,7 +309,7 @@ describe("local live transcriber", () => {
     });
 
     for (let index = 0; index < 48; index += 1) {
-      session.append(new Uint8Array(QUARTER_SECOND));
+      session.append(voicedPcm(QUARTER_SECOND));
       await flushPromises();
     }
 
@@ -247,7 +336,7 @@ describe("local live transcriber", () => {
         return await result.promise;
       },
     }).start("en", { partial, failed: vi.fn() });
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
 
     const finishing = session.finish();
     expect(signal?.aborted).toBe(true);
@@ -263,9 +352,9 @@ describe("local live transcriber", () => {
       partial: vi.fn(),
       failed,
     });
-    session.append(new Uint8Array(QUARTER_SECOND));
+    session.append(voicedPcm(QUARTER_SECOND));
     await flushPromises();
-    session.append(new Uint8Array(ONE_SECOND * 2));
+    session.append(voicedPcm(ONE_SECOND * 2));
 
     expect(transcribeLocalPreview).toHaveBeenCalledOnce();
     expect(failed).toHaveBeenCalledOnce();
@@ -298,4 +387,13 @@ function deferred<T>(): {
 
 async function flushPromises(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
+function voicedPcm(byteLength: number): Uint8Array {
+  const pcm = new Uint8Array(byteLength);
+  const view = new DataView(pcm.buffer);
+  for (let offset = 0; offset < byteLength; offset += 2) {
+    view.setInt16(offset, offset % 4 === 0 ? 4_000 : -4_000, true);
+  }
+  return pcm;
 }

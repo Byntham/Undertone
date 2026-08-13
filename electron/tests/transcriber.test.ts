@@ -24,7 +24,7 @@ class FakeHttp implements HttpClient {
 }
 
 const local: LocalSttRuntime = {
-  async withServer(_policy, callback) {
+  async withServer(_engine, _policy, callback) {
     return await callback("http://127.0.0.1:9");
   },
 };
@@ -103,7 +103,7 @@ describe("transcription providers", () => {
     http.response = response(200, { text: " hello\n world \n" });
     const controller = new AbortController();
     const transcriber = new Transcriber(http, {
-      async withServer(_policy, callback) {
+      async withServer(_engine, _policy, callback) {
         return await callback("http://127.0.0.1:9");
       },
     });
@@ -126,6 +126,27 @@ describe("transcription providers", () => {
     expect(form.get("language")).toBe("en");
     expect(form.has("prompt")).toBe(false);
     expect(form.has("keyterm")).toBe(false);
+  });
+
+  it("uses the selected Nemotron model for same-model batch recovery", async () => {
+    const http = new FakeHttp();
+    const engines: string[] = [];
+    const transcriber = new Transcriber(http, {
+      async withServer(engine, _policy, callback) {
+        engines.push(engine);
+        return await callback("http://127.0.0.1:8123");
+      },
+    });
+    await transcriber.transcribe({
+      wav: WAV,
+      apiKey: "",
+      language: "en",
+      vocabulary: [],
+      provider: "local",
+      localEngine: "nemotron",
+    });
+    expect(engines).toEqual(["nemotron"]);
+    expect(http.calls[0]?.url).toBe("http://127.0.0.1:8123/v1/audio/transcriptions");
   });
 
   it("requests timestamped deterministic output for local preview", async () => {

@@ -258,7 +258,7 @@ input::placeholder { color: var(--faint); }
 .smallButton:hover { color: var(--text); border-color: var(--accent); background: var(--panel-strong); }
 .smallButton.accent { border-color: var(--accent); color: #07121d; background: var(--accent); }
 .smallButton:disabled { opacity: .45; cursor: default; }
-.buttonGroup { display: flex; gap: 5px; }
+.buttonGroup { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .infoNote, .privacyNote, .supportNote {
   margin: 11px 2px 0;
   color: var(--faint);

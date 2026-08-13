@@ -2,6 +2,7 @@ import { isRecord } from "./config";
 import type { HttpClient, HttpRequest, HttpResponse } from "../platform/http";
 import {
   isTranscriptionProvider,
+  type LocalSttEngineId,
   type TranscriptionProviderId,
 } from "../shared/settings";
 import { DEFAULT_STT_MODELS } from "../shared/models";
@@ -17,6 +18,7 @@ export class TranscriptionError extends Error {
 
 export interface LocalSttRuntime {
   withServer<T>(
+    engine: LocalSttEngineId,
     policy: "wait",
     callback: (baseUrl: string) => Promise<T> | T,
   ): Promise<T>;
@@ -28,6 +30,7 @@ export interface TranscribeOptions {
   language: string;
   vocabulary: readonly string[];
   provider: TranscriptionProviderId;
+  localEngine?: LocalSttEngineId;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -86,7 +89,7 @@ export class Transcriber {
     options: LocalPreviewTranscribeOptions,
   ): Promise<LocalPreviewResult> {
     try {
-      return await this.local.withServer("wait", async (baseUrl) => {
+      return await this.local.withServer("whisper", "wait", async (baseUrl) => {
         const form = audioForm(options.wav);
         form.append("response_format", "verbose_json");
         form.append("language", options.language);
@@ -179,11 +182,13 @@ export class Transcriber {
 
   private async transcribeLocal(options: NormalizedOptions): Promise<string> {
     try {
-      return await this.local.withServer("wait", async (baseUrl) => {
+      const engine = options.localEngine ?? "whisper";
+      return await this.local.withServer(engine, "wait", async (baseUrl) => {
         const form = audioForm(options.wav);
         form.append("response_format", "json");
         form.append("language", options.language);
-        const payload = await this.postJson(`${baseUrl}/inference`, "Local", {
+        const endpoint = engine === "nemotron" ? "/v1/audio/transcriptions" : "/inference";
+        const payload = await this.postJson(`${baseUrl}${endpoint}`, "Local", {
           body: form,
           timeoutMs: options.timeoutMs ?? STT_TIMEOUT_MS,
           ...(options.signal === undefined ? {} : { signal: options.signal }),

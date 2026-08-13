@@ -1,6 +1,7 @@
 export type CloudProviderId = "xai" | "openai" | "openrouter";
 export type ModelProviderId = CloudProviderId | "openai-subscription";
 export type TranscriptionProviderId = CloudProviderId | "local";
+export type LocalSttEngineId = "whisper" | "nemotron";
 export type CleanupProviderId = ModelProviderId | "local";
 export type SettingsProviderId = CleanupProviderId;
 export type OpenTurnCleanupStrategy = "live-full" | "commit-full";
@@ -26,7 +27,7 @@ export type ShortcutSetting =
   | "scratchHotkey"
   | "discardHotkey";
 export type HistoryAction = "copy" | "repaste" | "retry";
-export type SystemAction = "openSettingsFolder" | "openLog";
+export type SystemAction = "openSettingsFolder" | "openLog" | "openDiagnosticsFolder";
 export type ProviderTestKind = "stt" | "cleanup";
 export type AppUpdatePhase =
   | "unavailable"
@@ -70,11 +71,13 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   liveTranscription: boolean;
+  localPreviewDiagnostics: boolean;
   openTurnCleanupStrategy: OpenTurnCleanupStrategy;
   inputDevice: string;
   microphones: string[];
   appVersion: string;
   provider: TranscriptionProviderId;
+  localSttEngine: LocalSttEngineId;
   cleanupProvider: CleanupProviderId;
   keyConfigured: Record<CloudProviderId, boolean>;
   openAiSubscriptionConnected: boolean;
@@ -108,9 +111,11 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   liveTranscription?: boolean;
+  localPreviewDiagnostics?: boolean;
   openTurnCleanupStrategy?: OpenTurnCleanupStrategy;
   inputDevice?: string;
   provider?: TranscriptionProviderId;
+  localSttEngine?: LocalSttEngineId;
   cleanupProvider?: CleanupProviderId;
   providerKey?: { provider: CloudProviderId; value: string };
   localLoaded?: boolean;

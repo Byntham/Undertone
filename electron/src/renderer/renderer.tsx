@@ -366,13 +366,28 @@ function General({
           </SettingRow>
           <SettingRow
             title="Live text preview"
-            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. Available with OpenAI, xAI, and local Whisper."
+            description="Show provisional text in the open turn while you speak. Final cleanup still runs when recording ends. Available with OpenAI, xAI, and local transcription."
           >
             <Toggle
               label="Show live text preview"
               checked={settings.liveTranscription}
               disabled={settings.provider === "openrouter"}
               onChange={(liveTranscription) => { void update({ liveTranscription }); }}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Preview diagnostics"
+            description="Save microphone audio and detailed local-preview timing for debugging. Keeps the newest 10 recordings on this computer."
+          >
+            <Toggle
+              label="Save local preview diagnostics"
+              checked={settings.localPreviewDiagnostics}
+              disabled={settings.provider !== "local"
+                || settings.localSttEngine !== "whisper"
+                || !settings.liveTranscription}
+              onChange={(localPreviewDiagnostics) => {
+                void update({ localPreviewDiagnostics });
+              }}
             />
           </SettingRow>
         </div>
@@ -433,10 +448,11 @@ function General({
             />
           </SettingRow>
           <AppUpdates appVersion={settings.appVersion} />
-          <SettingRow title="Diagnostics" description="Settings folder and application log">
+          <SettingRow title="Diagnostics" description="Settings, logs, and saved local-preview recordings">
             <div className="buttonGroup">
               <button type="button" className="smallButton" onClick={() => { void systemAction("openSettingsFolder"); }}>Settings</button>
               <button type="button" className="smallButton" onClick={() => { void systemAction("openLog"); }}>Log</button>
+              <button type="button" className="smallButton" onClick={() => { void systemAction("openDiagnosticsFolder"); }}>Preview recordings</button>
             </div>
           </SettingRow>
         </div>
@@ -760,6 +776,7 @@ function SpeechAi({
             <select
               aria-label="Transcription language"
               value={settings.language}
+              disabled={settings.provider === "local" && settings.localSttEngine === "nemotron"}
               onChange={(event) => { void update({ language: event.target.value }); }}
             >
               <option value="en">English</option>
@@ -770,6 +787,25 @@ function SpeechAi({
               <option value="pt">Portuguese</option>
             </select>
           </SettingRow>
+          {settings.provider === "local" && <SettingRow
+            title="Local transcription engine"
+            description={settings.localSttEngine === "nemotron"
+              ? "Experimental true streaming. The same model produces both the preview and final transcript."
+              : "Whisper Large V3 Turbo with a rolling live preview and full final pass."}
+          >
+            <select
+              aria-label="Local transcription engine"
+              value={settings.localSttEngine}
+              onChange={(event) => {
+                void update({
+                  localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",
+                });
+              }}
+            >
+              <option value="whisper">Whisper Large V3 Turbo</option>
+              <option value="nemotron">Nemotron 0.6B</option>
+            </select>
+          </SettingRow>}
           <SettingRow title="Use AI cleanup">
             <Toggle
               label="Use AI cleanup"
@@ -839,6 +875,7 @@ function SpeechAi({
             name="Transcription model"
             status={settings.localEngines.stt}
             action={localAction}
+            installDisabled={settings.localSttEngine === "nemotron"}
           />
           <LocalEngineCard
             kind="cleanup"
@@ -945,11 +982,13 @@ function LocalEngineCard({
   name,
   status,
   action,
+  installDisabled = false,
 }: {
   kind: LocalEngineKind;
   name: string;
   status: LocalEngineSnapshot;
   action: (kind: LocalEngineKind, action: LocalEngineAction) => Promise<boolean>;
+  installDisabled?: boolean;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const running = status.loaded || status.loading;
@@ -962,7 +1001,9 @@ function LocalEngineCard({
   const label = status.installing
     ? `${status.installPhase || "Installing"} · ${Math.round(status.installFraction * 100)}%`
     : !status.installed
-      ? `Not installed · ${formatDownloadSize(status.installBytes)} download`
+      ? installDisabled
+        ? "Experimental runtime not installed"
+        : `Not installed · ${formatDownloadSize(status.installBytes)} download`
       : status.loading
         ? "Loading…"
         : status.loaded
@@ -984,10 +1025,14 @@ function LocalEngineCard({
     <button
       type="button"
       className="smallButton accent"
-      disabled={working}
+      disabled={working || (installDisabled && !status.installed)}
       onClick={() => { void invoke(); }}
     >
-      {working ? "Working…" : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
+      {working
+        ? "Working…"
+        : installDisabled && !status.installed
+          ? "Setup required"
+          : nextAction === "install" ? "Install" : running ? "Eject" : "Load"}
     </button>
   </div>;
 }
