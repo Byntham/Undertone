@@ -11,14 +11,6 @@ import {
   type CleanupCaseSeverity,
 } from "./cleanupCases";
 import {
-  CLEANUP_HOLDOUT_CASES,
-  type CleanupEvalCase as CleanupHoldoutCase,
-} from "./cleanupHoldoutCases";
-import {
-  CLEANUP_FINAL_HOLDOUT_CASES,
-  type CleanupEvalCase as CleanupFinalHoldoutCase,
-} from "./cleanupFinalHoldoutCases";
-import {
   CLEANUP_PROMPT_CANDIDATES,
   type CleanupPromptCandidate,
 } from "./cleanupPrompts";
@@ -43,13 +35,11 @@ const MAX_TIMEOUT_MS = 60_000;
 const MAX_JOBS = 2_000;
 
 type EvalReasoningEffort = "none" | "low";
-type EvalSuite = "development" | "holdout" | "final-holdout";
-type EvalCase = CleanupCase | CleanupHoldoutCase | CleanupFinalHoldoutCase;
 
 interface EvalResult {
   readonly promptId: string;
   readonly caseId: string;
-  readonly category: EvalCase["category"];
+  readonly category: CleanupCase["category"];
   readonly severity: CleanupCaseSeverity;
   readonly repeat: number;
   readonly transcript: string;
@@ -74,7 +64,7 @@ interface EvalSummary {
 }
 
 describe("GPT-5.6 Luna cleanup prompt evaluation", () => {
-  it("runs fresh cleanup cases through Undertone OAuth", async () => {
+  it("runs cleanup regression cases through Undertone OAuth", async () => {
     const options = evalOptions();
     const configPath = productionConfigPath();
     console.log("REPORT ONLY: quality misses are recorded in JSON; transport errors fail the run.");
@@ -145,9 +135,8 @@ function evalOptions(): {
   repeats: number;
   timeoutMs: number;
   reasoningEffort: EvalReasoningEffort;
-  suite: EvalSuite;
   prompts: readonly CleanupPromptCandidate[];
-  cases: readonly EvalCase[];
+  cases: readonly CleanupCase[];
 } {
   const concurrency = positiveInteger(
     process.env.UNDERTONE_CLEANUP_EVAL_CONCURRENCY,
@@ -167,29 +156,14 @@ function evalOptions(): {
   const reasoningEffort = process.env.UNDERTONE_CLEANUP_EVAL_REASONING_EFFORT === "low"
     ? "low"
     : "none";
-  const suiteValue = process.env.UNDERTONE_CLEANUP_EVAL_SUITE;
-  if (suiteValue !== undefined
-    && suiteValue !== "development"
-    && suiteValue !== "holdout"
-    && suiteValue !== "final-holdout") {
-    throw new Error(`Unknown cleanup evaluation suite: ${JSON.stringify(suiteValue)}.`);
-  }
-  const suite: EvalSuite = suiteValue === "holdout" || suiteValue === "final-holdout"
-    ? suiteValue
-    : "development";
   const promptFilter = commaSeparated(process.env.UNDERTONE_CLEANUP_EVAL_PROMPTS);
   const caseFilter = commaSeparated(process.env.UNDERTONE_CLEANUP_EVAL_CASES);
   const prompts = promptFilter.length === 0
     ? CLEANUP_PROMPT_CANDIDATES
     : CLEANUP_PROMPT_CANDIDATES.filter(({ id }) => promptFilter.includes(id));
-  const suiteCases: readonly EvalCase[] = suite === "holdout"
-    ? CLEANUP_HOLDOUT_CASES
-    : suite === "final-holdout"
-      ? CLEANUP_FINAL_HOLDOUT_CASES
-      : CLEANUP_CASES;
   const cases = caseFilter.length === 0
-    ? suiteCases
-    : suiteCases.filter(({ id }) => caseFilter.includes(id));
+    ? CLEANUP_CASES
+    : CLEANUP_CASES.filter(({ id }) => caseFilter.includes(id));
   assertAllSelected("prompt", promptFilter, prompts.map(({ id }) => id));
   assertAllSelected("case", caseFilter, cases.map(({ id }) => id));
   if (prompts.length === 0) throw new Error("The prompt filter selected no candidates.");
@@ -199,7 +173,6 @@ function evalOptions(): {
     repeats,
     timeoutMs,
     reasoningEffort,
-    suite,
     prompts,
     cases,
   };
@@ -208,7 +181,7 @@ function evalOptions(): {
 async function runCase(
   subscription: OpenAiSubscription,
   prompt: CleanupPromptCandidate,
-  caseValue: EvalCase,
+  caseValue: CleanupCase,
   repeat: number,
   timeoutMs: number,
   reasoningEffort: EvalReasoningEffort,
@@ -260,7 +233,7 @@ function parseCleanupText(response: string): string {
   return value.text.trim();
 }
 
-function checkOutput(output: string, caseValue: EvalCase): string[] {
+function checkOutput(output: string, caseValue: CleanupCase): string[] {
   const failures: string[] = [];
   for (const pattern of caseValue.mustMatch) {
     if (!new RegExp(pattern, CLEANUP_CASE_PATTERN_FLAGS).test(output)) {
@@ -341,7 +314,7 @@ async function writeResults(
   await writeFile(outputPath, JSON.stringify({
     createdAt: new Date().toISOString(),
     model: "gpt-5.6-luna",
-    suite: options.suite,
+    suite: "regression",
     reasoningEffort: options.reasoningEffort,
     serviceTier: "priority",
     credentialMode: "read-only",
