@@ -44,7 +44,7 @@ const LLAMA_RELEASE = "https://github.com/ggml-org/llama.cpp/releases/download/b
 const NEMOTRON_RELEASE = "https://github.com/Byntham/Undertone/releases/download/nemotron-runtime-v0.1.0";
 const WHISPER_MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
 const WHISPER_VAD_REVISION = "9ffd54a1e1ee413ddf265af9913beaf518d1639b";
-const CLEANUP_MODEL_REVISION = "a06e946bb6b655725eafa393f4a9745d460374c9";
+const CLEANUP_MODEL_REVISION = "3221f178a6b842d04f1fb42f1c413534adcc0a6a";
 const NEMOTRON_MODEL_REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50";
 
 export const STT_ARTIFACTS = {
@@ -105,9 +105,9 @@ export const CLEANUP_ARTIFACTS = {
     size: 391_443_627,
   },
   model: {
-    url: `https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/${CLEANUP_MODEL_REVISION}/${LOCAL_CLEANUP_MODEL}`,
-    sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-    size: 2_497_281_120,
+    url: `https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/${CLEANUP_MODEL_REVISION}/${LOCAL_CLEANUP_MODEL}`,
+    sha256: "097435ea0befcd2edca4934b5ff387388d0396dea6b5c4c17a02ed8c696ae958",
+    size: 8_573_593_504,
   },
 } as const satisfies Record<string, InstallArtifact>;
 

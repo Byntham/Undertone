@@ -199,6 +199,19 @@ describe("local runtime", () => {
     await runtime.shutdown();
   });
 
+  it("loads Qwen3.5 cleanup with reasoning disabled", async () => {
+    const root = await installedRoot("cleanup");
+    const host = new FakeHost();
+    const runtime = createLocalCleanupRuntime(host, root, {
+      fetch: readyFetch,
+    });
+
+    await runtime.load();
+    expect(host.starts[0]?.argumentsValue).toContain(LOCAL_CLEANUP_MODEL);
+    expect(host.starts[0]?.argumentsValue).toContain("--reasoning off");
+    await runtime.shutdown();
+  });
+
   it("never posts to a stale cleanup process and starts only one replacement warm", async () => {
     const root = await installedRoot("cleanup");
     const host = new FakeHost();

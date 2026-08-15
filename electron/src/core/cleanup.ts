@@ -1,5 +1,5 @@
 import { isRecord } from "./config";
-import { SYSTEM_PROMPT } from "./cleanupPrompt";
+import { LOCAL_SYSTEM_PROMPT, SYSTEM_PROMPT } from "./cleanupPrompt";
 import type { HttpClient } from "../platform/http";
 import type { CleanupReasoningEffort, CleanupServiceTier } from "./config";
 import type { CleanupProviderId, CloudProviderId } from "../shared/settings";
@@ -75,6 +75,7 @@ export class CleanupClient {
   async cleanup(options: CleanupOptions): Promise<string | null> {
     const provider = options.provider;
     const effectiveModel = DEFAULT_CLEANUP_MODELS[provider];
+    const systemPrompt = provider === "local" ? LOCAL_SYSTEM_PROMPT : SYSTEM_PROMPT;
     const user = JSON.stringify({ transcript: options.transcript });
     if (provider === "openai-subscription") {
       if (this.subscription === null) {
@@ -116,7 +117,7 @@ export class CleanupClient {
         body: JSON.stringify({
           model: effectiveModel,
           messages: [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             { role: "user", content: user },
           ],
           response_format: format === "json_schema"
