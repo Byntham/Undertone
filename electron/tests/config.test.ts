@@ -8,7 +8,6 @@ import {
   DEFAULT_CONFIG,
   normalizeConfig,
   providerKey,
-  xaiVocabularyHints,
 } from "../src/core/config";
 import { ConfigStore, type SecretCipher } from "../src/main/configStore";
 
@@ -47,11 +46,8 @@ describe("configuration", () => {
     expect(second.commit_hotkey).toBe("left ctrl+left alt");
     expect(second.scratch_hotkey).toBe("left ctrl+left alt+backspace");
     expect(second.discard_hotkey).toBe("ctrl+alt+shift+backspace");
-    first.vocabulary.push("Undertone");
     first.corrections.test = "value";
-    expect(second.vocabulary).toEqual([]);
     expect(second.corrections).toEqual({});
-    expect(DEFAULT_CONFIG.vocabulary).toEqual([]);
   });
 
   it("repairs every malformed persisted scalar and drops unknown fields", () => {
@@ -72,9 +68,7 @@ describe("configuration", () => {
       ai_cleanup: 1,
       cleanup_provider: "unknown",
       sound_cues: null,
-      vocabulary: {},
       corrections: [],
-      stt_vocab_hints: "false",
       repaste_hotkey: false,
       commit_hotkey: null,
       scratch_hotkey: 42,
@@ -93,7 +87,7 @@ describe("configuration", () => {
     expect(config).not.toHaveProperty("unknown");
   });
 
-  it("canonicalizes persisted strings, lists, maps, and bounded numbers", () => {
+  it("canonicalizes persisted strings, maps, and bounded numbers", () => {
     const config = normalizeConfig({
       api_key: "  x-key  ",
       language: "  fr-CA  ",
@@ -101,7 +95,6 @@ describe("configuration", () => {
       openai_oauth_expires_at: 123_456,
       local_idle_minutes: 15,
       cleanup_timeout: 0.5,
-      vocabulary: [" Undertone ", 42, "Undertone", "bad\nterm", "Kubernetes"],
       corrections: {
         " under tone ": " Undertone ",
         invalid: false,
@@ -115,7 +108,6 @@ describe("configuration", () => {
     expect(config.openai_oauth_expires_at).toBe(123_456);
     expect(config.local_idle_minutes).toBe(15);
     expect(config.cleanup_timeout).toBe(0.5);
-    expect(config.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(config.corrections).toEqual({ "under tone": "Undertone" });
   });
 
@@ -124,7 +116,6 @@ describe("configuration", () => {
       openai_oauth_expires_at: -1,
       local_idle_minutes: 60.5,
       cleanup_timeout: 30.1,
-      vocabulary: Array.from({ length: 201 }, (_, index) => `term-${index}`),
       corrections: Object.fromEntries(
         Array.from({ length: 201 }, (_, index) => [`heard-${index}`, `written-${index}`]),
       ),
@@ -132,7 +123,6 @@ describe("configuration", () => {
       openai_oauth_expires_at: 0,
       local_idle_minutes: 0,
       cleanup_timeout: 2.5,
-      vocabulary: [],
       corrections: {},
     });
   });
@@ -218,23 +208,6 @@ describe("configuration", () => {
     expect(await readFile(path.join(path.dirname(configPath), files[0]!), "utf8"))
       .toBe("not-json");
     expect(warnings).toEqual([expect.stringContaining(files[0]!)]);
-  });
-
-  it("builds deduplicated vocabulary hints for xAI only", () => {
-    const values = {
-      vocabulary: ["Undertone", "Kubernetes"],
-      corrections: { kubernetes: "Kubernetes", codex: "Codex" },
-      stt_vocab_hints: true,
-    };
-    expect(xaiVocabularyHints(normalizeConfig({ ...values, provider: "xai" })))
-      .toEqual(["Undertone", "Kubernetes", "Codex"]);
-    expect(xaiVocabularyHints(normalizeConfig({ ...values, provider: "openai" })))
-      .toEqual([]);
-    expect(xaiVocabularyHints(normalizeConfig({
-      ...values,
-      provider: "xai",
-      stt_vocab_hints: false,
-    }))).toEqual([]);
   });
 
   it("does not hide config filesystem failures", async () => {

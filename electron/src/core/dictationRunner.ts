@@ -1,7 +1,6 @@
 import {
   providerKey,
   type UndertoneConfig,
-  xaiVocabularyHints,
 } from "./config";
 import type { TranscriptionProviderId } from "../shared/settings";
 import type { LocalSttEngineId } from "../shared/settings";
@@ -20,7 +19,6 @@ export interface TranscriberPort {
     wav: Uint8Array;
     apiKey: string;
     language: string;
-    vocabulary: readonly string[];
     provider: TranscriptionProviderId;
     localEngine: LocalSttEngineId;
   }): Promise<string>;
@@ -71,7 +69,6 @@ export class DictationJobRunner {
         wav,
         apiKey: providerKey(config, provider),
         language: config.language,
-        vocabulary: xaiVocabularyHints(config),
         provider,
         localEngine: config.local_stt_engine,
       });

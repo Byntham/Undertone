@@ -40,7 +40,7 @@ Use the tray menu for Settings, pause, or quit.
 
 - **General** — shortcuts, mic, language, sounds, updates
 - **Speech & AI** — STT and cleanup providers, keys, local models
-- **Dictionary** — vocabulary and corrections
+- **Dictionary** — deterministic local corrections
 - **History** — session-only copy, re-paste, and retry
 
 Changes autosave. Diagnostics: `%APPDATA%\Undertone\app.log`.

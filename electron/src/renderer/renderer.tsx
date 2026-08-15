@@ -220,7 +220,7 @@ function SettingsApp(): React.JSX.Element {
           active={section === "dictionary"}
           icon="dictionary"
           label="Dictionary"
-          description="Vocabulary and corrections"
+          description="Local transcript corrections"
           onClick={() => setSection("dictionary")}
         />
         <NavItem
@@ -558,16 +558,8 @@ function Dictionary({
   settings: SettingsSnapshot;
   update: (patch: SettingsPatch) => Promise<boolean>;
 }): React.JSX.Element {
-  const [term, setTerm] = useState("");
   const [heard, setHeard] = useState("");
   const [replacement, setReplacement] = useState("");
-  const addTerm = (): void => {
-    const value = term.trim();
-    if (value.length === 0 || settings.vocabulary.includes(value)) return;
-    void update({ vocabulary: [...settings.vocabulary, value] }).then((saved) => {
-      if (saved) setTerm("");
-    });
-  };
   const addCorrection = (): void => {
     const key = heard.trim();
     const value = replacement.trim();
@@ -581,24 +573,6 @@ function Dictionary({
   };
   return <section>
     <header className="pageHeader"><h1>Dictionary</h1></header>
-    <h2>Vocabulary</h2>
-    <div className="card">
-      <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addTerm(); }}>
-        <input
-          aria-label="Vocabulary term"
-          placeholder="Add a name or technical term"
-          value={term}
-          onChange={(event) => setTerm(event.target.value)}
-        />
-        <button type="submit" className="smallButton accent">Add</button>
-      </form>
-      <EditableList
-        empty="No terms yet."
-        entries={settings.vocabulary.map((value) => ({ key: value, label: value }))}
-        remove={(value) => { void update({ vocabulary: settings.vocabulary.filter((item) => item !== value) }); }}
-      />
-    </div>
-    <p className="supportNote">Vocabulary helps recognition preserve unusual words and capitalization.</p>
     <h2>Corrections</h2>
     <div className="card">
       <form className="entryForm" onSubmit={(event) => { event.preventDefault(); addCorrection(); }}>
@@ -617,14 +591,7 @@ function Dictionary({
         }}
       />
     </div>
-    <p className="supportNote">Corrections run locally and always use the exact replacement.</p>
-    {settings.provider === "xai" && <div className="card">
-      <SettingRow title="Send recognition hints" description="xAI receives these terms as key-term hints; other providers do not.">
-        <Toggle label="Send recognition hints" checked={settings.sttVocabHints} onChange={(sttVocabHints) => {
-          void update({ sttVocabHints });
-        }} />
-      </SettingRow>
-    </div>}
+    <p className="supportNote">Corrections run locally after transcription and AI cleanup.</p>
   </section>;
 }
 

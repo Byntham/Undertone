@@ -32,8 +32,6 @@ describe("settings model", () => {
       cleanupModel: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       localLoaded: false,
       localIdleMinutes: 0,
-      sttVocabHints: true,
-      vocabulary: [],
       corrections: {},
       localEngines: {
         stt: {
@@ -162,8 +160,6 @@ describe("settings model", () => {
       localLoaded: true,
       localIdleMinutes: 15,
       soundCues: false,
-      sttVocabHints: false,
-      vocabulary: [" Undertone ", "Undertone", "Kubernetes"],
       corrections: { "under tone": "Undertone" },
       openTurnCleanupStrategy: "commit-full",
       liveTranscription: true,
@@ -176,8 +172,6 @@ describe("settings model", () => {
     expect(next.local_loaded).toBe(true);
     expect(next.local_idle_minutes).toBe(15);
     expect(next.sound_cues).toBe(false);
-    expect(next.stt_vocab_hints).toBe(false);
-    expect(next.vocabulary).toEqual(["Undertone", "Kubernetes"]);
     expect(next.corrections).toEqual({ "under tone": "Undertone" });
     expect(next.cleanup_reasoning_effort).toBe("none");
     expect(next.cleanup_service_tier).toBe("priority");
@@ -287,8 +281,6 @@ describe("settings model", () => {
     expect(() => applySettingsPatch(config, { commitHotkey: "ctrl+k+s" }))
       .toThrow(/at most one/u);
     expect(() => applySettingsPatch(config, { openTurnCleanupStrategy: "sometimes" }))
-      .toThrow(/invalid/u);
-    expect(() => applySettingsPatch(config, { vocabulary: ["bad\nterm"] }))
       .toThrow(/invalid/u);
     expect(() => applySettingsPatch(config, { corrections: { heard: "" } }))
       .toThrow(/empty/u);

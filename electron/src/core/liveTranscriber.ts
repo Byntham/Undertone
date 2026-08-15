@@ -9,7 +9,6 @@ export interface LiveTranscriptionOptions {
   provider: LiveTranscriptionProvider;
   apiKey: string;
   language: string;
-  vocabulary: readonly string[];
 }
 
 export interface LiveTranscriptionCallbacks {
@@ -275,7 +274,6 @@ class XaiLiveSession extends BaseLiveSession {
       interim_results: "true",
       language: options.language,
     });
-    for (const term of vocabularyTerms(options.vocabulary)) query.append("keyterm", term);
     super(
       factory,
       `wss://api.x.ai/v1/stt?${query.toString()}`,
@@ -366,10 +364,6 @@ function apiError(value: Record<string, unknown>, fallback: string): string {
     return value.error.message;
   }
   return fallback;
-}
-
-function vocabularyTerms(values: readonly string[]): string[] {
-  return values.slice(0, 100).map((value) => value.trim().slice(0, 50)).filter(Boolean);
 }
 
 function joinText(parts: readonly string[]): string {

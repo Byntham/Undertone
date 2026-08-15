@@ -28,9 +28,7 @@ export interface UndertoneConfig {
   ai_cleanup: boolean;
   cleanup_provider: CleanupProviderId;
   sound_cues: boolean;
-  vocabulary: string[];
   corrections: Record<string, string>;
-  stt_vocab_hints: boolean;
   repaste_hotkey: string;
   commit_hotkey: string;
   scratch_hotkey: string;
@@ -62,9 +60,7 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   ai_cleanup: true,
   cleanup_provider: "local",
   sound_cues: true,
-  vocabulary: [],
   corrections: {},
-  stt_vocab_hints: true,
   repaste_hotkey: "left alt+v",
   commit_hotkey: "left ctrl+left alt",
   scratch_hotkey: "left ctrl+left alt+backspace",
@@ -140,9 +136,7 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
       ? input.cleanup_provider
       : DEFAULT_CONFIG.cleanup_provider,
     sound_cues: booleanValue(input.sound_cues, DEFAULT_CONFIG.sound_cues),
-    vocabulary: persistedStringList(input.vocabulary, 200, 256),
     corrections: persistedStringMap(input.corrections, 200, 256),
-    stt_vocab_hints: booleanValue(input.stt_vocab_hints, DEFAULT_CONFIG.stt_vocab_hints),
     repaste_hotkey: persistedString(input.repaste_hotkey, DEFAULT_CONFIG.repaste_hotkey, 256),
     commit_hotkey: persistedString(input.commit_hotkey, DEFAULT_CONFIG.commit_hotkey, 256),
     scratch_hotkey: persistedString(input.scratch_hotkey, DEFAULT_CONFIG.scratch_hotkey, 256),
@@ -185,14 +179,8 @@ export function providerKey(
 export function cloneConfig(config: Readonly<UndertoneConfig>): UndertoneConfig {
   return {
     ...config,
-    vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
   };
-}
-
-export function xaiVocabularyHints(config: Readonly<UndertoneConfig>): string[] {
-  if (config.provider !== "xai" || !config.stt_vocab_hints) return [];
-  return [...new Set([...config.vocabulary, ...Object.values(config.corrections)])];
 }
 
 function persistedString(value: unknown, fallback: string, maximumLength: number): string {
@@ -231,20 +219,6 @@ function boundedNumber(
     && (!integer || Number.isInteger(value))
     ? value
     : fallback;
-}
-
-function persistedStringList(
-  value: unknown,
-  maximumEntries: number,
-  maximumLength: number,
-): string[] {
-  if (!Array.isArray(value) || value.length > maximumEntries) return [];
-  const result: string[] = [];
-  for (const item of value) {
-    const normalized = persistedString(item, "", maximumLength);
-    if (normalized.length > 0 && !result.includes(normalized)) result.push(normalized);
-  }
-  return result;
 }
 
 function persistedStringMap(

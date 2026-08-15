@@ -88,8 +88,6 @@ export interface SettingsSnapshot {
   cleanupModel: string;
   localLoaded: boolean;
   localIdleMinutes: number;
-  sttVocabHints: boolean;
-  vocabulary: string[];
   corrections: Record<string, string>;
   localEngines: Record<LocalEngineKind, LocalEngineSnapshot>;
 }
@@ -122,8 +120,6 @@ export interface SettingsPatch {
   providerKey?: { provider: CloudProviderId; value: string };
   localLoaded?: boolean;
   localIdleMinutes?: number;
-  sttVocabHints?: boolean;
-  vocabulary?: string[];
   corrections?: Record<string, string>;
 }
 
