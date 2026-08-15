@@ -72,7 +72,7 @@ describe("cleanup providers", () => {
     });
   });
 
-  it("uses the production prompt and structured response schema", async () => {
+  it("uses the default prompt and structured response schema", async () => {
     expect(SYSTEM_PROMPT).not.toContain("text_before_cursor");
 
     const http = new FakeHttp();

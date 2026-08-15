@@ -175,7 +175,7 @@ describe("OpenAI Subscription", () => {
     expect(persisted.at(-1)).toBeNull();
   });
 
-  it("supports prompt overrides without changing the production default", async () => {
+  it("supports prompt overrides without changing the default", async () => {
     const http = new FakeHttp();
     http.postResponses.push({
       status: 200,
