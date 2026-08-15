@@ -66,6 +66,7 @@ import { installFileLog } from "./fileLog";
 import { LocalInstaller, type InstallProgress } from "./localInstaller";
 import {
   OpenAiSubscription,
+  openAiCredentials,
   type OpenAiSubscriptionCredentials,
 } from "./openAiSubscription";
 import {
@@ -2115,21 +2116,6 @@ function authorizeSettingsSender(
   if (sender !== settingsWindow?.webContents) {
     throw new Error("Request came from an unauthorized renderer");
   }
-}
-
-function openAiCredentials(config: UndertoneConfig): OpenAiSubscriptionCredentials | null {
-  return config.openai_oauth_access_token.length > 0
-    && config.openai_oauth_refresh_token.length > 0
-    && config.openai_oauth_account_id.length > 0
-    && Number.isFinite(config.openai_oauth_expires_at)
-    && config.openai_oauth_expires_at > 0
-    ? {
-        accessToken: config.openai_oauth_access_token,
-        refreshToken: config.openai_oauth_refresh_token,
-        expiresAt: config.openai_oauth_expires_at,
-        accountId: config.openai_oauth_account_id,
-      }
-    : null;
 }
 
 async function delay(milliseconds: number): Promise<void> {
