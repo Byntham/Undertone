@@ -15,7 +15,6 @@ describe("live transcriber", () => {
       provider: "openai",
       apiKey: "openai-secret",
       language: "en",
-      vocabulary: ["must-not-leak"],
     }, { partial, failed });
 
     expect(session.sampleRate).toBe(24_000);
@@ -44,8 +43,6 @@ describe("live transcriber", () => {
         },
       },
     });
-    expect(JSON.stringify(harness.socket.sent)).not.toContain("must-not-leak");
-
     harness.socket.message({ type: "session.updated" });
     expect(jsonMessages(harness.socket)[1]).toEqual({
       type: "input_audio_buffer.append",
@@ -74,14 +71,13 @@ describe("live transcriber", () => {
     expect(harness.socket.closed).toBe(true);
   });
 
-  it("streams raw xAI PCM, revises partials, and applies xAI-only keyterms", async () => {
+  it("streams raw xAI PCM and revises partials without recognition hints", async () => {
     const harness = socketHarness();
     const partial = vi.fn();
     const session = new LiveTranscriber(harness.factory).start({
       provider: "xai",
       apiKey: "xai-secret",
       language: "fr",
-      vocabulary: ["Undertone", "  Kubernetes  "],
     }, { partial, failed: vi.fn() });
 
     expect(session.sampleRate).toBe(16_000);
@@ -92,7 +88,7 @@ describe("live transcriber", () => {
     expect(url.searchParams.get("encoding")).toBe("pcm");
     expect(url.searchParams.get("interim_results")).toBe("true");
     expect(url.searchParams.get("language")).toBe("fr");
-    expect(url.searchParams.getAll("keyterm")).toEqual(["Undertone", "Kubernetes"]);
+    expect(url.searchParams.has("keyterm")).toBe(false);
 
     harness.socket.emit("open");
     session.append(Uint8Array.of(4, 5));
@@ -136,7 +132,6 @@ describe("live transcriber", () => {
       provider: "openai",
       apiKey: "secret",
       language: "en",
-      vocabulary: [],
     }, { partial: vi.fn(), failed });
     harness.socket.emit("open");
     harness.socket.message({ type: "error", error: { message: "quota exceeded" } });
@@ -152,7 +147,6 @@ describe("live transcriber", () => {
       provider: "openai",
       apiKey: "secret",
       language: "en",
-      vocabulary: [],
     }, { partial: vi.fn(), failed: vi.fn() });
     openAi.socket.emit("open");
     openAi.socket.message({ type: "session.updated" });
@@ -172,7 +166,6 @@ describe("live transcriber", () => {
       provider: "xai",
       apiKey: "secret",
       language: "en",
-      vocabulary: [],
     }, { partial: vi.fn(), failed: vi.fn() });
     xai.socket.emit("open");
     xai.socket.message({ type: "transcript.created" });
@@ -196,7 +189,6 @@ describe("live transcriber", () => {
         provider: "xai",
         apiKey: "secret",
         language: "en",
-        vocabulary: [],
       }, { partial: vi.fn(), failed });
       await vi.advanceTimersByTimeAsync(10_000);
       expect(failed).toHaveBeenCalledWith(expect.objectContaining({
@@ -215,7 +207,6 @@ describe("live transcriber", () => {
       provider: "openai",
       apiKey: "secret",
       language: "en",
-      vocabulary: [],
     }, { partial: vi.fn(), failed });
     harness.socket.sendError = new Error("socket write failed");
     harness.socket.emit("open");
@@ -228,7 +219,6 @@ describe("live transcriber", () => {
       provider: "xai",
       apiKey: " ",
       language: "en",
-      vocabulary: [],
     }, { partial: vi.fn(), failed: vi.fn() })).toThrow(/No API key/u);
   });
 });

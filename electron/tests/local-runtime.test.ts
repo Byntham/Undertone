@@ -258,7 +258,6 @@ describe("local runtime", () => {
       apiKey: "",
       provider: "local",
       language: "en",
-      vocabulary: [],
     })).toBe("restarted okay");
     expect(host.starts).toHaveLength(2);
     expect(posted).toHaveLength(1);
@@ -523,7 +522,6 @@ describe("local runtime", () => {
           apiKey: "",
           provider: "local",
           language: "en",
-          vocabulary: [],
         })).toBe("");
         await stt.eject();
 
@@ -548,7 +546,6 @@ describe("local runtime", () => {
           provider: "local",
           localEngine: "nemotron",
           language: "en",
-          vocabulary: [],
         })).toBe("");
         await nemotron.eject();
 

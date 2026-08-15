@@ -51,8 +51,6 @@ const PATCH_FIELDS = new Set([
   "providerKey",
   "localLoaded",
   "localIdleMinutes",
-  "sttVocabHints",
-  "vocabulary",
   "corrections",
 ]);
 
@@ -100,8 +98,6 @@ export function settingsSnapshot(
     cleanupModel: DEFAULT_CLEANUP_MODELS[cleanupProvider],
     localLoaded: config.local_loaded,
     localIdleMinutes: config.local_idle_minutes,
-    sttVocabHints: config.stt_vocab_hints,
-    vocabulary: [...config.vocabulary],
     corrections: { ...config.corrections },
     localEngines: {
       stt: { ...localEngines.stt },
@@ -217,12 +213,6 @@ export function applySettingsPatch(
     }
     next.local_idle_minutes = value.localIdleMinutes;
   }
-  if (value.sttVocabHints !== undefined) {
-    next.stt_vocab_hints = booleanField(value.sttVocabHints, "sttVocabHints");
-  }
-  if (value.vocabulary !== undefined) {
-    next.vocabulary = stringList(value.vocabulary, "vocabulary", 200, 256);
-  }
   if (value.corrections !== undefined) {
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
@@ -304,23 +294,6 @@ function exactObject(
 function booleanField(value: unknown, name: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${name} must be boolean`);
   return value;
-}
-
-function stringList(
-  value: unknown,
-  name: string,
-  maximumEntries: number,
-  maximumLength: number,
-): string[] {
-  if (!Array.isArray(value) || value.length > maximumEntries) {
-    throw new Error(`${name} is invalid`);
-  }
-  const result: string[] = [];
-  for (const item of value) {
-    const normalized = boundedSingleLine(item, name, maximumLength);
-    if (normalized.length > 0 && !result.includes(normalized)) result.push(normalized);
-  }
-  return result;
 }
 
 function stringMap(

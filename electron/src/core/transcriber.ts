@@ -28,7 +28,6 @@ export interface TranscribeOptions {
   wav: Uint8Array;
   apiKey: string;
   language: string;
-  vocabulary: readonly string[];
   provider: TranscriptionProviderId;
   localEngine?: LocalSttEngineId;
 }
@@ -67,10 +66,6 @@ export class Transcriber {
     const form = audioForm(options.wav);
     form.append("language", options.language);
     form.append("format", "true");
-    for (const rawTerm of options.vocabulary.slice(0, 100)) {
-      const term = rawTerm.trim().slice(0, 50);
-      if (term.length > 0) form.append("keyterm", term);
-    }
     const response = await this.post(
       "https://api.x.ai/v1/stt",
       "xAI",
@@ -183,7 +178,6 @@ export class Transcriber {
 interface NormalizedOptions extends TranscribeOptions {
   apiKey: string;
   language: string;
-  vocabulary: readonly string[];
 }
 
 function audioForm(wav: Uint8Array): FormData {

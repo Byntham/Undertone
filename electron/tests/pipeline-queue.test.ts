@@ -87,16 +87,16 @@ describe("dictation pipeline queue", () => {
     let releaseFirst: (() => void) | undefined;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const languages: string[] = [];
-    const vocabularies: string[][] = [];
+    const corrections: Array<Record<string, string>> = [];
     const handlers: PipelineHandlers = {
       async dictate(_wav, _target, snapshot) {
         languages.push(snapshot.language);
-        vocabularies.push(snapshot.vocabulary);
+        corrections.push(snapshot.corrections);
         if (languages.length === 1) await firstGate;
       },
       async repaste(_text, snapshot) {
         languages.push(snapshot.language);
-        vocabularies.push(snapshot.vocabulary);
+        corrections.push(snapshot.corrections);
       },
       async commit() {},
       async discard() {},
@@ -107,11 +107,11 @@ describe("dictation pipeline queue", () => {
     const second = queue.enqueueRepaste("again");
     await tick();
     config.language = "fr";
-    config.vocabulary.push("new-setting");
+    config.corrections.new = "setting";
     releaseFirst!();
     await Promise.all([first, second]);
     expect(languages).toEqual(["en", "fr"]);
-    expect(vocabularies).toEqual([[], ["new-setting"]]);
+    expect(corrections).toEqual([{}, { new: "setting" }]);
   });
 
   it("reserves queue order while a recording finishes", async () => {

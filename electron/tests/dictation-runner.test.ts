@@ -34,14 +34,12 @@ describe("dictation job runner", () => {
     await new DictationJobRunner(dependencies).run(WAV, autoCommit(), normalizeConfig({
       provider: "xai",
       api_key: "key",
-      vocabulary: ["Undertone"],
       corrections: { kubernetes: "Kubernetes" },
     }));
 
     expect(state.transcribeOptions).toMatchObject({
       apiKey: "key",
       provider: "xai",
-      vocabulary: ["Undertone", "Kubernetes"],
     });
     expect(state.preparations).toEqual([
       { text: "hello world.", aiCleanup: true },

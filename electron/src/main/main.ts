@@ -25,7 +25,6 @@ import {
   normalizeConfig,
   providerKey,
   type UndertoneConfig,
-  xaiVocabularyHints,
 } from "../core/config";
 import {
   DictationJobRunner,
@@ -792,7 +791,6 @@ if (!gotLock) {
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
-              vocabulary: xaiVocabularyHints(config),
             }, callbacks);
           if (session === undefined) throw new Error("Local transcription service is not ready.");
           const liveCapture: LiveCapture = {
@@ -1753,7 +1751,6 @@ if (!gotLock) {
         wav: new Uint8Array(encodePcm16Wav(new Float32Array(8_000), 16_000)),
         apiKey: providerKey(config, provider),
         language: config.language,
-        vocabulary: [],
         provider,
         localEngine: config.local_stt_engine,
       });

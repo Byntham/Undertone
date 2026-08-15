@@ -72,7 +72,6 @@ Native-host messages are versioned JSON over local pipes.
 
 - Never read password fields. Dictation cleanup formats from the open turn only.
 - No OS text context may reach AI cleanup; the raw open turn is the only context.
-- Vocabulary hints are xAI-only.
 - Local cleanup never blocks a dictation on cold load (async warm + deterministic
   fallback). Local STT may load synchronously.
 - Local engine downloads stay version-, size-, and SHA-256-pinned under

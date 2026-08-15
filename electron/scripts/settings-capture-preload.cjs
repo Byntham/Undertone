@@ -31,8 +31,6 @@ const snapshot = {
   cleanupModel: "gpt-5.6-luna",
   localLoaded: false,
   localIdleMinutes: 0,
-  sttVocabHints: true,
-  vocabulary: ["Undertone", "Kubernetes"],
   corrections: { "under tone": "Undertone" },
   localEngines: {
     stt: {
