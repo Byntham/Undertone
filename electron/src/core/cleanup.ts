@@ -43,7 +43,6 @@ export interface SubscriptionCleanupRuntime {
     serviceTier: CleanupServiceTier;
     userPrompt: string;
     timeoutMs: number;
-    systemPrompt?: string;
   }): Promise<string>;
 }
 

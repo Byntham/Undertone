@@ -18,9 +18,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
-    "evals/**/*.ts",
     "vite.config.mts",
-    "vitest.config.mts",
-    "vitest.eval.config.mts"
+    "vitest.config.mts"
   ]
 }

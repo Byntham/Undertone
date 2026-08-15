@@ -5,7 +5,6 @@ import {
   isRecord,
   type CleanupReasoningEffort,
   type CleanupServiceTier,
-  type UndertoneConfig,
 } from "../core/config";
 import { SYSTEM_PROMPT } from "../core/cleanupPrompt";
 import type { SubscriptionCleanupRuntime } from "../core/cleanup";
@@ -37,7 +36,6 @@ interface OpenAiSubscriptionOptions {
   openExternal(url: string): Promise<void>;
   appVersion: string;
   now?: () => number;
-  requestCredentialMode?: "managed" | "read-only";
 }
 
 export class OpenAiSubscription implements SubscriptionCleanupRuntime {
@@ -84,12 +82,11 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
     serviceTier: CleanupServiceTier;
     userPrompt: string;
     timeoutMs: number;
-    systemPrompt?: string;
   }): Promise<string> {
     if (!this.connected()) throw new Error("Connect your OpenAI account before using subscription cleanup.");
     const requestBody = JSON.stringify({
       model: DEFAULT_CLEANUP_MODELS["openai-subscription"],
-      instructions: options.systemPrompt ?? SYSTEM_PROMPT,
+      instructions: SYSTEM_PROMPT,
       input: [{
         role: "user",
         content: [{ type: "input_text", text: options.userPrompt }],
@@ -115,7 +112,7 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       stream: true,
     });
     let response = await this.authorizedPost(RESPONSES_URL, requestBody, options.timeoutMs);
-    if (response.status === 401 && this.options.requestCredentialMode !== "read-only") {
+    if (response.status === 401) {
       await this.refresh(true);
       response = await this.authorizedPost(RESPONSES_URL, requestBody, options.timeoutMs);
     }
@@ -230,25 +227,12 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
   }
 
   private async authorizedPost(url: string, body: string, timeoutMs: number): Promise<HttpResponse> {
-    const credentials = this.options.requestCredentialMode === "read-only"
-      ? this.readOnlyCredentials()
-      : await this.refresh();
+    const credentials = await this.refresh();
     return await this.options.http.post(url, {
       headers: this.headers(credentials, "text/event-stream"),
       body,
       timeoutMs,
     });
-  }
-
-  private readOnlyCredentials(): OpenAiSubscriptionCredentials {
-    const credentials = this.credentials;
-    if (credentials === null) {
-      throw new Error("Connect your OpenAI account before using subscription cleanup.");
-    }
-    if (credentials.expiresAt <= this.now() + REFRESH_SKEW_MS) {
-      throw new Error("OpenAI OAuth credentials are expired or too close to expiry.");
-    }
-    return credentials;
   }
 
   private headers(
@@ -265,29 +249,6 @@ export class OpenAiSubscription implements SubscriptionCleanupRuntime {
       "User-Agent": `undertone/${this.options.appVersion}`,
     };
   }
-}
-
-export function openAiCredentials(
-  config: Pick<
-    UndertoneConfig,
-    | "openai_oauth_access_token"
-    | "openai_oauth_refresh_token"
-    | "openai_oauth_expires_at"
-    | "openai_oauth_account_id"
-  >,
-): OpenAiSubscriptionCredentials | null {
-  return config.openai_oauth_access_token.length > 0
-    && config.openai_oauth_refresh_token.length > 0
-    && config.openai_oauth_account_id.length > 0
-    && Number.isFinite(config.openai_oauth_expires_at)
-    && config.openai_oauth_expires_at > 0
-    ? {
-        accessToken: config.openai_oauth_access_token,
-        refreshToken: config.openai_oauth_refresh_token,
-        expiresAt: config.openai_oauth_expires_at,
-        accountId: config.openai_oauth_account_id,
-      }
-    : null;
 }
 
 function tokenCredentials(response: HttpResponse, now: number): OpenAiSubscriptionCredentials {

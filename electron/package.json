@@ -11,7 +11,6 @@
     "build": "npm run clean && npm run build:native && tsc -p tsconfig.build.json && vite build",
     "test": "npm run build:native && npm run test:built",
     "test:built": "vitest run --config vitest.config.mts",
-    "eval:cleanup:luna": "npm run build:native && vitest run --config vitest.eval.config.mts",
     "start": "npm run build && node scripts/run-electron.mjs .",
     "clean:release": "node -e \"require('node:fs').rmSync('release',{recursive:true,force:true})\"",
     "package:built": "npm run clean:release && electron-builder --win --x64",

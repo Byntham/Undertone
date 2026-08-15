@@ -4,7 +4,6 @@ import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
 import {
   OpenAiSubscription,
   accountIdFromAccessToken,
-  openAiCredentials,
   parseResponseText,
   type OpenAiSubscriptionCredentials,
 } from "../src/main/openAiSubscription";
@@ -174,73 +173,6 @@ describe("OpenAI Subscription", () => {
     expect(subscription.connected()).toBe(false);
     expect(persisted.at(-1)).toBeNull();
   });
-
-  it("supports prompt overrides without changing the default", async () => {
-    const http = new FakeHttp();
-    http.postResponses.push({
-      status: 200,
-      body: `data: ${JSON.stringify({
-        type: "response.output_text.done",
-        text: '{"text":"clean"}',
-      })}`,
-    });
-    const subscription = createSubscription(http, validCredentials(), []);
-    await subscription.complete({
-      ...completionOptions(),
-      systemPrompt: "test-only cleanup instructions",
-    });
-
-    const body = JSON.parse(http.posts[0]!.request.body as string) as Record<string, unknown>;
-    expect(body.instructions).toBe("test-only cleanup instructions");
-  });
-
-  it("keeps evaluator credentials read-only", async () => {
-    const http = new FakeHttp();
-    http.postResponses.push({ status: 401, body: "unauthorized" });
-    const persisted: Array<OpenAiSubscriptionCredentials | null> = [];
-    const subscription = createSubscription(
-      http,
-      validCredentials(),
-      persisted,
-      async () => {},
-      "read-only",
-    );
-
-    await expect(subscription.complete(completionOptions()))
-      .rejects.toThrow("OpenAI Subscription cleanup was not authorized");
-    expect(http.posts).toHaveLength(1);
-    expect(persisted).toEqual([]);
-
-    const expired = createSubscription(
-      new FakeHttp(),
-      expiredCredentials(),
-      persisted,
-      async () => {},
-      "read-only",
-    );
-    await expect(expired.complete(completionOptions()))
-      .rejects.toThrow("expired or too close to expiry");
-  });
-
-  it("assembles OAuth credentials only when every field is present", () => {
-    const complete = {
-      openai_oauth_access_token: "access",
-      openai_oauth_refresh_token: "refresh",
-      openai_oauth_expires_at: 123,
-      openai_oauth_account_id: "account",
-    };
-    expect(openAiCredentials(complete)).toEqual({
-      accessToken: "access",
-      refreshToken: "refresh",
-      expiresAt: 123,
-      accountId: "account",
-    });
-    expect(openAiCredentials({ ...complete, openai_oauth_access_token: "" })).toBeNull();
-    expect(openAiCredentials({ ...complete, openai_oauth_refresh_token: "" })).toBeNull();
-    expect(openAiCredentials({ ...complete, openai_oauth_account_id: "" })).toBeNull();
-    expect(openAiCredentials({ ...complete, openai_oauth_expires_at: 0 })).toBeNull();
-    expect(openAiCredentials({ ...complete, openai_oauth_expires_at: Number.NaN })).toBeNull();
-  });
 });
 
 function createSubscription(
@@ -248,7 +180,6 @@ function createSubscription(
   credentials: OpenAiSubscriptionCredentials | null,
   persisted: Array<OpenAiSubscriptionCredentials | null>,
   openExternal: (url: string) => Promise<void> = async () => {},
-  requestCredentialMode: "managed" | "read-only" = "managed",
 ): OpenAiSubscription {
   return new OpenAiSubscription({
     http,
@@ -257,7 +188,6 @@ function createSubscription(
     openExternal,
     appVersion: "1.8.0",
     now: () => 1_000_000,
-    requestCredentialMode,
   });
 }
 
