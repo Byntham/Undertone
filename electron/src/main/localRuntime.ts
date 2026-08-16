@@ -498,6 +498,7 @@ export function createLocalCleanupRuntime(
       "--port", String(port),
       "-c", "8192",
       "--jinja",
+      "--reasoning", "off",
       ...(build === "cuda"
         ? ["-ngl", "99"]
         : ["-t", String(Math.min(8, os.cpus().length || 4))]),

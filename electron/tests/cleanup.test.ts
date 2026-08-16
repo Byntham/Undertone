@@ -8,7 +8,7 @@ import {
   type LocalCleanupRuntime,
   type SubscriptionCleanupRuntime,
 } from "../src/core/cleanup";
-import { SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
+import { LOCAL_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../src/core/cleanupPrompt";
 import { DEFAULT_CLEANUP_MODELS } from "../src/shared/models";
 import type { HttpClient, HttpRequest, HttpResponse } from "../src/platform/http";
 
@@ -162,6 +162,8 @@ describe("cleanup providers", () => {
     expect(http.calls[0]!.url).toBe("http://127.0.0.1:9/v1/chat/completions");
     expect(http.calls[0]!.request.headers).not.toHaveProperty("Authorization");
     expect(jsonBody(http.calls[0]!.request).model).toBe(DEFAULT_CLEANUP_MODELS.local);
+    const messages = jsonBody(http.calls[0]!.request).messages as Array<Record<string, unknown>>;
+    expect(messages[0]!.content).toBe(LOCAL_SYSTEM_PROMPT);
     expect(local.warmCount).toBe(0);
 
     local.url = null;

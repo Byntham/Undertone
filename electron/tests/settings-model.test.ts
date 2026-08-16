@@ -29,7 +29,7 @@ describe("settings model", () => {
       keyConfigured: { xai: true, openai: false, openrouter: false },
       openAiSubscriptionConnected: false,
       sttModel: "ggml-large-v3-turbo.bin",
-      cleanupModel: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      cleanupModel: "Qwen3.5-27B-UD-IQ2_XXS.gguf",
       localLoaded: false,
       localIdleMinutes: 0,
       corrections: {},
