@@ -7,7 +7,7 @@ import type {
 export const LOCAL_STT_MODEL = "ggml-large-v3-turbo.bin";
 export const LOCAL_NEMOTRON_STT_MODEL = "nemotron-speech-streaming-en-0.6b.q8_0.gguf";
 export const LOCAL_VAD_MODEL = "ggml-silero-v6.2.0.bin";
-export const LOCAL_CLEANUP_MODEL = "Qwen3.5-27B-UD-IQ2_XXS.gguf";
+export const LOCAL_CLEANUP_MODEL = "Qwen3.8-27B-UD-IQ2_XXS.gguf";
 
 export const DEFAULT_STT_MODELS = {
   xai: "",

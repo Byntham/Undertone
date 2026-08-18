@@ -199,7 +199,7 @@ describe("local runtime", () => {
     await runtime.shutdown();
   });
 
-  it("loads Qwen3.5 cleanup with reasoning disabled", async () => {
+  it("loads Qwen3.8 cleanup with reasoning disabled", async () => {
     const root = await installedRoot("cleanup");
     const host = new FakeHost();
     const runtime = createLocalCleanupRuntime(host, root, {
