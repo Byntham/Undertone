@@ -353,8 +353,7 @@ internal static class Program
 
     private static ForegroundInfo CaptureForeground(out string generation)
     {
-        ForegroundInfo unavailable = null;
-        var unavailableSamples = 0;
+        var samples = new FocusSampleAccumulator();
         for (var attempt = 0; attempt < FocusReadAttempts; attempt += 1)
         {
             var before = Interlocked.Read(ref _inputGeneration);
@@ -362,32 +361,15 @@ internal static class Program
             var focusIdentity = _focusReader.QueryIdentity(FocusReadTimeoutMs);
             var foreground = Desktop.GetForeground(focusIdentity);
             var after = Interlocked.Read(ref _inputGeneration);
-            var stable = before == after
-                && handlesBefore.Window == foreground.Window
-                && handlesBefore.Focus == foreground.Focus;
-            if (stable && focusIdentity.State == FocusIdentityState.Available)
+            var stable = samples.Observe(
+                handlesBefore,
+                foreground,
+                before,
+                after);
+            if (stable != null)
             {
                 generation = after.ToString();
-                return foreground;
-            }
-            if (stable && focusIdentity.State == FocusIdentityState.Unavailable)
-            {
-                unavailableSamples = unavailable != null
-                    && unavailable.Window == foreground.Window
-                    && unavailable.Focus == foreground.Focus
-                    ? unavailableSamples + 1
-                    : 1;
-                unavailable = foreground;
-                if (unavailableSamples >= 2)
-                {
-                    generation = after.ToString();
-                    return foreground;
-                }
-            }
-            else
-            {
-                unavailable = null;
-                unavailableSamples = 0;
+                return stable;
             }
             if (attempt + 1 < FocusReadAttempts)
                 Thread.Sleep(FocusRetryDelayMs);
@@ -481,9 +463,16 @@ internal static class Program
         if (actual.FocusIdentity.State == FocusIdentityState.Degraded)
             return "identity-unavailable";
         if (expected.FocusIdentityState == "available")
-            return actual.FocusIdentity.State == FocusIdentityState.Available
-                ? expected.FocusIdentity == actual.FocusIdentity.Value ? null : "identity-changed"
+        {
+            if (actual.FocusIdentity.State != FocusIdentityState.Available)
+                return "identity-unavailable";
+            var comparison = actual.FocusIdentity.Compare(expected.FocusIdentity);
+            if (comparison == FocusIdentityComparison.Match)
+                return null;
+            return comparison == FocusIdentityComparison.Changed
+                ? "identity-changed"
                 : "identity-unavailable";
+        }
         return actual.FocusIdentity.State == FocusIdentityState.Unavailable
             ? null
             : "identity-unavailable";
