@@ -14,6 +14,7 @@ internal static class Desktop
     private const ushort VkControl = 0x11;
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
+    private const uint KeyEventUnicode = 0x0004;
 
     public static ForegroundInfo GetForeground(FocusIdentityResult focusIdentity)
     {
@@ -52,6 +53,23 @@ internal static class Desktop
             == (uint)inputs.Length;
     }
 
+    public static bool SendText(string text)
+    {
+        for (var index = 0; index < text.Length; index++)
+        {
+            var inputs = new[]
+            {
+                UnicodeKey(text[index], KeyEventUnicode),
+                UnicodeKey(text[index], KeyEventUnicode | KeyEventKeyUp)
+            };
+            if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input)))
+                != (uint)inputs.Length)
+                return false;
+            System.Threading.Thread.Sleep(1);
+        }
+        return true;
+    }
+
     private static Input Key(ushort virtualKey, uint flags)
     {
         return new Input
@@ -63,6 +81,25 @@ internal static class Desktop
                 {
                     VirtualKey = virtualKey,
                     ScanCode = 0,
+                    Flags = flags,
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            }
+        };
+    }
+
+    private static Input UnicodeKey(char character, uint flags)
+    {
+        return new Input
+        {
+            Type = InputKeyboard,
+            Data = new InputUnion
+            {
+                Keyboard = new KeyboardInput
+                {
+                    VirtualKey = 0,
+                    ScanCode = character,
                     Flags = flags,
                     Time = 0,
                     ExtraInfo = UIntPtr.Zero

@@ -75,6 +75,7 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   liveTranscription: boolean;
+  directLiveInsert: boolean;
   openTurnCleanupStrategy: OpenTurnCleanupStrategy;
   inputDevice: string;
   microphones: string[];
@@ -112,6 +113,7 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   liveTranscription?: boolean;
+  directLiveInsert?: boolean;
   openTurnCleanupStrategy?: OpenTurnCleanupStrategy;
   inputDevice?: string;
   provider?: TranscriptionProviderId;

@@ -4,7 +4,7 @@ import { GestureState, TapStateMachine } from "../src/core/gestures";
 
 const TAP_MS = 100;
 
-function make(startOk = true): {
+function make(startOk = true, toggleOnly = false): {
   machine: TapStateMachine;
   actions: string[];
 } {
@@ -19,7 +19,7 @@ function make(startOk = true): {
       onDiscard: () => actions.push("discard"),
       onLock: () => actions.push("lock"),
     },
-    { tapMs: TAP_MS },
+    { tapMs: TAP_MS, toggleOnly: () => toggleOnly },
   );
   return { machine, actions };
 }
@@ -66,6 +66,31 @@ describe("TapStateMachine", () => {
     expect(machine.state).toBe(GestureState.held);
     machine.release();
     expect(machine.state).toBe(GestureState.locked);
+  });
+
+  it("starts and stops toggle-only recording after the shortcut is released", () => {
+    const { machine, actions } = make(true, true);
+    machine.press();
+    vi.advanceTimersByTime(TAP_MS * 2);
+    expect(actions).toEqual([]);
+    machine.release();
+    expect(actions).toEqual(["start", "lock"]);
+    expect(machine.state).toBe(GestureState.locked);
+
+    machine.press();
+    expect(actions).toEqual(["start", "lock"]);
+    machine.release();
+    expect(actions).toEqual(["start", "lock", "finish:commit"]);
+    expect(machine.state).toBe(GestureState.idle);
+  });
+
+  it("cancels a deferred toggle without discarding a recording", () => {
+    const { machine, actions } = make(true, true);
+    machine.press();
+    expect(machine.cancel()).toBe(true);
+    machine.release();
+    expect(actions).toEqual([]);
+    expect(machine.state).toBe(GestureState.idle);
   });
 
   it("finishes a held recording into the open turn", () => {

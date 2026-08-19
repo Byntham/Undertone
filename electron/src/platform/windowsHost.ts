@@ -5,7 +5,7 @@ import readline from "node:readline";
 
 import type { GuardedPasteResult, PasteTarget } from "../core/clipboardPaster";
 
-const PROTOCOL_VERSION = 9;
+const PROTOCOL_VERSION = 10;
 const HOST_NAME = "Undertone.WinHost.exe";
 const EXTRACTION_TIMEOUT_MS = 300_000;
 
@@ -167,6 +167,14 @@ export class WindowsHost {
     const response = await this.request("sendPaste", "pasteResult");
     if (typeof response.sent !== "boolean") {
       throw new Error("Windows host returned an invalid paste result");
+    }
+    return response.sent;
+  }
+
+  async sendText(text: string): Promise<boolean> {
+    const response = await this.request("sendText", "textResult", { text });
+    if (typeof response.sent !== "boolean") {
+      throw new Error("Windows host returned an invalid text result");
     }
     return response.sent;
   }

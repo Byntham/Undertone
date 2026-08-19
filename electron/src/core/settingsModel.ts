@@ -43,6 +43,7 @@ const PATCH_FIELDS = new Set([
   "scratchHotkey",
   "discardHotkey",
   "liveTranscription",
+  "directLiveInsert",
   "openTurnCleanupStrategy",
   "inputDevice",
   "provider",
@@ -79,6 +80,7 @@ export function settingsSnapshot(
     discardHotkey: config.discard_hotkey,
     shortcutWarning: shortcutWarning(config),
     liveTranscription: config.live_transcription,
+    directLiveInsert: config.direct_live_insert,
     openTurnCleanupStrategy: config.stack_cleanup_strategy,
     inputDevice: config.input_device,
     microphones: [...microphones],
@@ -107,7 +109,8 @@ export function settingsSnapshot(
 }
 
 function activeSttModel(config: UndertoneConfig, provider: TranscriptionProviderId): string {
-  if (config.live_transcription && (provider === "openai" || provider === "xai")) {
+  if ((config.live_transcription || config.direct_live_insert)
+    && (provider === "openai" || provider === "xai")) {
     return LIVE_STT_MODELS[provider] ?? "";
   }
   return provider === "local"
@@ -180,6 +183,13 @@ export function applySettingsPatch(
   if (value.liveTranscription !== undefined) {
     next.live_transcription = booleanField(value.liveTranscription, "liveTranscription");
   }
+  if (value.directLiveInsert !== undefined) {
+    next.direct_live_insert = booleanField(value.directLiveInsert, "directLiveInsert");
+    if (next.provider === "openai"
+      || (next.provider === "local" && next.local_stt_engine === "nemotron")) {
+      next.live_transcription = next.direct_live_insert;
+    }
+  }
   if (value.openTurnCleanupStrategy !== undefined) {
     if (value.openTurnCleanupStrategy !== "live-full"
       && value.openTurnCleanupStrategy !== "commit-full") {
@@ -217,9 +227,13 @@ export function applySettingsPatch(
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
   if (next.provider === "local" && next.local_stt_engine === "nemotron") next.language = "en";
-  if (next.provider === "local" && next.local_stt_engine === "whisper") {
+  const supportsDirectLiveInsert = next.provider === "openai"
+    || (next.provider === "local" && next.local_stt_engine === "nemotron");
+  if (next.provider === "openrouter"
+    || (next.provider === "local" && next.local_stt_engine === "whisper")) {
     next.live_transcription = false;
   }
+  next.direct_live_insert = supportsDirectLiveInsert ? next.live_transcription : false;
   return next;
 }
 

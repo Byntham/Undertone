@@ -274,6 +274,8 @@ function General({
   captureShortcut: (field: ShortcutSetting) => Promise<void>;
   systemAction: (action: SystemAction) => Promise<void>;
 }): React.JSX.Element {
+  const directLiveSupported = settings.provider === "openai"
+    || (settings.provider === "local" && settings.localSttEngine === "nemotron");
   const [microphoneStatus, setMicrophoneStatus] = useState<string | null>(null);
   const [testingMicrophone, setTestingMicrophone] = useState(false);
   const testMicrophone = async (): Promise<void> => {
@@ -367,15 +369,22 @@ function General({
             </select>
           </SettingRow>
           <SettingRow
-            title="Live text preview"
-            description="Show text in the open turn while you speak. Available with OpenAI, xAI, and local Nemotron."
+            title={directLiveSupported ? "Direct live insert (test)" : "Live text preview"}
+            description={directLiveSupported
+              ? "Tap Dictate to start and tap again to stop. Inserts into the focused app without the turn window or cleanup; revised words already inserted are not corrected."
+              : "Show text in the open turn while you speak. Available with xAI."}
           >
             <Toggle
-              label="Show live text preview"
-              checked={settings.liveTranscription}
-              disabled={settings.provider === "openrouter"
-                || (settings.provider === "local" && settings.localSttEngine === "whisper")}
-              onChange={(liveTranscription) => { void update({ liveTranscription }); }}
+              label={directLiveSupported ? "Insert text while speaking" : "Show live text preview"}
+              checked={directLiveSupported
+                ? settings.directLiveInsert
+                : settings.liveTranscription}
+              disabled={!directLiveSupported && settings.provider !== "xai"}
+              onChange={(enabled) => {
+                void update(directLiveSupported
+                  ? { directLiveInsert: enabled }
+                  : { liveTranscription: enabled });
+              }}
             />
           </SettingRow>
         </div>

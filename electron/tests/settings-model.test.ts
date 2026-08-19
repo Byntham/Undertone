@@ -19,6 +19,7 @@ describe("settings model", () => {
       discardHotkey: "ctrl+alt+shift+backspace",
       shortcutWarning: null,
       liveTranscription: false,
+      directLiveInsert: false,
       openTurnCleanupStrategy: "live-full",
       inputDevice: "",
       microphones: [],
@@ -103,6 +104,7 @@ describe("settings model", () => {
       provider: "local",
       local_stt_engine: "nemotron",
       live_transcription: true,
+      direct_live_insert: true,
     });
     expect(settingsSnapshot(nemotron, "1.8.1").sttModel)
       .toBe("nemotron-speech-streaming-en-0.6b.q8_0.gguf");
@@ -163,6 +165,7 @@ describe("settings model", () => {
       corrections: { "under tone": "Undertone" },
       openTurnCleanupStrategy: "commit-full",
       liveTranscription: true,
+      directLiveInsert: true,
     });
     expect(next).not.toBe(config);
     expect(next.language).toBe("fr");
@@ -177,6 +180,7 @@ describe("settings model", () => {
     expect(next.cleanup_service_tier).toBe("priority");
     expect(next.stack_cleanup_strategy).toBe("commit-full");
     expect(next.live_transcription).toBe(true);
+    expect(next.direct_live_insert).toBe(true);
     expect(config.language).toBe("en");
   });
 
@@ -185,10 +189,52 @@ describe("settings model", () => {
       provider: "local",
       local_stt_engine: "nemotron",
       live_transcription: true,
+      direct_live_insert: true,
     });
     const next = applySettingsPatch(config, { localSttEngine: "whisper" });
     expect(next.live_transcription).toBe(false);
+    expect(next.direct_live_insert).toBe(false);
     expect(next.local_stt_engine).toBe("whisper");
+  });
+
+  it("turns direct insertion off when an unsupported provider is selected", () => {
+    const config = normalizeConfig({
+      provider: "openai",
+      direct_live_insert: true,
+    });
+    const next = applySettingsPatch(config, { provider: "xai" });
+    expect(next.direct_live_insert).toBe(false);
+  });
+
+  it("uses one live toggle for direct OpenAI and Nemotron output", () => {
+    const enabled = applySettingsPatch(normalizeConfig({ provider: "openai" }), {
+      directLiveInsert: true,
+    });
+    expect(enabled.direct_live_insert).toBe(true);
+    expect(enabled.live_transcription).toBe(true);
+
+    const disabled = applySettingsPatch(enabled, { directLiveInsert: false });
+    expect(disabled.direct_live_insert).toBe(false);
+    expect(disabled.live_transcription).toBe(false);
+  });
+
+  it("keeps the live mode coherent across provider switches", () => {
+    const openAi = applySettingsPatch(normalizeConfig({
+      provider: "openai",
+      direct_live_insert: true,
+    }), { provider: "xai" });
+    expect(openAi).toMatchObject({
+      provider: "xai",
+      live_transcription: true,
+      direct_live_insert: false,
+    });
+
+    const switchedBack = applySettingsPatch(openAi, { provider: "openai" });
+    expect(switchedBack).toMatchObject({
+      provider: "openai",
+      live_transcription: true,
+      direct_live_insert: true,
+    });
   });
 
   it("forces English only while local Nemotron is the active transcription provider", () => {

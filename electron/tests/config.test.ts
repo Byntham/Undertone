@@ -39,6 +39,7 @@ describe("configuration", () => {
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
     expect(second.live_transcription).toBe(false);
+    expect(second.direct_live_insert).toBe(false);
     expect(second.cleanup_reasoning_effort).toBe("none");
     expect(second.cleanup_service_tier).toBe("priority");
     expect(second.hotkey).toBe("left ctrl+left windows");
@@ -74,6 +75,7 @@ describe("configuration", () => {
       scratch_hotkey: 42,
       discard_hotkey: [],
       live_transcription: "true",
+      direct_live_insert: "true",
       stack_cleanup_strategy: "sometimes",
       local_loaded: "false",
       local_idle_minutes: 7,
@@ -139,6 +141,33 @@ describe("configuration", () => {
       provider: "openai",
       live_transcription: true,
     }).live_transcription).toBe(true);
+  });
+
+  it("enables direct live insertion only for OpenAI and local Nemotron", () => {
+    expect(normalizeConfig({
+      provider: "openai",
+      direct_live_insert: true,
+    })).toMatchObject({ direct_live_insert: true, live_transcription: true });
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(true);
+    expect(normalizeConfig({
+      provider: "xai",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(false);
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "whisper",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(false);
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+      direct_live_insert: false,
+    }).direct_live_insert).toBe(true);
   });
 
   it("persists only supported local transcription engines", () => {

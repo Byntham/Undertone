@@ -30,6 +30,7 @@ import {
   DictationJobRunner,
   type DictationFeedbackMessage,
 } from "../core/dictationRunner";
+import { DirectLiveTextWriter } from "../core/directLiveTextWriter";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import {
   LiveTranscriber,
@@ -125,6 +126,10 @@ interface LiveCapture {
   latchedText?: string;
 }
 
+interface DirectLiveCapture extends LiveCapture {
+  writer: DirectLiveTextWriter;
+}
+
 interface TurnDraftDismissal {
   revision: number;
   captureId?: number;
@@ -211,6 +216,7 @@ if (!gotLock) {
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
   const liveCaptures = new Map<number, LiveCapture>();
+  const directLiveCaptures = new Map<number, DirectLiveCapture>();
   const activeDictationCaptureIds = new Set<number>();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
@@ -391,6 +397,7 @@ if (!gotLock) {
     if (overlay === null || overlay.isDestroyed()) return;
     publishTurnDraft();
     const projectedState = isTurnDraftActivity(state.state)
+      && directLiveCaptures.size === 0
       ? { state: "hidden", text: "", tone: "normal" } satisfies OverlayState
       : state;
     if (projectedState.state === "hidden") {
@@ -617,9 +624,12 @@ if (!gotLock) {
   };
 
   const updateTrayTooltip = (): void => {
+    const activeTooltip = directLiveInsertEnabled(config)
+      ? "Undertone - tap to start or stop live dictation"
+      : "Undertone - hold to paste, tap to toggle, Left Alt to keep open";
     tray?.setToolTip(paused
-      ? "Undertone — paused"
-      : "Undertone — hold to paste, tap to toggle, Left Alt to keep open");
+      ? "Undertone - paused"
+      : activeTooltip);
   };
 
   const configureShortcuts = (): void => {
@@ -731,18 +741,25 @@ if (!gotLock) {
   };
 
   const abandonLiveCapture = (captureId: number): void => {
-    const capture = liveCaptures.get(captureId);
+    const directCapture = directLiveCaptures.get(captureId);
+    const capture = liveCaptures.get(captureId) ?? directCapture;
     if (capture === undefined) return;
     liveCaptures.delete(captureId);
+    directLiveCaptures.delete(captureId);
+    directCapture?.writer.cancel();
     capture.session.cancel();
     publishTurnDraft();
   };
 
   const failLiveCapture = (captureId: number, error: Error): void => {
-    const capture = liveCaptures.get(captureId);
+    const directCapture = directLiveCaptures.get(captureId);
+    const capture = liveCaptures.get(captureId) ?? directCapture;
     if (capture === undefined) return;
     const shouldCancelRecording = activeAudioCaptureId === captureId;
     liveCaptures.delete(captureId);
+    directLiveCaptures.delete(captureId);
+    directCapture?.writer.cancel();
+    capture.session.cancel();
     const pending = pendingAudioFinalizations.get(captureId);
     if (pending !== undefined) pending.liveFailed = true;
     console.warn(`Live ${capture.provider} transcription failed: ${error.message}`);
@@ -762,10 +779,11 @@ if (!gotLock) {
         return false;
       }
       const captureId = nextCaptureId++;
-      const streamLive = liveTranscriptionEnabled(config);
-      if (!turnDraftReady
+      const directInsert = directLiveInsertEnabled(config);
+      const streamLive = directInsert || liveTranscriptionEnabled(config);
+      if (!directInsert && (!turnDraftReady
           || turnDraftWindow === null
-          || turnDraftWindow.isDestroyed()) {
+          || turnDraftWindow.isDestroyed())) {
         showFeedback("Turn window unavailable — recording did not start", "error");
         return false;
       }
@@ -776,8 +794,18 @@ if (!gotLock) {
             ? "openai"
             : config.provider === "xai" ? "xai" : "local";
           if (provider === "local") selectedLocalSttRuntime()?.warm();
+          const writer = directInsert
+            ? new DirectLiveTextWriter(
+              async (text) => await windowsHost.sendText(text),
+              (error) => failLiveCapture(captureId, error),
+            )
+            : null;
           const callbacks: LiveTranscriptionCallbacks = {
             partial: (text) => {
+              if (writer !== null) {
+                if (directLiveCaptures.has(captureId)) writer.update(text);
+                return;
+              }
               const active = liveCaptures.get(captureId);
               if (active === undefined) return;
               active.text = text;
@@ -800,7 +828,11 @@ if (!gotLock) {
             text: "",
             state: "listening",
           };
-          liveCaptures.set(captureId, liveCapture);
+          if (writer === null) {
+            liveCaptures.set(captureId, liveCapture);
+          } else {
+            directLiveCaptures.set(captureId, { ...liveCapture, writer });
+          }
         } catch (error) {
           showFeedback(
             `Live transcription failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -810,7 +842,7 @@ if (!gotLock) {
         }
       }
       activeAudioCaptureId = captureId;
-      activeDictationCaptureIds.add(captureId);
+      if (!directInsert) activeDictationCaptureIds.add(captureId);
       anchorOverlayToCursor();
       audioWindow.webContents.send("audio:command", {
         type: "start",
@@ -828,10 +860,11 @@ if (!gotLock) {
       activeAudioCaptureId = null;
       if (captureId === null) return;
       const activePipeline = pipeline;
-      const target = completion === "commit"
+      const directCapture = directLiveCaptures.get(captureId);
+      const target = completion === "commit" && directCapture === undefined
         ? captureForegroundTarget()
         : Promise.resolve(null);
-      const liveCapture = liveCaptures.get(captureId);
+      const liveCapture = liveCaptures.get(captureId) ?? directCapture;
       if (liveCapture !== undefined) liveCapture.state = "finalizing";
       const overlayRevision = overlayController.transcribing();
       if (activePipeline !== null) {
@@ -856,7 +889,8 @@ if (!gotLock) {
               abandonLiveCapture(captureId);
               return null;
             }
-            const activeLive = liveCaptures.get(captureId);
+            const activeDirect = directLiveCaptures.get(captureId);
+            const activeLive = liveCaptures.get(captureId) ?? activeDirect;
             let input: DictationInput;
             if (activeLive !== undefined) {
               try {
@@ -871,10 +905,17 @@ if (!gotLock) {
                 console.log(
                   `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
                 );
+                if (activeDirect !== undefined) {
+                  const inserted = await activeDirect.writer.finish(text);
+                  directLiveCaptures.delete(captureId);
+                  history.registerSuccess(inserted);
+                  showFeedback("Text inserted");
+                  return null;
+                }
                 publishTurnDraft();
                 input = { type: "transcript", text, previewId: captureId };
               } catch (error) {
-                if (liveCaptures.has(captureId)) {
+                if (liveCaptures.has(captureId) || directLiveCaptures.has(captureId)) {
                   failLiveCapture(
                     captureId,
                     error instanceof Error ? error : new Error(String(error)),
@@ -935,9 +976,11 @@ if (!gotLock) {
       overlayController.hide();
     },
     onLock: () => {
-      playCue("lock");
+      if (!directLiveInsertEnabled(config)) playCue("lock");
       overlayController.locked();
     },
+  }, {
+    toggleOnly: () => directLiveInsertEnabled(config),
   });
 
   const createOverlay = async (): Promise<void> => {
@@ -1356,7 +1399,12 @@ if (!gotLock) {
     }
     pendingAudioFinalizations.clear();
     for (const capture of liveCaptures.values()) capture.session.cancel();
+    for (const capture of directLiveCaptures.values()) {
+      capture.writer.cancel();
+      capture.session.cancel();
+    }
     liveCaptures.clear();
+    directLiveCaptures.clear();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -1457,6 +1505,7 @@ if (!gotLock) {
       const previousProvider = config.provider;
       const previousLocalSttEngine = config.local_stt_engine;
       const previousLiveTranscription = config.live_transcription;
+      const previousDirectLiveInsert = config.direct_live_insert;
       const next = applySettingsPatch(config, value);
       await store.save(next);
       config = next;
@@ -1465,6 +1514,7 @@ if (!gotLock) {
           provider: previousProvider,
           local_stt_engine: previousLocalSttEngine,
           live_transcription: previousLiveTranscription,
+          direct_live_insert: previousDirectLiveInsert,
         },
         next: config,
         recordingActive: gestures.state !== GestureState.idle,
@@ -1868,7 +1918,7 @@ if (!gotLock) {
       }
     } else if (payload.type === "chunk") {
       const captureId = typeof payload.captureId === "number" ? payload.captureId : -1;
-      const live = liveCaptures.get(captureId);
+      const live = liveCaptures.get(captureId) ?? directLiveCaptures.get(captureId);
       const samples = toFloat32Array(payload.samples);
       const sampleRate = typeof payload.sampleRate === "number" ? payload.sampleRate : 0;
       if (live === undefined || samples === null) return;
@@ -2157,6 +2207,12 @@ function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
     && (config.provider === "openai"
       || config.provider === "xai"
+      || (config.provider === "local" && config.local_stt_engine === "nemotron"));
+}
+
+function directLiveInsertEnabled(config: UndertoneConfig): boolean {
+  return config.direct_live_insert
+    && (config.provider === "openai"
       || (config.provider === "local" && config.local_stt_engine === "nemotron"));
 }
 

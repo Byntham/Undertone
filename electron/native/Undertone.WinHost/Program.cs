@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 9;
+    private const int ProtocolVersion = 10;
     private const int FocusReadAttempts = 3;
     private const int FocusReadTimeoutMs = 150;
     private const int FocusRetryDelayMs = 50;
@@ -224,6 +224,16 @@ internal static class Program
                 Respond(requestId, "pasteResult", new Dictionary<string, object>
                 {
                     { "sent", Desktop.SendPaste() }
+                });
+            }
+            else if (type == "sendText")
+            {
+                object rawText;
+                if (!command.TryGetValue("text", out rawText) || !(rawText is string))
+                    throw new InvalidOperationException("text must be a string");
+                Respond(requestId, "textResult", new Dictionary<string, object>
+                {
+                    { "sent", Desktop.SendText((string)rawText) }
                 });
             }
             else if (type == "guardedPaste")

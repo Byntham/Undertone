@@ -6,6 +6,7 @@ import readline from "node:readline";
 
 import { describe, expect, it } from "vitest";
 
+import { DirectLiveTextWriter } from "../src/core/directLiveTextWriter";
 import {
   getCudaStatusBestEffort,
   resolveWindowsHost,
@@ -32,7 +33,7 @@ describe("Windows host", () => {
     const host = new WindowsHost();
     try {
       const ready = await host.start();
-      expect(ready.protocol).toBe(9);
+      expect(ready.protocol).toBe(10);
       expect(ready.keyboardHook).toBe(true);
       expect(ready.mouseHook).toBe(true);
       const foreground = await host.getForeground();
@@ -56,6 +57,7 @@ describe("Windows host", () => {
       await host.setInputMode("listen");
       await host.setInputMode("shortcut-capture");
       await host.setInputMode("off");
+      await expect(host.sendText("")).resolves.toBe(true);
     } finally {
       await host.stop();
     }
@@ -75,7 +77,7 @@ describe("Windows host", () => {
       const id = String(++requestId);
       child.stdin.write(`${JSON.stringify({
         ...values,
-        protocol: 9,
+        protocol: 10,
         type,
         requestId: id,
       })}\n`);
@@ -86,6 +88,7 @@ describe("Windows host", () => {
       await expect(command("setInputMode", { mode: "invalid" })).resolves.toMatchObject({
         type: "error",
       });
+      await expect(command("sendText", { text: 42 })).resolves.toMatchObject({ type: "error" });
 
       const required = {
         window: "not-current",
@@ -198,7 +201,7 @@ describe("Windows host", () => {
       child.stdout.resume();
       child.stderr.resume();
       child.stdin.write(`${JSON.stringify({
-        protocol: 9,
+        protocol: 10,
         zipFiles: [archive],
         patterns: ["large-model.bin"],
         targetDirectory: disconnectedTarget,
@@ -303,7 +306,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 9,
+        protocol: 10,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -327,7 +330,7 @@ describe("Windows host", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_HOST_DESKTOP_E2E !== "1")(
-    "validates focused controls and pastes through SendInput",
+    "validates focused controls and sends paste and Unicode text through SendInput",
     async () => {
       const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-e2e-"));
       const scriptPath = path.join(temporary, "target.ps1");
@@ -381,12 +384,19 @@ describe("Windows host", () => {
         ));
         setClipboardText("hello ");
         expect(await host.sendGuardedPaste(freshTarget)).toBe("pasted");
+        const writer = new DirectLiveTextWriter(
+          async (text) => await host.sendText(text),
+          (error) => { throw error; },
+        );
+        writer.update("café");
+        writer.update("café 😀");
+        await writer.finish("café 😀");
         await delay(300);
         await writeFile(target.stop, "", "utf8");
         await writeFile(thief.stop, "", "utf8");
         await waitForChildExit(targetProcess, 5_000);
         await waitForChildExit(thiefProcess, 5_000);
-        expect(await readFile(target.result, "utf8")).toBe("I like hello apples.");
+        expect(await readFile(target.result, "utf8")).toBe("I like hello café 😀 apples.");
       } finally {
         try {
           await host.stop();
