@@ -20,9 +20,10 @@ describe("Nemotron live transcriber", () => {
       },
     };
     const partial = vi.fn();
+    const stable = vi.fn();
     const failed = vi.fn();
     const session = new NemotronLiveTranscriber(runtime, factory)
-      .start("en", { partial, failed });
+      .start("en", { partial, stable, failed });
 
     expect(session.sampleRate).toBe(16_000);
     expect(url).toBe("ws://127.0.0.1:8123/v1/realtime");
@@ -59,6 +60,8 @@ describe("Nemotron live transcriber", () => {
       delta: "Second phrase",
     });
     expect(partial).toHaveBeenLastCalledWith("First phrase. Second phrase");
+    expect(stable).toHaveBeenCalledTimes(1);
+    expect(stable).toHaveBeenCalledWith("First phrase.");
 
     const final = session.finish();
     expect(jsonMessages(socket).at(-1)).toEqual({ type: "input_audio_buffer.commit" });
@@ -68,6 +71,10 @@ describe("Nemotron live transcriber", () => {
     });
     socket.message({ type: "input_audio_buffer.committed" });
     await expect(final).resolves.toBe("First phrase. Second phrase.");
+    expect(stable.mock.calls.map(([text]) => text)).toEqual([
+      "First phrase.",
+      " Second phrase.",
+    ]);
     expect(failed).not.toHaveBeenCalled();
     expect(socket.closed).toBe(true);
   });

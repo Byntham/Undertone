@@ -33,7 +33,7 @@ describe("Windows host", () => {
     const host = new WindowsHost();
     try {
       const ready = await host.start();
-      expect(ready.protocol).toBe(10);
+      expect(ready.protocol).toBe(11);
       expect(ready.keyboardHook).toBe(true);
       expect(ready.mouseHook).toBe(true);
       const foreground = await host.getForeground();
@@ -44,6 +44,9 @@ describe("Windows host", () => {
         ? typeof foreground.focusIdentity === "string"
         : foreground.focusIdentity === null).toBe(true);
       expect(typeof foreground.generation).toBe("string");
+      expect(foreground.targetState).toMatch(
+        /^(editable|non-editable|password|disabled|read-only|unknown)$/u,
+      );
       const protectedValue = await host.protectSecret("test-only-secret");
       expect(protectedValue).toMatch(/^dpapi:/);
       expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
@@ -77,7 +80,7 @@ describe("Windows host", () => {
       const id = String(++requestId);
       child.stdin.write(`${JSON.stringify({
         ...values,
-        protocol: 10,
+        protocol: 11,
         type,
         requestId: id,
       })}\n`);
@@ -101,6 +104,24 @@ describe("Windows host", () => {
         type: "guardedPasteResult",
         status: "focus-changed",
       });
+      await expect(command("guardedText", { ...required, text: "hello" }))
+        .resolves.toMatchObject({
+          type: "guardedTextResult",
+          status: "focus-changed",
+        });
+      await expect(command("guardedReplaceText", {
+        ...required,
+        removeCount: 2,
+        text: "world",
+      })).resolves.toMatchObject({
+        type: "guardedReplaceTextResult",
+        status: "focus-changed",
+      });
+      await expect(command("guardedReplaceText", {
+        ...required,
+        removeCount: -1,
+        text: "world",
+      })).resolves.toMatchObject({ type: "error" });
       for (const invalid of [
         { ...required, focus: undefined },
         { ...required, generation: undefined },
@@ -201,7 +222,7 @@ describe("Windows host", () => {
       child.stdout.resume();
       child.stderr.resume();
       child.stdin.write(`${JSON.stringify({
-        protocol: 10,
+        protocol: 11,
         zipFiles: [archive],
         patterns: ["large-model.bin"],
         targetDirectory: disconnectedTarget,
@@ -306,7 +327,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 10,
+        protocol: 11,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -385,11 +406,11 @@ describe("Windows host", () => {
         setClipboardText("hello ");
         expect(await host.sendGuardedPaste(freshTarget)).toBe("pasted");
         const writer = new DirectLiveTextWriter(
-          async (text) => await host.sendText(text),
+          async (text) => await host.sendGuardedText(freshTarget, text),
           (error) => { throw error; },
         );
-        writer.update("café");
-        writer.update("café 😀");
+        writer.append("café");
+        writer.append(" 😀");
         await writer.finish("café 😀");
         await delay(300);
         await writeFile(target.stop, "", "utf8");

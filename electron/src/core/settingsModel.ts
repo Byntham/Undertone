@@ -64,10 +64,12 @@ export function settingsSnapshot(
   } = EMPTY_LOCAL_ENGINES,
   microphones: readonly string[] = [],
   startWithWindows = false,
+  recordingActive = false,
 ): SettingsSnapshot {
   const provider: TranscriptionProviderId = config.provider;
   const cleanupProvider: CleanupProviderId = config.cleanup_provider;
   return {
+    recordingActive,
     language: config.language,
     aiCleanup: config.ai_cleanup,
     restoreClipboard: config.restore_clipboard,
@@ -185,10 +187,6 @@ export function applySettingsPatch(
   }
   if (value.directLiveInsert !== undefined) {
     next.direct_live_insert = booleanField(value.directLiveInsert, "directLiveInsert");
-    if (next.provider === "openai"
-      || (next.provider === "local" && next.local_stt_engine === "nemotron")) {
-      next.live_transcription = next.direct_live_insert;
-    }
   }
   if (value.openTurnCleanupStrategy !== undefined) {
     if (value.openTurnCleanupStrategy !== "live-full"
@@ -227,13 +225,13 @@ export function applySettingsPatch(
     next.corrections = stringMap(value.corrections, "corrections", 200, 256);
   }
   if (next.provider === "local" && next.local_stt_engine === "nemotron") next.language = "en";
-  const supportsDirectLiveInsert = next.provider === "openai"
+  const supportsStreaming = next.provider === "openai"
+    || next.provider === "xai"
     || (next.provider === "local" && next.local_stt_engine === "nemotron");
-  if (next.provider === "openrouter"
-    || (next.provider === "local" && next.local_stt_engine === "whisper")) {
+  if (!supportsStreaming) {
     next.live_transcription = false;
+    next.direct_live_insert = false;
   }
-  next.direct_live_insert = supportsDirectLiveInsert ? next.live_transcription : false;
   return next;
 }
 

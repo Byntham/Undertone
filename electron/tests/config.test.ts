@@ -143,11 +143,11 @@ describe("configuration", () => {
     }).live_transcription).toBe(true);
   });
 
-  it("enables direct live insertion only for OpenAI and local Nemotron", () => {
+  it("keeps live typing separate from preview and supports all streaming providers", () => {
     expect(normalizeConfig({
       provider: "openai",
       direct_live_insert: true,
-    })).toMatchObject({ direct_live_insert: true, live_transcription: true });
+    })).toMatchObject({ direct_live_insert: true, live_transcription: false });
     expect(normalizeConfig({
       provider: "local",
       local_stt_engine: "nemotron",
@@ -156,7 +156,7 @@ describe("configuration", () => {
     expect(normalizeConfig({
       provider: "xai",
       direct_live_insert: true,
-    }).direct_live_insert).toBe(false);
+    }).direct_live_insert).toBe(true);
     expect(normalizeConfig({
       provider: "local",
       local_stt_engine: "whisper",
@@ -167,7 +167,7 @@ describe("configuration", () => {
       local_stt_engine: "nemotron",
       live_transcription: true,
       direct_live_insert: false,
-    }).direct_live_insert).toBe(true);
+    }).direct_live_insert).toBe(false);
   });
 
   it("persists only supported local transcription engines", () => {
@@ -187,6 +187,18 @@ describe("configuration", () => {
       local_stt_engine: "whisper",
       live_transcription: true,
     }).live_transcription).toBe(false);
+  });
+
+  it("normalizes the config-only recording timeout", () => {
+    expect(normalizeConfig({}).minutes_recording_before_timeout).toBe(5);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 0 })
+      .minutes_recording_before_timeout).toBe(0);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 120 })
+      .minutes_recording_before_timeout).toBe(120);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 5.5 })
+      .minutes_recording_before_timeout).toBe(5);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 121 })
+      .minutes_recording_before_timeout).toBe(5);
   });
 
   it("repairs invalid Luna request settings and migrates fast to priority", () => {

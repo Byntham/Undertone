@@ -52,7 +52,7 @@ describe("dictation pipeline queue", () => {
       },
     };
     const queue = new DictationPipelineQueue(() => normalizeConfig(undefined), handlers);
-    await Promise.all([
+    const jobs = [
       queue.enqueuePendingDictation(Promise.resolve({
         input: { type: "audio", wav: Uint8Array.of(1) },
         overlayRevision: undefined,
@@ -75,7 +75,10 @@ describe("dictation pipeline queue", () => {
       queue.enqueueCommit(),
       queue.enqueueDiscard(),
       queue.enqueueScratch(),
-    ]);
+    ];
+    expect(queue.busy).toBe(true);
+    await Promise.all(jobs);
+    expect(queue.busy).toBe(false);
     expect(events).toEqual([
       "dictate:1", "retry:2", "repaste:again", "commit", "discard", "scratch",
     ]);
@@ -300,6 +303,20 @@ describe("session history", () => {
     history.registerSuccess("paste me");
     history.registerFailure("network", Uint8Array.of(1));
     expect(history.latestSuccessText()).toBe("paste me");
+  });
+
+  it("stores one recoverable partial without making it globally re-pasteable", () => {
+    const history = new SessionHistory();
+    history.registerSuccess("complete");
+    history.registerPartial("canonical final", "already inserted", "focus-changed");
+    expect(history.snapshot()[0]).toMatchObject({
+      ok: true,
+      partial: true,
+      text: "canonical final",
+      insertedText: "already inserted",
+      reason: "focus-changed",
+    });
+    expect(history.latestSuccessText()).toBe("complete");
   });
 });
 

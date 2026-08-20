@@ -128,6 +128,28 @@ describe("TapStateMachine", () => {
     expect(machine.state).toBe(GestureState.idle);
   });
 
+  it("finishes an active recording with the timeout destination", () => {
+    const { machine, actions } = make();
+    machine.press();
+    expect(machine.timeout()).toBe(true);
+    expect(actions).toEqual(["start", "finish:timeout"]);
+    expect(machine.state).toBe(GestureState.idle);
+  });
+
+  it("announces a toggle stop before waiting for shortcut release", () => {
+    const actions: string[] = [];
+    const machine = new TapStateMachine({
+      onStart: () => true,
+      onFinish: () => undefined,
+      onDiscard: () => undefined,
+      onStopRequested: () => actions.push("stop-requested"),
+    }, { toggleOnly: () => true });
+    machine.press();
+    machine.release();
+    machine.press();
+    expect(actions).toEqual(["stop-requested"]);
+  });
+
   it("does nothing when idle completion or cancellation is requested", () => {
     const { machine, actions } = make();
     expect(machine.finishOpenTurn()).toBe(false);

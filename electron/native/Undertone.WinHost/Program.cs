@@ -5,12 +5,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 10;
+    private const int ProtocolVersion = 11;
     private const int FocusReadAttempts = 3;
     private const int FocusReadTimeoutMs = 150;
     private const int FocusRetryDelayMs = 50;
@@ -45,6 +46,8 @@ internal static class Program
 
     public static int Main(string[] args)
     {
+        Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
         if (args.Length == 1 && args[0] == "--extract-subset")
             return ExtractSubset();
         if (args.Length != 0)
@@ -216,6 +219,7 @@ internal static class Program
                     { "focus", foreground.Focus },
                     { "focusIdentityState", FocusIdentityStateName(foreground.FocusIdentity.State) },
                     { "focusIdentity", foreground.FocusIdentity.Value },
+                    { "targetState", foreground.FocusIdentity.TargetState },
                     { "generation", generation }
                 });
             }
@@ -267,6 +271,93 @@ internal static class Program
                     }
                 }
                 Respond(requestId, "guardedPasteResult", new Dictionary<string, object>
+                {
+                    { "status", status },
+                    { "reason", reason }
+                });
+            }
+            else if (type == "guardedText")
+            {
+                var expected = GuardedPasteTarget(command);
+                object rawText;
+                if (!command.TryGetValue("text", out rawText) || !(rawText is string))
+                    throw new InvalidOperationException("text must be a string");
+                string focusGeneration;
+                var foreground = CaptureForeground(out focusGeneration);
+                string reason;
+                string status;
+                lock (InputGate)
+                {
+                    var currentHandles = Desktop.GetForeground(foreground.FocusIdentity);
+                    if (expected.Generation != focusGeneration
+                        || focusGeneration != Interlocked.Read(ref _inputGeneration).ToString())
+                        reason = "input-race";
+                    else if (foreground.Window != currentHandles.Window
+                        || foreground.Focus != currentHandles.Focus)
+                        reason = HandlesChangedReason(expected, currentHandles);
+                    else
+                        reason = FocusMismatchReason(expected, foreground);
+                    if (reason == null)
+                    {
+                        status = Desktop.SendText((string)rawText) ? "inserted" : "text-failed";
+                        reason = status == "inserted" ? "none" : "send-input";
+                    }
+                    else
+                    {
+                        status = IsConfirmedFocusChange(reason)
+                            ? "focus-changed"
+                            : "focus-unavailable";
+                    }
+                }
+                Respond(requestId, "guardedTextResult", new Dictionary<string, object>
+                {
+                    { "status", status },
+                    { "reason", reason }
+                });
+            }
+            else if (type == "guardedReplaceText")
+            {
+                var expected = GuardedPasteTarget(command);
+                object rawText;
+                if (!command.TryGetValue("text", out rawText) || !(rawText is string))
+                    throw new InvalidOperationException("text must be a string");
+                object rawRemoveCount;
+                if (!command.TryGetValue("removeCount", out rawRemoveCount)
+                    || !(rawRemoveCount is int)
+                    || (int)rawRemoveCount < 0
+                    || (int)rawRemoveCount > 10000)
+                    throw new InvalidOperationException("removeCount is invalid");
+                var removeCount = (int)rawRemoveCount;
+                string focusGeneration;
+                var foreground = CaptureForeground(out focusGeneration);
+                string reason;
+                string status;
+                lock (InputGate)
+                {
+                    var currentHandles = Desktop.GetForeground(foreground.FocusIdentity);
+                    if (expected.Generation != focusGeneration
+                        || focusGeneration != Interlocked.Read(ref _inputGeneration).ToString())
+                        reason = "input-race";
+                    else if (foreground.Window != currentHandles.Window
+                        || foreground.Focus != currentHandles.Focus)
+                        reason = HandlesChangedReason(expected, currentHandles);
+                    else
+                        reason = FocusMismatchReason(expected, foreground);
+                    if (reason == null)
+                    {
+                        status = Desktop.ReplaceTextTail(removeCount, (string)rawText)
+                            ? "inserted"
+                            : "text-failed";
+                        reason = status == "inserted" ? "none" : "send-input";
+                    }
+                    else
+                    {
+                        status = IsConfirmedFocusChange(reason)
+                            ? "focus-changed"
+                            : "focus-unavailable";
+                    }
+                }
+                Respond(requestId, "guardedReplaceTextResult", new Dictionary<string, object>
                 {
                     { "status", status },
                     { "reason", reason }
@@ -577,7 +668,9 @@ internal static class Program
             {
                 var data = (KeyboardData)Marshal.PtrToStructure(
                     lParam, typeof(KeyboardData));
-                if (eventType == "down" && (data.Flags & LlkhfInjected) == 0)
+                var ownInput = (data.Flags & LlkhfInjected) != 0
+                    && data.ExtraInfo == Desktop.OwnInputMarker;
+                if (eventType == "down" && !ownInput)
                 {
                     lock (InputGate)
                         Interlocked.Increment(ref _inputGeneration);

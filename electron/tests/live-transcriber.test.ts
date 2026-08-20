@@ -10,12 +10,13 @@ describe("live transcriber", () => {
   it("streams OpenAI PCM after session setup and commits on release", async () => {
     const harness = socketHarness();
     const partial = vi.fn();
+    const stable = vi.fn();
     const failed = vi.fn();
     const session = new LiveTranscriber(harness.factory).start({
       provider: "openai",
       apiKey: "openai-secret",
       language: "en",
-    }, { partial, failed });
+    }, { partial, stable, failed });
 
     expect(session.sampleRate).toBe(24_000);
     expect(harness.url).toBe(
@@ -57,6 +58,7 @@ describe("live transcriber", () => {
       delta: " world",
     });
     expect(partial).toHaveBeenLastCalledWith("Hello world");
+    expect(stable.mock.calls.map(([text]) => text)).toEqual(["Hello", " world"]);
 
     const final = session.finish();
     expect(jsonMessages(harness.socket).at(-1)).toEqual({
@@ -123,6 +125,37 @@ describe("live transcriber", () => {
     expect(jsonMessages(harness.socket).at(-1)).toEqual({ type: "audio.done" });
     harness.socket.message({ type: "transcript.done", text: "I will dictate." });
     await expect(final).resolves.toBe("I will dictate.");
+  });
+
+  it("requests finalized-only xAI events for live typing and emits locked chunks once", async () => {
+    const harness = socketHarness();
+    const stable = vi.fn();
+    const session = new LiveTranscriber(harness.factory).start({
+      provider: "xai",
+      apiKey: "xai-secret",
+      language: "en",
+      interimResults: false,
+    }, { partial: vi.fn(), stable, failed: vi.fn() });
+    expect(new URL(harness.url).searchParams.get("interim_results")).toBe("false");
+    harness.socket.emit("open");
+    harness.socket.message({ type: "transcript.created" });
+    harness.socket.message({
+      type: "transcript.partial",
+      text: "One locked chunk",
+      is_final: true,
+      speech_final: false,
+    });
+    harness.socket.message({
+      type: "transcript.partial",
+      text: "One locked chunk with punctuation.",
+      is_final: true,
+      speech_final: true,
+    });
+    expect(stable).toHaveBeenCalledTimes(1);
+    expect(stable).toHaveBeenCalledWith("One locked chunk");
+    const final = session.finish();
+    harness.socket.message({ type: "transcript.done", text: "One locked chunk with punctuation." });
+    await expect(final).resolves.toBe("One locked chunk with punctuation.");
   });
 
   it("reports streaming failures and never substitutes another transcription path", async () => {

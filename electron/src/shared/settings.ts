@@ -63,6 +63,7 @@ export interface LocalEngineSnapshot {
 }
 
 export interface SettingsSnapshot {
+  recordingActive: boolean;
   language: string;
   aiCleanup: boolean;
   restoreClipboard: boolean;
@@ -100,6 +101,10 @@ export interface HistorySnapshotEntry {
   error: string | null;
   timestamp: number;
   retryable: boolean;
+  partial: boolean;
+  repasteable: boolean;
+  insertedText: string;
+  reason: string | null;
 }
 
 export interface SettingsPatch {

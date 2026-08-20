@@ -6,7 +6,7 @@ export const GestureState = {
 } as const;
 
 export type GestureState = (typeof GestureState)[keyof typeof GestureState];
-export type DictationCompletion = "commit" | "open-turn";
+export type DictationCompletion = "commit" | "open-turn" | "timeout";
 
 const DEFAULT_TAP_MS = 300;
 
@@ -15,6 +15,7 @@ export interface GestureCallbacks {
   onFinish: (completion: DictationCompletion) => void;
   onDiscard: () => void;
   onLock?: () => void;
+  onStopRequested?: () => void;
 }
 
 export interface GestureOptions {
@@ -59,6 +60,7 @@ export class TapStateMachine {
       }
     } else if (this.currentState === GestureState.locked) {
       this.currentState = GestureState.stopping;
+      this.callbacks.onStopRequested?.();
     }
   }
 
@@ -92,6 +94,15 @@ export class TapStateMachine {
     this.currentState = GestureState.idle;
     this.startDeferred = false;
     if (this.recordingStarted) this.callbacks.onFinish("open-turn");
+    this.recordingStarted = false;
+    return true;
+  }
+
+  timeout(): boolean {
+    if (this.currentState === GestureState.idle) return false;
+    this.currentState = GestureState.idle;
+    this.startDeferred = false;
+    if (this.recordingStarted) this.callbacks.onFinish("timeout");
     this.recordingStarted = false;
     return true;
   }

@@ -7,6 +7,7 @@ describe("settings model", () => {
   it("exposes only the initial renderer-safe settings surface", () => {
     const snapshot = settingsSnapshot(normalizeConfig({ api_key: "secret" }), "1.3.0");
     expect(snapshot).toEqual({
+      recordingActive: false,
       language: "en",
       aiCleanup: true,
       restoreClipboard: true,
@@ -197,42 +198,42 @@ describe("settings model", () => {
     expect(next.local_stt_engine).toBe("whisper");
   });
 
-  it("turns direct insertion off when an unsupported provider is selected", () => {
+  it("keeps live typing enabled when switching to xAI", () => {
     const config = normalizeConfig({
       provider: "openai",
       direct_live_insert: true,
     });
     const next = applySettingsPatch(config, { provider: "xai" });
-    expect(next.direct_live_insert).toBe(false);
+    expect(next.direct_live_insert).toBe(true);
   });
 
-  it("uses one live toggle for direct OpenAI and Nemotron output", () => {
+  it("keeps the live typing and formatted preview toggles independent", () => {
     const enabled = applySettingsPatch(normalizeConfig({ provider: "openai" }), {
       directLiveInsert: true,
     });
     expect(enabled.direct_live_insert).toBe(true);
-    expect(enabled.live_transcription).toBe(true);
+    expect(enabled.live_transcription).toBe(false);
 
     const disabled = applySettingsPatch(enabled, { directLiveInsert: false });
     expect(disabled.direct_live_insert).toBe(false);
     expect(disabled.live_transcription).toBe(false);
   });
 
-  it("keeps the live mode coherent across provider switches", () => {
+  it("keeps live typing selected across supported provider switches", () => {
     const openAi = applySettingsPatch(normalizeConfig({
       provider: "openai",
       direct_live_insert: true,
     }), { provider: "xai" });
     expect(openAi).toMatchObject({
       provider: "xai",
-      live_transcription: true,
-      direct_live_insert: false,
+      live_transcription: false,
+      direct_live_insert: true,
     });
 
     const switchedBack = applySettingsPatch(openAi, { provider: "openai" });
     expect(switchedBack).toMatchObject({
       provider: "openai",
-      live_transcription: true,
+      live_transcription: false,
       direct_live_insert: true,
     });
   });

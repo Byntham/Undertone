@@ -5,7 +5,7 @@ import readline from "node:readline";
 
 import type { GuardedPasteResult, PasteTarget } from "../core/clipboardPaster";
 
-const PROTOCOL_VERSION = 10;
+const PROTOCOL_VERSION = 11;
 const HOST_NAME = "Undertone.WinHost.exe";
 const EXTRACTION_TIMEOUT_MS = 300_000;
 
@@ -46,15 +46,26 @@ export const NO_CUDA_STATUS: Readonly<CudaStatus> = {
   deviceCount: 0,
 };
 
-type ForegroundInfo = {
+export type ForegroundTargetState =
+  | "editable"
+  | "non-editable"
+  | "password"
+  | "disabled"
+  | "read-only"
+  | "unknown";
+
+export type ForegroundInfo = {
   window: string;
   focus: string;
   generation: string;
+  targetState: ForegroundTargetState;
 } & (
   | { focusIdentityState: "available"; focusIdentity: string }
   | { focusIdentityState: "unavailable"; focusIdentity: null }
   | { focusIdentityState: "degraded"; focusIdentity: null }
 );
+
+export type GuardedTextResult = "inserted" | "focus-changed" | "focus-unavailable";
 
 interface PendingRequest {
   expectedType: string;
@@ -142,6 +153,7 @@ export class WindowsHost {
     if (typeof response.window !== "string"
       || typeof response.focus !== "string"
       || !isFocusIdentity(response.focusIdentityState, response.focusIdentity)
+      || !isTargetState(response.targetState)
       || typeof response.generation !== "string") {
       throw new Error("Windows host returned an invalid foreground window");
     }
@@ -149,6 +161,7 @@ export class WindowsHost {
       window: response.window,
       focus: response.focus,
       generation: response.generation,
+      targetState: response.targetState,
     };
     return response.focusIdentityState === "available"
       ? {
@@ -177,6 +190,36 @@ export class WindowsHost {
       throw new Error("Windows host returned an invalid text result");
     }
     return response.sent;
+  }
+
+  async sendGuardedText(target: PasteTarget, text: string): Promise<GuardedTextResult> {
+    const response = await this.request("guardedText", "guardedTextResult", { ...target, text });
+    if (!isGuardedTextResponse(response.status, response.reason)) {
+      throw new Error("Windows host returned an invalid guarded text result");
+    }
+    if (response.status === "text-failed") {
+      throw new Error("Windows did not accept live text input");
+    }
+    return response.status;
+  }
+
+  async replaceGuardedTextTail(
+    target: PasteTarget,
+    removeCount: number,
+    text: string,
+  ): Promise<GuardedTextResult> {
+    const response = await this.request(
+      "guardedReplaceText",
+      "guardedReplaceTextResult",
+      { ...target, removeCount, text },
+    );
+    if (!isGuardedTextResponse(response.status, response.reason)) {
+      throw new Error("Windows host returned an invalid guarded replacement result");
+    }
+    if (response.status === "text-failed") {
+      throw new Error("Windows did not accept the live text correction");
+    }
+    return response.status;
   }
 
   async sendGuardedPaste(target: PasteTarget): Promise<GuardedPasteResult> {
@@ -505,6 +548,24 @@ function isFocusIdentity(
   return state === "available"
     ? typeof value === "string" && value.length > 0
     : (state === "unavailable" || state === "degraded") && value === null;
+}
+
+function isTargetState(value: unknown): value is ForegroundTargetState {
+  return value === "editable"
+    || value === "non-editable"
+    || value === "password"
+    || value === "disabled"
+    || value === "read-only"
+    || value === "unknown";
+}
+
+function isGuardedTextResponse(
+  status: unknown,
+  reason: unknown,
+): status is GuardedTextResult | "text-failed" {
+  if (status === "inserted") return reason === "none";
+  if (status === "text-failed") return reason === "send-input";
+  return isGuardedPasteResponse(status, reason);
 }
 
 function isGuardedPasteResponse(

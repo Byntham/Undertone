@@ -42,6 +42,7 @@ class NemotronLiveSession implements LiveTranscriptionSession {
   private readonly finalPromise: Promise<string>;
   private socket: LiveSocket | null = null;
   private partial = "";
+  private stableText = "";
   private queuedBytes = 0;
   private ready = false;
   private finishRequested = false;
@@ -137,7 +138,12 @@ class NemotronLiveSession implements LiveTranscriptionSession {
     } else if (value.type === "conversation.item.input_audio_transcription.completed"
       && typeof value.transcript === "string") {
       const transcript = value.transcript.trim();
-      if (transcript.length > 0) this.completed.push(transcript);
+      if (transcript.length > 0) {
+        this.completed.push(transcript);
+        const appended = `${this.stableText.length > 0 ? " " : ""}${transcript}`;
+        this.stableText += appended;
+        this.callbacks.stable?.(appended);
+      }
       this.partial = "";
       this.callbacks.partial(this.displayText());
     } else if (value.type === "input_audio_buffer.committed") {

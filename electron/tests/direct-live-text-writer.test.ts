@@ -3,33 +3,69 @@ import { describe, expect, it, vi } from "vitest";
 import { DirectLiveTextWriter } from "../src/core/directLiveTextWriter";
 
 describe("direct live text writer", () => {
-  it("serializes growing hypotheses and adds final punctuation and spacing", async () => {
+  it("serializes stable text and adds an eligible final suffix and space", async () => {
     const inserted: string[] = [];
-    const writer = new DirectLiveTextWriter(async (text) => {
-      inserted.push(text);
-      return true;
-    }, vi.fn(), async () => undefined);
+    const writer = makeWriter(inserted);
 
-    writer.update("Hello");
-    writer.update("Hello world");
-    await writer.finish("Hello world.");
+    writer.append("Hello");
+    writer.append(" world");
+    const result = await writer.finish("Hello world.");
 
-    expect(inserted).toEqual(["Hello", " world. "]);
+    expect(inserted.join("")).toBe("Hello world. ");
+    expect(result).toMatchObject({
+      insertedText: "Hello world.",
+      finalText: "Hello world.",
+      complete: true,
+      stopReason: null,
+    });
   });
 
-  it("does not try to rewrite a revised hypothesis, but keeps inserting new growth", async () => {
+  it("never rewrites inserted text when the provider final diverges", async () => {
     const inserted: string[] = [];
-    const writer = new DirectLiveTextWriter(async (text) => {
-      inserted.push(text);
-      return true;
-    }, vi.fn(), async () => undefined);
+    const stopped = vi.fn();
+    const writer = new DirectLiveTextWriter(
+      async (text) => { inserted.push(text); return "inserted"; },
+      vi.fn(),
+      stopped,
+      async () => undefined,
+    );
+    writer.append("hello wor");
 
-    writer.update("hello wor");
-    writer.update("yellow world");
-    writer.update("yellow world today");
-    await writer.finish("yellow world today.");
+    const result = await writer.finish("yellow world");
 
-    expect(inserted).toEqual(["hello wor", " today. "]);
+    expect(inserted.join("")).toBe("hello wor");
+    expect(result.complete).toBe(false);
+    expect(result.stopReason).toBe("final-mismatch");
+    expect(stopped).toHaveBeenCalledWith("final-mismatch");
+  });
+
+  it("can replace only the differing final tail when the development flag enables it", async () => {
+    const inserted: string[] = [];
+    const replace = vi.fn(async () => "inserted" as const);
+    const writer = makeWriter(inserted);
+    writer.enableTailCorrection(replace);
+    writer.append("hello war");
+
+    const result = await writer.finish("hello world.");
+
+    expect(replace).toHaveBeenCalledWith(2, "orld. ");
+    expect(result).toMatchObject({ insertedText: "hello world.", complete: true });
+  });
+
+  it("stops future insertion when the guarded target changes", async () => {
+    const writer = new DirectLiveTextWriter(
+      async () => "focus-changed",
+      vi.fn(),
+      vi.fn(),
+      async () => undefined,
+    );
+    writer.append("Hello");
+    await vi.waitFor(() => expect(writer.snapshot().stopReason).toBe("focus-changed"));
+    writer.append(" world");
+
+    const result = await writer.finish("Hello world");
+    expect(result.insertedText).toBe("");
+    expect(result.complete).toBe(false);
   });
 
   it("reports an insertion failure once", async () => {
@@ -37,25 +73,24 @@ describe("direct live text writer", () => {
     const writer = new DirectLiveTextWriter(
       async () => false,
       failed,
+      vi.fn(),
       async () => undefined,
     );
-    writer.update("Hello");
+    writer.append("Hello");
 
     await expect(writer.finish("Hello world")).rejects.toThrow("did not accept");
     expect(failed).toHaveBeenCalledTimes(1);
   });
 
-  it("does not add a second space when the final transcript trims a partial", async () => {
+  it("does not add a second space when the final transcript trims stable text", async () => {
     const inserted: string[] = [];
-    const writer = new DirectLiveTextWriter(async (text) => {
-      inserted.push(text);
-      return true;
-    }, vi.fn(), async () => undefined);
-    writer.update("Hello ");
+    const writer = makeWriter(inserted);
+    writer.append("Hello ");
 
-    await writer.finish("Hello");
+    const result = await writer.finish("Hello");
 
-    expect(inserted).toEqual(["Hello "]);
+    expect(inserted.join("")).toBe("Hello ");
+    expect(result.complete).toBe(true);
   });
 
   it("drops queued writes after cancellation", async () => {
@@ -66,10 +101,10 @@ describe("direct live text writer", () => {
       inserted.push(text);
       await firstWrite;
       return true;
-    }, vi.fn(), async () => undefined);
-    writer.update("Hello");
+    }, vi.fn(), vi.fn(), async () => undefined);
+    writer.append("Hello");
     await vi.waitFor(() => expect(inserted).toEqual(["Hello"]));
-    writer.update("Hello world");
+    writer.append(" world");
 
     writer.cancel();
     release();
@@ -78,3 +113,12 @@ describe("direct live text writer", () => {
     expect(inserted).toEqual(["Hello"]);
   });
 });
+
+function makeWriter(inserted: string[]): DirectLiveTextWriter {
+  return new DirectLiveTextWriter(
+    async (text) => { inserted.push(text); return "inserted"; },
+    vi.fn(),
+    vi.fn(),
+    async () => undefined,
+  );
+}

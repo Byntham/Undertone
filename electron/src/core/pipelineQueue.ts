@@ -36,11 +36,16 @@ export interface PipelineHandlers {
 
 export class DictationPipelineQueue {
   private tail = Promise.resolve();
+  private pendingCount = 0;
 
   constructor(
     private readonly configSource: () => UndertoneConfig,
     private readonly handlers: PipelineHandlers,
   ) {}
+
+  get busy(): boolean {
+    return this.pendingCount > 0;
+  }
 
   /** Reserve queue order while the audio renderer finishes the recording. */
   enqueuePendingDictation(pending: Promise<PendingDictation | null>): Promise<void> {
@@ -82,16 +87,29 @@ export class DictationPipelineQueue {
   }
 
   private enqueue(run: (config: UndertoneConfig) => Promise<void>): Promise<void> {
+    this.pendingCount += 1;
     const result = this.tail.then(() => run(cloneConfig(this.configSource())));
-    this.tail = result.catch(() => undefined);
-    return result;
+    const tracked = result.finally(() => { this.pendingCount -= 1; });
+    this.tail = tracked.catch(() => undefined);
+    return tracked;
   }
 }
 
 export interface SuccessHistoryEntry {
   id: number;
   ok: true;
+  partial: false;
   text: string;
+  timestamp: number;
+}
+
+export interface PartialHistoryEntry {
+  id: number;
+  ok: true;
+  partial: true;
+  text: string;
+  insertedText: string;
+  reason: string;
   timestamp: number;
 }
 
@@ -103,7 +121,7 @@ export interface FailureHistoryEntry {
   retryable: boolean;
 }
 
-export type HistoryEntry = SuccessHistoryEntry | FailureHistoryEntry;
+export type HistoryEntry = SuccessHistoryEntry | PartialHistoryEntry | FailureHistoryEntry;
 
 interface StoredFailureHistoryEntry {
   id: number;
@@ -113,7 +131,7 @@ interface StoredFailureHistoryEntry {
   retryAudio?: Uint8Array;
 }
 
-type StoredHistoryEntry = SuccessHistoryEntry | StoredFailureHistoryEntry;
+type StoredHistoryEntry = SuccessHistoryEntry | PartialHistoryEntry | StoredFailureHistoryEntry;
 
 const PCM16_BYTES_PER_SECOND = 16_000 * Int16Array.BYTES_PER_ELEMENT;
 const MAX_RETAINED_RETRY_AUDIO_BYTES = PCM16_BYTES_PER_SECOND * 60 * 10;
@@ -133,10 +151,24 @@ export class SessionHistory {
     const entry: SuccessHistoryEntry = {
       id: this.nextId++,
       ok: true,
+      partial: false,
       text,
       timestamp: this.now(),
     };
     this.append(entry);
+  }
+
+  registerPartial(text: string, insertedText: string, reason: string): void {
+    if (text.trim().length === 0 && insertedText.trim().length === 0) return;
+    this.append({
+      id: this.nextId++,
+      ok: true,
+      partial: true,
+      text: text.trim() || insertedText.trim(),
+      insertedText: insertedText.trimEnd(),
+      reason,
+      timestamp: this.now(),
+    });
   }
 
   registerFailure(error: string, wav: Uint8Array): void {
@@ -167,7 +199,7 @@ export class SessionHistory {
   latestSuccessText(): string | null {
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index]!;
-      if (entry.ok) return entry.text;
+      if (entry.ok && !entry.partial) return entry.text;
     }
     return null;
   }
