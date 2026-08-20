@@ -39,44 +39,6 @@ describe("direct live text writer", () => {
     expect(stopped).toHaveBeenCalledWith("final-mismatch");
   });
 
-  it("can replace only the differing final tail when the development flag enables it", async () => {
-    const inserted: string[] = [];
-    const replace = vi.fn(async () => "inserted" as const);
-    const writer = makeWriter(inserted);
-    writer.enableTailCorrection(replace);
-    writer.append("hello war");
-
-    const result = await writer.finish("hello world.");
-
-    expect(replace).toHaveBeenCalledWith(2, "orld.");
-    expect(result).toMatchObject({ insertedText: "hello world.", complete: true });
-  });
-
-  it("types a growing hypothesis and immediately replaces a revised tail", async () => {
-    const inserted: string[] = [];
-    const replace = vi.fn(async (_removeCount: number, text: string) => {
-      inserted.push(`[replace:${text}]`);
-      return "inserted" as const;
-    });
-    const writer = makeWriter(inserted);
-    writer.enableTailCorrection(replace);
-
-    writer.updateHypothesis("hello wor");
-    writer.updateHypothesis("yellow world");
-    writer.updateHypothesis("yellow world today");
-    const result = await writer.finish("yellow world today.");
-
-    expect(inserted).toEqual([
-      "hello wor",
-      "[replace:yellow world]",
-      " today",
-      ".",
-      " ",
-    ]);
-    expect(replace).toHaveBeenCalledWith(9, "yellow world");
-    expect(result).toMatchObject({ insertedText: "yellow world today.", complete: true });
-  });
-
   it("stops future insertion when the guarded target changes", async () => {
     const writer = new DirectLiveTextWriter(
       async () => "focus-changed",
@@ -116,6 +78,27 @@ describe("direct live text writer", () => {
 
     expect(inserted.join("")).toBe("Hello ");
     expect(result.complete).toBe(true);
+  });
+
+  it("retries a guarded append rejected while the stop hotkey has paused insertion", async () => {
+    let finishFirst!: (result: "focus-unavailable") => void;
+    const first = new Promise<"focus-unavailable">((resolve) => { finishFirst = resolve; });
+    const insert = vi.fn()
+      .mockImplementationOnce(async () => await first)
+      .mockResolvedValue("inserted");
+    const writer = new DirectLiveTextWriter(insert, vi.fn(), vi.fn(), async () => undefined);
+    writer.append("Hello");
+    await vi.waitFor(() => expect(insert).toHaveBeenCalledTimes(1));
+
+    writer.pause();
+    finishFirst("focus-unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(writer.snapshot().stopReason).toBeNull();
+
+    writer.resume();
+    const result = await writer.finish("Hello");
+    expect(insert.mock.calls.map(([text]) => text)).toEqual(["Hello", "Hello", " "]);
+    expect(result).toMatchObject({ insertedText: "Hello", complete: true, stopReason: null });
   });
 
   it("drops queued writes after cancellation", async () => {

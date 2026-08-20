@@ -51,7 +51,7 @@ describe("live transcriber", () => {
     });
     harness.socket.message({
       type: "conversation.item.input_audio_transcription.delta",
-      delta: "Hello",
+      delta: " Hello",
     });
     harness.socket.message({
       type: "conversation.item.input_audio_transcription.delta",

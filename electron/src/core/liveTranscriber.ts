@@ -237,9 +237,10 @@ class OpenAiLiveSession extends BaseLiveSession {
       this.markReady();
     } else if (value.type === "conversation.item.input_audio_transcription.delta"
       && typeof value.delta === "string") {
-      this.partialText += value.delta;
+      const delta = this.partialText.length === 0 ? value.delta.trimStart() : value.delta;
+      this.partialText += delta;
       this.callbacks.partial(this.partialText);
-      this.callbacks.stable?.(value.delta);
+      this.callbacks.stable?.(delta);
     } else if (value.type === "conversation.item.input_audio_transcription.completed"
       && typeof value.transcript === "string") {
       this.succeed(value.transcript.trim() || this.partialText);

@@ -13,7 +13,6 @@ internal static class Desktop
     public static readonly UIntPtr OwnInputMarker = new UIntPtr(0x554E4452);
     private const uint InputKeyboard = 1;
     private const ushort VkControl = 0x11;
-    private const ushort VkBack = 0x08;
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
     private const uint KeyEventUnicode = 0x0004;
@@ -67,25 +66,6 @@ internal static class Desktop
         }
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input)))
             == (uint)inputs.Length;
-    }
-
-    public static bool ReplaceTextTail(int removeCount, string text)
-    {
-        var inputs = new Input[removeCount * 2 + text.Length * 2];
-        var offset = 0;
-        for (var index = 0; index < removeCount; index++)
-        {
-            inputs[offset++] = Key(VkBack, 0);
-            inputs[offset++] = Key(VkBack, KeyEventKeyUp);
-        }
-        for (var index = 0; index < text.Length; index++)
-        {
-            inputs[offset++] = UnicodeKey(text[index], KeyEventUnicode);
-            inputs[offset++] = UnicodeKey(text[index], KeyEventUnicode | KeyEventKeyUp);
-        }
-        return inputs.Length == 0
-            || SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input)))
-                == (uint)inputs.Length;
     }
 
     private static Input Key(ushort virtualKey, uint flags)

@@ -105,7 +105,6 @@ const packagedSmoke = process.env.UNDERTONE_PACKAGE_SMOKE === "1";
 const localRuntimeSmoke = process.env.UNDERTONE_LOCAL_RUNTIME_SMOKE === "1";
 const packagedSmokeResult = process.env.UNDERTONE_PACKAGE_SMOKE_RESULT;
 const turnDraftNativeE2e = process.env.UNDERTONE_TURN_DRAFT_NATIVE_E2E === "1";
-const liveTailCorrection = process.env.UNDERTONE_LIVE_TAIL_CORRECTION === "1";
 const electronPreview = !app.isPackaged || process.env.UNDERTONE_ELECTRON_PREVIEW === "1";
 const isolatedProfile = electronPreview || packagedSmoke;
 const TURN_DRAFT_COMPACT_SIZE = { width: 72, height: 44 } as const;
@@ -937,14 +936,6 @@ if (!gotLock) {
             },
             failed: (error) => failLiveCapture(captureId, error),
           };
-          if (writer !== null && (provider === "local" || liveTailCorrection)) {
-            writer.enableTailCorrection(async (removeCount, text) => {
-              await targetReady;
-              const target = directCaptureRef?.target ?? directTarget;
-              if (target === null) return "focus-unavailable";
-              return await windowsHost.replaceGuardedTextTail(target, removeCount, text);
-            });
-          }
           const session = provider === "local"
             ? nemotronLiveTranscriber?.start(config.language, callbacks)
             : liveTranscriber.start({

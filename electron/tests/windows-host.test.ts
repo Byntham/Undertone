@@ -109,19 +109,6 @@ describe("Windows host", () => {
           type: "guardedTextResult",
           status: "focus-changed",
         });
-      await expect(command("guardedReplaceText", {
-        ...required,
-        removeCount: 2,
-        text: "world",
-      })).resolves.toMatchObject({
-        type: "guardedReplaceTextResult",
-        status: "focus-changed",
-      });
-      await expect(command("guardedReplaceText", {
-        ...required,
-        removeCount: -1,
-        text: "world",
-      })).resolves.toMatchObject({ type: "error" });
       for (const invalid of [
         { ...required, focus: undefined },
         { ...required, generation: undefined },
@@ -635,7 +622,7 @@ function setClipboardText(value: string): void {
   const result = spawnSync("powershell", [
     "-NoProfile",
     "-WindowStyle", "Hidden",
-    "-Command", "$value=[Console]::In.ReadToEnd(); Set-Clipboard -Value $value",
+    "-Command", "$value=[Console]::In.ReadToEnd(); if ($value.Length -eq 0) { Set-Clipboard -Value @() } else { Set-Clipboard -Value $value }",
   ], { encoding: "utf8", input: value, windowsHide: true });
   if (result.status !== 0) throw new Error("Could not write the clipboard");
 }

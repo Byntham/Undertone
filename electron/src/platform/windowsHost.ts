@@ -203,25 +203,6 @@ export class WindowsHost {
     return response.status;
   }
 
-  async replaceGuardedTextTail(
-    target: PasteTarget,
-    removeCount: number,
-    text: string,
-  ): Promise<GuardedTextResult> {
-    const response = await this.request(
-      "guardedReplaceText",
-      "guardedReplaceTextResult",
-      { ...target, removeCount, text },
-    );
-    if (!isGuardedTextResponse(response.status, response.reason)) {
-      throw new Error("Windows host returned an invalid guarded replacement result");
-    }
-    if (response.status === "text-failed") {
-      throw new Error("Windows did not accept the live text correction");
-    }
-    return response.status;
-  }
-
   async sendGuardedPaste(target: PasteTarget): Promise<GuardedPasteResult> {
     const response = await this.request("guardedPaste", "guardedPasteResult", target);
     if (!isGuardedPasteResponse(response.status, response.reason)) {

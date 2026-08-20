@@ -18,10 +18,6 @@ export interface DirectLiveTextResult {
   stopReason: LiveInsertionStopReason | null;
 }
 
-type PendingOperation =
-  | { type: "append"; text: string }
-  | { type: "replace"; removeCount: number; text: string; resultingText: string };
-
 export class DirectLiveTextWriter {
   private tail = Promise.resolve();
   private failure: Error | null = null;
@@ -30,10 +26,9 @@ export class DirectLiveTextWriter {
   private paused = false;
   private inserted = "";
   private scheduled = "";
-  private readonly pending: PendingOperation[] = [];
+  private readonly pending: string[] = [];
   private pumping = false;
   private stopReason: LiveInsertionStopReason | null = null;
-  private replaceTail: ((removeCount: number, text: string) => Promise<LiveTextInsertResult>) | null = null;
 
   constructor(
     private readonly insert: (text: string) => Promise<LiveTextInsertResult>,
@@ -45,7 +40,7 @@ export class DirectLiveTextWriter {
   append(text: string): void {
     if (text.length === 0 || this.closed || this.failure !== null || this.stopReason !== null) return;
     this.scheduled += text;
-    this.pending.push({ type: "append", text });
+    this.pending.push(text);
     this.startPump();
   }
 
@@ -55,24 +50,7 @@ export class DirectLiveTextWriter {
     }
     if (text.startsWith(this.scheduled)) {
       this.append(text.slice(this.scheduled.length));
-      return;
     }
-    if (this.replaceTail === null) return;
-    const prefixLength = commonPrefixLength(this.scheduled, text);
-    this.pending.push({
-      type: "replace",
-      removeCount: Array.from(this.scheduled.slice(prefixLength)).length,
-      text: text.slice(prefixLength),
-      resultingText: text,
-    });
-    this.scheduled = text;
-    this.startPump();
-  }
-
-  enableTailCorrection(
-    replace: (removeCount: number, text: string) => Promise<LiveTextInsertResult>,
-  ): void {
-    this.replaceTail = replace;
   }
 
   pause(): void {
@@ -100,12 +78,8 @@ export class DirectLiveTextWriter {
     if (options.appendFinal !== false && this.stopReason === null) {
       if (finalText.startsWith(this.scheduled)) {
         this.append(finalText.slice(this.scheduled.length));
-      } else if (this.scheduled.trimEnd() !== finalText) {
-        if (this.replaceTail === null) {
-          this.stop("final-mismatch");
-        } else {
-          this.updateHypothesis(finalText);
-        }
+      } else if (this.scheduled.trim() !== finalText.trim()) {
+        this.stop("final-mismatch");
       }
     }
     if (options.trailingSpace !== false
@@ -160,27 +134,21 @@ export class DirectLiveTextWriter {
   private async pump(): Promise<void> {
     while (!this.paused && !this.cancelled && this.failure === null
       && this.stopReason === null && this.pending.length > 0) {
-      const operation = this.pending.shift()!;
-      const result = operation.type === "append"
-        ? await this.insert(operation.text)
-        : await this.replaceTail!(operation.removeCount, operation.text);
+      const text = this.pending.shift()!;
+      const result = await this.insert(text);
       if (result === false) throw new Error("Windows did not accept live text input");
       if (result === "focus-changed" || result === "focus-unavailable") {
+        if (this.paused) {
+          this.pending.unshift(text);
+          return;
+        }
         this.stop(result);
         return;
       }
-      this.inserted = operation.type === "append"
-        ? this.inserted + operation.text
-        : operation.resultingText;
+      this.inserted += text;
       await this.settle();
     }
   }
-}
-
-function commonPrefixLength(left: string, right: string): number {
-  let index = 0;
-  while (index < left.length && index < right.length && left[index] === right[index]) index += 1;
-  return index;
 }
 
 async function settleTarget(): Promise<void> {

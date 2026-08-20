@@ -315,54 +315,6 @@ internal static class Program
                     { "reason", reason }
                 });
             }
-            else if (type == "guardedReplaceText")
-            {
-                var expected = GuardedPasteTarget(command);
-                object rawText;
-                if (!command.TryGetValue("text", out rawText) || !(rawText is string))
-                    throw new InvalidOperationException("text must be a string");
-                object rawRemoveCount;
-                if (!command.TryGetValue("removeCount", out rawRemoveCount)
-                    || !(rawRemoveCount is int)
-                    || (int)rawRemoveCount < 0
-                    || (int)rawRemoveCount > 10000)
-                    throw new InvalidOperationException("removeCount is invalid");
-                var removeCount = (int)rawRemoveCount;
-                string focusGeneration;
-                var foreground = CaptureForeground(out focusGeneration);
-                string reason;
-                string status;
-                lock (InputGate)
-                {
-                    var currentHandles = Desktop.GetForeground(foreground.FocusIdentity);
-                    if (expected.Generation != focusGeneration
-                        || focusGeneration != Interlocked.Read(ref _inputGeneration).ToString())
-                        reason = "input-race";
-                    else if (foreground.Window != currentHandles.Window
-                        || foreground.Focus != currentHandles.Focus)
-                        reason = HandlesChangedReason(expected, currentHandles);
-                    else
-                        reason = FocusMismatchReason(expected, foreground);
-                    if (reason == null)
-                    {
-                        status = Desktop.ReplaceTextTail(removeCount, (string)rawText)
-                            ? "inserted"
-                            : "text-failed";
-                        reason = status == "inserted" ? "none" : "send-input";
-                    }
-                    else
-                    {
-                        status = IsConfirmedFocusChange(reason)
-                            ? "focus-changed"
-                            : "focus-unavailable";
-                    }
-                }
-                Respond(requestId, "guardedReplaceTextResult", new Dictionary<string, object>
-                {
-                    { "status", status },
-                    { "reason", reason }
-                });
-            }
             else if (type == "protectSecret")
             {
                 Respond(requestId, "secretProtected", new Dictionary<string, object>
