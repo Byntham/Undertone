@@ -922,6 +922,7 @@ if (!gotLock) {
               if (writer !== null) {
                 const active = directLiveCaptures.get(captureId);
                 if (active !== undefined) active.text = text;
+                if (provider === "local") writer.updateHypothesis(text);
                 return;
               }
               const active = liveCaptures.get(captureId);
@@ -930,11 +931,13 @@ if (!gotLock) {
               publishTurnDraft();
             },
             stable: (text) => {
-              if (writer !== null && directLiveCaptures.has(captureId)) writer.append(text);
+              if (writer !== null && provider !== "local" && directLiveCaptures.has(captureId)) {
+                writer.append(text);
+              }
             },
             failed: (error) => failLiveCapture(captureId, error),
           };
-          if (writer !== null && liveTailCorrection) {
+          if (writer !== null && (provider === "local" || liveTailCorrection)) {
             writer.enableTailCorrection(async (removeCount, text) => {
               await targetReady;
               const target = directCaptureRef?.target ?? directTarget;

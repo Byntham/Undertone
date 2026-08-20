@@ -48,8 +48,33 @@ describe("direct live text writer", () => {
 
     const result = await writer.finish("hello world.");
 
-    expect(replace).toHaveBeenCalledWith(2, "orld. ");
+    expect(replace).toHaveBeenCalledWith(2, "orld.");
     expect(result).toMatchObject({ insertedText: "hello world.", complete: true });
+  });
+
+  it("types a growing hypothesis and immediately replaces a revised tail", async () => {
+    const inserted: string[] = [];
+    const replace = vi.fn(async (_removeCount: number, text: string) => {
+      inserted.push(`[replace:${text}]`);
+      return "inserted" as const;
+    });
+    const writer = makeWriter(inserted);
+    writer.enableTailCorrection(replace);
+
+    writer.updateHypothesis("hello wor");
+    writer.updateHypothesis("yellow world");
+    writer.updateHypothesis("yellow world today");
+    const result = await writer.finish("yellow world today.");
+
+    expect(inserted).toEqual([
+      "hello wor",
+      "[replace:yellow world]",
+      " today",
+      ".",
+      " ",
+    ]);
+    expect(replace).toHaveBeenCalledWith(9, "yellow world");
+    expect(result).toMatchObject({ insertedText: "yellow world today.", complete: true });
   });
 
   it("stops future insertion when the guarded target changes", async () => {
