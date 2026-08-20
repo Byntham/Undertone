@@ -274,6 +274,10 @@ function General({
   captureShortcut: (field: ShortcutSetting) => Promise<void>;
   systemAction: (action: SystemAction) => Promise<void>;
 }): React.JSX.Element {
+  const directLiveSupported = settings.provider === "openai"
+    || settings.provider === "xai"
+    || (settings.provider === "local" && settings.localSttEngine === "nemotron");
+  const liveMode = settings.directLiveInsert;
   const [microphoneStatus, setMicrophoneStatus] = useState<string | null>(null);
   const [testingMicrophone, setTestingMicrophone] = useState(false);
   const testMicrophone = async (): Promise<void> => {
@@ -304,11 +308,13 @@ function General({
         value={settings.hotkey}
         capturing={capturing}
         capture={captureShortcut}
+        disabled={settings.recordingActive}
       />
       <FixedShortcutItem
         title="Keep in open turn"
         description="Press while recording to stop without pasting."
         value="left alt"
+        disabled={liveMode}
       />
       <ShortcutItem
         title="Commit open turn"
@@ -317,6 +323,7 @@ function General({
         value={settings.commitHotkey}
         capturing={capturing}
         capture={captureShortcut}
+        disabled={liveMode || settings.recordingActive}
       />
     </div>
 
@@ -328,6 +335,7 @@ function General({
         value={settings.scratchHotkey}
         capturing={capturing}
         capture={captureShortcut}
+        disabled={liveMode || settings.recordingActive}
       />
       <ShortcutItem
         title="Discard open turn"
@@ -335,6 +343,7 @@ function General({
         value={settings.discardHotkey}
         capturing={capturing}
         capture={captureShortcut}
+        disabled={liveMode || settings.recordingActive}
       />
       <ShortcutItem
         wide
@@ -343,6 +352,7 @@ function General({
         value={settings.repasteHotkey}
         capturing={capturing}
         capture={captureShortcut}
+        disabled={settings.recordingActive}
       />
     </div>
 
@@ -350,10 +360,29 @@ function General({
       <div>
         <h2>Dictation</h2>
         <div className="card">
+          <SettingRow
+            title="Dictation mode"
+            description={liveMode
+              ? "Tap Dictate once to start and again to stop. Text goes directly into the focused app."
+              : "Build a turn, apply cleanup, then paste the finished text."}
+          >
+            <select
+              aria-label="Dictation mode"
+              value={liveMode ? "live" : "formatted"}
+              disabled={settings.recordingActive || (!directLiveSupported && !liveMode)}
+              onChange={(event) => {
+                void update({ directLiveInsert: event.target.value === "live" });
+              }}
+            >
+              <option value="formatted">Formatted</option>
+              <option value="live" disabled={!directLiveSupported}>Live typing</option>
+            </select>
+          </SettingRow>
           <SettingRow title="Open-turn cleanup" description="Choose when AI cleanup runs while building an open turn.">
             <select
               aria-label="Cleanup timing"
               value={settings.openTurnCleanupStrategy}
+              disabled={liveMode || settings.recordingActive}
               onChange={(event) => {
                 void update({
                   openTurnCleanupStrategy: event.target.value === "commit-full"
@@ -368,14 +397,15 @@ function General({
           </SettingRow>
           <SettingRow
             title="Live text preview"
-            description="Show text in the open turn while you speak. Available with OpenAI, xAI, and local Nemotron."
+            description="Show live transcription in the turn window while using Formatted mode."
           >
             <Toggle
               label="Show live text preview"
               checked={settings.liveTranscription}
-              disabled={settings.provider === "openrouter"
-                || (settings.provider === "local" && settings.localSttEngine === "whisper")}
-              onChange={(liveTranscription) => { void update({ liveTranscription }); }}
+              disabled={!directLiveSupported || liveMode || settings.recordingActive}
+              onChange={(enabled) => {
+                void update({ liveTranscription: enabled });
+              }}
             />
           </SettingRow>
         </div>
@@ -386,6 +416,7 @@ function General({
             <Toggle
               label="Restore clipboard"
               checked={settings.restoreClipboard}
+              disabled={liveMode || settings.recordingActive}
               onChange={(restoreClipboard) => { void update({ restoreClipboard }); }}
             />
           </SettingRow>
@@ -400,6 +431,7 @@ function General({
               <select
                 aria-label="Microphone"
                 value={settings.inputDevice}
+                disabled={settings.recordingActive}
                 onChange={(event) => { void update({ inputDevice: event.target.value }); }}
               >
                 <option value="">System default</option>
@@ -457,6 +489,7 @@ function ShortcutItem({
   value,
   capturing,
   capture,
+  disabled = false,
 }: {
   primary?: boolean;
   wide?: boolean;
@@ -466,8 +499,9 @@ function ShortcutItem({
   value: string;
   capturing: ShortcutSetting | null;
   capture: (field: ShortcutSetting) => Promise<void>;
+  disabled?: boolean;
 }): React.JSX.Element {
-  return <div className="shortcutItem" data-primary={primary} data-wide={wide}>
+  return <div className="shortcutItem" data-primary={primary} data-wide={wide} data-disabled={disabled}>
     <div>
       <h3>{title}</h3>
       {description !== undefined && <p>{description}</p>}
@@ -477,6 +511,7 @@ function ShortcutItem({
       value={value}
       capturing={capturing}
       capture={capture}
+      disabled={disabled}
     />
   </div>;
 }
@@ -485,12 +520,14 @@ function FixedShortcutItem({
   title,
   description,
   value,
+  disabled = false,
 }: {
   title: string;
   description: string;
   value: string;
+  disabled?: boolean;
 }): React.JSX.Element {
-  return <div className="shortcutItem">
+  return <div className="shortcutItem" data-disabled={disabled}>
     <div>
       <h3>{title}</h3>
       <p>{description}</p>
@@ -506,11 +543,13 @@ function ShortcutControl({
   value,
   capturing,
   capture,
+  disabled = false,
 }: {
   field: ShortcutSetting;
   value: string;
   capturing: ShortcutSetting | null;
   capture: (field: ShortcutSetting) => Promise<void>;
+  disabled?: boolean;
 }): React.JSX.Element {
   const active = capturing === field;
   const parts = active ? ["Press shortcut…"] : shortcutParts(value);
@@ -521,7 +560,7 @@ function ShortcutControl({
     <button
       type="button"
       className="smallButton"
-      disabled={capturing !== null}
+      disabled={disabled || capturing !== null}
       onClick={() => { void capture(field); }}
     >{active ? "Listening…" : "Change"}</button>
   </div>;
@@ -627,10 +666,14 @@ function History({
       {entries.length === 0 && <div className="card emptyList">Nothing dictated yet this session.</div>}
       {entries.map((entry) => <article key={entry.id} className="historyEntry" data-ok={entry.ok}>
         <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+        {entry.partial && <strong>Partial</strong>}
         <p>{entry.ok ? entry.text : entry.error}</p>
+        {entry.partial && <small>
+          Live insertion stopped. This recovery text may overlap text already inserted.
+        </small>}
         <div className="historyActions">
           {entry.ok && <button type="button" className="smallButton" onClick={() => { void action(entry.id, "copy"); }}>Copy</button>}
-          {entry.ok && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "repaste"); }}>Re-paste</button>}
+          {entry.repasteable && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "repaste"); }}>Re-paste</button>}
           {!entry.ok && entry.retryable && <button type="button" className="smallButton accent" onClick={() => { void action(entry.id, "retry"); }}>Retry</button>}
         </div>
       </article>)}
@@ -721,9 +764,10 @@ function SpeechAi({
                 value={settings.provider}
                 localAvailable={settings.localEngines.stt.installed}
                 providers={TRANSCRIPTION_PROVIDERS}
+                disabled={settings.recordingActive}
                 onChange={(provider) => { void update({ provider }); }}
               />
-              <button type="button" className="smallButton" disabled={testing !== null} onClick={() => { void test("stt"); }}>
+              <button type="button" className="smallButton" disabled={testing !== null || settings.recordingActive} onClick={() => { void test("stt"); }}>
                 {testing === "stt" ? "Testing…" : "Test"}
               </button>
               <small className="modelSummary">Model · {settings.sttModel || "Provider managed"}</small>
@@ -734,7 +778,8 @@ function SpeechAi({
             <select
               aria-label="Transcription language"
               value={settings.language}
-              disabled={settings.provider === "local" && settings.localSttEngine === "nemotron"}
+              disabled={settings.recordingActive
+                || (settings.provider === "local" && settings.localSttEngine === "nemotron")}
               onChange={(event) => { void update({ language: event.target.value }); }}
             >
               <option value="en">English</option>
@@ -819,6 +864,7 @@ function SpeechAi({
               <select
                 aria-label="Local transcription engine"
                 value={settings.localSttEngine}
+                disabled={settings.recordingActive}
                 onChange={(event) => {
                   void update({
                     localSttEngine: event.target.value === "nemotron" ? "nemotron" : "whisper",

@@ -10,10 +10,12 @@ internal sealed class ForegroundInfo
 
 internal static class Desktop
 {
+    public static readonly UIntPtr OwnInputMarker = new UIntPtr(0x554E4452);
     private const uint InputKeyboard = 1;
     private const ushort VkControl = 0x11;
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
+    private const uint KeyEventUnicode = 0x0004;
 
     public static ForegroundInfo GetForeground(FocusIdentityResult focusIdentity)
     {
@@ -52,6 +54,20 @@ internal static class Desktop
             == (uint)inputs.Length;
     }
 
+    public static bool SendText(string text)
+    {
+        if (text.Length == 0)
+            return true;
+        var inputs = new Input[text.Length * 2];
+        for (var index = 0; index < text.Length; index++)
+        {
+            inputs[index * 2] = UnicodeKey(text[index], KeyEventUnicode);
+            inputs[index * 2 + 1] = UnicodeKey(text[index], KeyEventUnicode | KeyEventKeyUp);
+        }
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input)))
+            == (uint)inputs.Length;
+    }
+
     private static Input Key(ushort virtualKey, uint flags)
     {
         return new Input
@@ -65,7 +81,26 @@ internal static class Desktop
                     ScanCode = 0,
                     Flags = flags,
                     Time = 0,
-                    ExtraInfo = UIntPtr.Zero
+                    ExtraInfo = OwnInputMarker
+                }
+            }
+        };
+    }
+
+    private static Input UnicodeKey(char character, uint flags)
+    {
+        return new Input
+        {
+            Type = InputKeyboard,
+            Data = new InputUnion
+            {
+                Keyboard = new KeyboardInput
+                {
+                    VirtualKey = 0,
+                    ScanCode = character,
+                    Flags = flags,
+                    Time = 0,
+                    ExtraInfo = OwnInputMarker
                 }
             }
         };

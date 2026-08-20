@@ -34,6 +34,8 @@ export interface UndertoneConfig {
   scratch_hotkey: string;
   discard_hotkey: string;
   live_transcription: boolean;
+  direct_live_insert: boolean;
+  minutes_recording_before_timeout: number;
   // Keep the persisted key for compatibility with existing config files.
   stack_cleanup_strategy: OpenTurnCleanupStrategy;
   local_loaded: boolean;
@@ -66,6 +68,8 @@ export const DEFAULT_CONFIG: Readonly<UndertoneConfig> = {
   scratch_hotkey: "left ctrl+left alt+backspace",
   discard_hotkey: "ctrl+alt+shift+backspace",
   live_transcription: false,
+  direct_live_insert: false,
+  minutes_recording_before_timeout: 5,
   stack_cleanup_strategy: "live-full",
   local_loaded: false,
   local_idle_minutes: 0,
@@ -93,6 +97,15 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
   const selectedProvider = isTranscriptionProvider(input.provider)
     ? input.provider
     : DEFAULT_CONFIG.provider;
+  const supportsStreaming = selectedProvider === "openai"
+    || selectedProvider === "xai"
+    || (selectedProvider === "local" && selectedLocalSttEngine === "nemotron");
+  const selectedLiveTranscription = booleanValue(
+    input.live_transcription,
+    DEFAULT_CONFIG.live_transcription,
+  );
+  const selectedDirectLiveInsert = supportsStreaming
+    && booleanValue(input.direct_live_insert, DEFAULT_CONFIG.direct_live_insert);
   return {
     api_key: persistedString(input.api_key, DEFAULT_CONFIG.api_key, 8_192),
     openai_api_key: persistedString(input.openai_api_key, DEFAULT_CONFIG.openai_api_key, 8_192),
@@ -141,8 +154,15 @@ export function normalizeConfig(value: unknown): UndertoneConfig {
     commit_hotkey: persistedString(input.commit_hotkey, DEFAULT_CONFIG.commit_hotkey, 256),
     scratch_hotkey: persistedString(input.scratch_hotkey, DEFAULT_CONFIG.scratch_hotkey, 256),
     discard_hotkey: persistedString(input.discard_hotkey, DEFAULT_CONFIG.discard_hotkey, 256),
-    live_transcription: booleanValue(input.live_transcription, DEFAULT_CONFIG.live_transcription)
-      && !(selectedProvider === "local" && selectedLocalSttEngine === "whisper"),
+    live_transcription: supportsStreaming && selectedLiveTranscription,
+    direct_live_insert: selectedDirectLiveInsert,
+    minutes_recording_before_timeout: boundedNumber(
+      input.minutes_recording_before_timeout,
+      DEFAULT_CONFIG.minutes_recording_before_timeout,
+      0,
+      120,
+      true,
+    ),
     stack_cleanup_strategy: openTurnCleanupStrategy(input.stack_cleanup_strategy),
     local_loaded: booleanValue(input.local_loaded, DEFAULT_CONFIG.local_loaded),
     local_idle_minutes: localIdleMinutes(input.local_idle_minutes),

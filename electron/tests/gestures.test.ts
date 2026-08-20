@@ -4,7 +4,7 @@ import { GestureState, TapStateMachine } from "../src/core/gestures";
 
 const TAP_MS = 100;
 
-function make(startOk = true): {
+function make(startOk = true, toggleOnly = false): {
   machine: TapStateMachine;
   actions: string[];
 } {
@@ -19,7 +19,7 @@ function make(startOk = true): {
       onDiscard: () => actions.push("discard"),
       onLock: () => actions.push("lock"),
     },
-    { tapMs: TAP_MS },
+    { tapMs: TAP_MS, toggleOnly: () => toggleOnly },
   );
   return { machine, actions };
 }
@@ -68,6 +68,31 @@ describe("TapStateMachine", () => {
     expect(machine.state).toBe(GestureState.locked);
   });
 
+  it("starts and stops toggle-only recording after the shortcut is released", () => {
+    const { machine, actions } = make(true, true);
+    machine.press();
+    vi.advanceTimersByTime(TAP_MS * 2);
+    expect(actions).toEqual([]);
+    machine.release();
+    expect(actions).toEqual(["start", "lock"]);
+    expect(machine.state).toBe(GestureState.locked);
+
+    machine.press();
+    expect(actions).toEqual(["start", "lock"]);
+    machine.release();
+    expect(actions).toEqual(["start", "lock", "finish:commit"]);
+    expect(machine.state).toBe(GestureState.idle);
+  });
+
+  it("cancels a deferred toggle without discarding a recording", () => {
+    const { machine, actions } = make(true, true);
+    machine.press();
+    expect(machine.cancel()).toBe(true);
+    machine.release();
+    expect(actions).toEqual([]);
+    expect(machine.state).toBe(GestureState.idle);
+  });
+
   it("finishes a held recording into the open turn", () => {
     const { machine, actions } = make();
     machine.press();
@@ -101,6 +126,28 @@ describe("TapStateMachine", () => {
     machine.release();
     expect(actions).toEqual(["start", "discard"]);
     expect(machine.state).toBe(GestureState.idle);
+  });
+
+  it("finishes an active recording with the timeout destination", () => {
+    const { machine, actions } = make();
+    machine.press();
+    expect(machine.timeout()).toBe(true);
+    expect(actions).toEqual(["start", "finish:timeout"]);
+    expect(machine.state).toBe(GestureState.idle);
+  });
+
+  it("announces a toggle stop before waiting for shortcut release", () => {
+    const actions: string[] = [];
+    const machine = new TapStateMachine({
+      onStart: () => true,
+      onFinish: () => undefined,
+      onDiscard: () => undefined,
+      onStopRequested: () => actions.push("stop-requested"),
+    }, { toggleOnly: () => true });
+    machine.press();
+    machine.release();
+    machine.press();
+    expect(actions).toEqual(["stop-requested"]);
   });
 
   it("does nothing when idle completion or cancellation is requested", () => {

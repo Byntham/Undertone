@@ -39,6 +39,7 @@ describe("configuration", () => {
     expect(second.cleanup_provider).toBe("local");
     expect(second.stack_cleanup_strategy).toBe("live-full");
     expect(second.live_transcription).toBe(false);
+    expect(second.direct_live_insert).toBe(false);
     expect(second.cleanup_reasoning_effort).toBe("none");
     expect(second.cleanup_service_tier).toBe("priority");
     expect(second.hotkey).toBe("left ctrl+left windows");
@@ -74,6 +75,7 @@ describe("configuration", () => {
       scratch_hotkey: 42,
       discard_hotkey: [],
       live_transcription: "true",
+      direct_live_insert: "true",
       stack_cleanup_strategy: "sometimes",
       local_loaded: "false",
       local_idle_minutes: 7,
@@ -141,6 +143,33 @@ describe("configuration", () => {
     }).live_transcription).toBe(true);
   });
 
+  it("keeps live typing separate from preview and supports all streaming providers", () => {
+    expect(normalizeConfig({
+      provider: "openai",
+      direct_live_insert: true,
+    })).toMatchObject({ direct_live_insert: true, live_transcription: false });
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(true);
+    expect(normalizeConfig({
+      provider: "xai",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(true);
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "whisper",
+      direct_live_insert: true,
+    }).direct_live_insert).toBe(false);
+    expect(normalizeConfig({
+      provider: "local",
+      local_stt_engine: "nemotron",
+      live_transcription: true,
+      direct_live_insert: false,
+    }).direct_live_insert).toBe(false);
+  });
+
   it("persists only supported local transcription engines", () => {
     expect(normalizeConfig({ local_stt_engine: "nemotron" }).local_stt_engine)
       .toBe("nemotron");
@@ -158,6 +187,18 @@ describe("configuration", () => {
       local_stt_engine: "whisper",
       live_transcription: true,
     }).live_transcription).toBe(false);
+  });
+
+  it("normalizes the config-only recording timeout", () => {
+    expect(normalizeConfig({}).minutes_recording_before_timeout).toBe(5);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 0 })
+      .minutes_recording_before_timeout).toBe(0);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 120 })
+      .minutes_recording_before_timeout).toBe(120);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 5.5 })
+      .minutes_recording_before_timeout).toBe(5);
+    expect(normalizeConfig({ minutes_recording_before_timeout: 121 })
+      .minutes_recording_before_timeout).toBe(5);
   });
 
   it("repairs invalid Luna request settings and migrates fast to priority", () => {

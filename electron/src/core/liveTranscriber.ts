@@ -9,10 +9,12 @@ export interface LiveTranscriptionOptions {
   provider: LiveTranscriptionProvider;
   apiKey: string;
   language: string;
+  interimResults?: boolean;
 }
 
 export interface LiveTranscriptionCallbacks {
   partial(text: string): void;
+  stable?(text: string): void;
   failed(error: Error): void;
 }
 
@@ -235,8 +237,10 @@ class OpenAiLiveSession extends BaseLiveSession {
       this.markReady();
     } else if (value.type === "conversation.item.input_audio_transcription.delta"
       && typeof value.delta === "string") {
-      this.partialText += value.delta;
+      const delta = this.partialText.length === 0 ? value.delta.trimStart() : value.delta;
+      this.partialText += delta;
       this.callbacks.partial(this.partialText);
+      this.callbacks.stable?.(delta);
     } else if (value.type === "conversation.item.input_audio_transcription.completed"
       && typeof value.transcript === "string") {
       this.succeed(value.transcript.trim() || this.partialText);
@@ -271,7 +275,7 @@ class XaiLiveSession extends BaseLiveSession {
     const query = new URLSearchParams({
       sample_rate: "16000",
       encoding: "pcm",
-      interim_results: "true",
+      interim_results: options.interimResults === false ? "false" : "true",
       language: options.language,
     });
     super(
@@ -311,15 +315,24 @@ class XaiLiveSession extends BaseLiveSession {
     if (value.is_final === true) {
       this.interim = "";
       if (value.speech_final === true) {
+        const hadLockedChunks = this.lockedChunks.length > 0;
         if (text.length > 0) this.completedUtterances.push(text);
         this.lockedChunks.length = 0;
+        if (!hadLockedChunks) this.emitStable(text);
       } else if (text.length > 0) {
         this.lockedChunks.push(text);
+        this.emitStable(text);
       }
     } else {
       this.interim = text;
     }
     this.callbacks.partial(this.displayText());
+  }
+
+  private emitStable(text: string): void {
+    if (text.length === 0) return;
+    const hasPriorText = this.completedUtterances.length + this.lockedChunks.length > 1;
+    this.callbacks.stable?.(`${hasPriorText ? " " : ""}${text}`);
   }
 
   private displayText(): string {

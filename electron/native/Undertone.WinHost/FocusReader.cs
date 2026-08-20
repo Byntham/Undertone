@@ -16,24 +16,34 @@ internal sealed class FocusIdentityResult
 {
     public FocusIdentityState State;
     public string Value;
+    public string TargetState;
 
     public static FocusIdentityResult Available(string value)
     {
         return new FocusIdentityResult
         {
             State = FocusIdentityState.Available,
-            Value = value
+            Value = value,
+            TargetState = "unknown"
         };
     }
 
     public static FocusIdentityResult Unavailable()
     {
-        return new FocusIdentityResult { State = FocusIdentityState.Unavailable };
+        return new FocusIdentityResult
+        {
+            State = FocusIdentityState.Unavailable,
+            TargetState = "unknown"
+        };
     }
 
     public static FocusIdentityResult Degraded()
     {
-        return new FocusIdentityResult { State = FocusIdentityState.Degraded };
+        return new FocusIdentityResult
+        {
+            State = FocusIdentityState.Degraded,
+            TargetState = "unknown"
+        };
     }
 }
 
@@ -127,7 +137,30 @@ internal sealed class FocusReader : IDisposable
         var identity = new StringBuilder("uia");
         foreach (var value in runtimeId)
             identity.Append(':').Append(value);
-        return FocusIdentityResult.Available(identity.ToString());
+        var result = FocusIdentityResult.Available(identity.ToString());
+        result.TargetState = TargetState(element);
+        return result;
+    }
+
+    private static string TargetState(AutomationElement element)
+    {
+        try
+        {
+            if (element.Current.IsPassword) return "password";
+            if (!element.Current.IsEnabled) return "disabled";
+            object valuePattern;
+            var hasValue = element.TryGetCurrentPattern(ValuePattern.Pattern, out valuePattern);
+            if (hasValue && ((ValuePattern)valuePattern).Current.IsReadOnly)
+                return "read-only";
+            var type = element.Current.ControlType;
+            if (type == ControlType.Edit || type == ControlType.Document || hasValue)
+                return "editable";
+            return "non-editable";
+        }
+        catch
+        {
+            return "unknown";
+        }
     }
 
     private sealed class Job

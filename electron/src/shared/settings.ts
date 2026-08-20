@@ -63,6 +63,7 @@ export interface LocalEngineSnapshot {
 }
 
 export interface SettingsSnapshot {
+  recordingActive: boolean;
   language: string;
   aiCleanup: boolean;
   restoreClipboard: boolean;
@@ -75,6 +76,7 @@ export interface SettingsSnapshot {
   discardHotkey: string;
   shortcutWarning: string | null;
   liveTranscription: boolean;
+  directLiveInsert: boolean;
   openTurnCleanupStrategy: OpenTurnCleanupStrategy;
   inputDevice: string;
   microphones: string[];
@@ -99,6 +101,10 @@ export interface HistorySnapshotEntry {
   error: string | null;
   timestamp: number;
   retryable: boolean;
+  partial: boolean;
+  repasteable: boolean;
+  insertedText: string;
+  reason: string | null;
 }
 
 export interface SettingsPatch {
@@ -112,6 +118,7 @@ export interface SettingsPatch {
   scratchHotkey?: string;
   discardHotkey?: string;
   liveTranscription?: boolean;
+  directLiveInsert?: boolean;
   openTurnCleanupStrategy?: OpenTurnCleanupStrategy;
   inputDevice?: string;
   provider?: TranscriptionProviderId;

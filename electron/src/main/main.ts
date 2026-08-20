@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   type MenuItemConstructorOptions,
+  type MessageBoxOptions,
   nativeImage,
   screen,
   session,
@@ -30,6 +31,7 @@ import {
   DictationJobRunner,
   type DictationFeedbackMessage,
 } from "../core/dictationRunner";
+import { DirectLiveTextWriter } from "../core/directLiveTextWriter";
 import { GestureState, TapStateMachine } from "../core/gestures";
 import {
   LiveTranscriber,
@@ -110,6 +112,20 @@ const TURN_DRAFT_TEXT_SIZE = { width: 320, height: 68 } as const;
 const TURN_DRAFT_TEXT_MIN_WIDTH = 300;
 const TURN_DRAFT_AUTO_MAX_HEIGHT = 360;
 const TURN_DRAFT_AUTO_WORK_AREA_RATIO = 0.45;
+const RECORDING_LOCKED_SETTINGS = new Set([
+  "provider",
+  "localSttEngine",
+  "language",
+  "inputDevice",
+  "hotkey",
+  "liveTranscription",
+  "directLiveInsert",
+  "aiCleanup",
+  "cleanupProvider",
+  "restoreClipboard",
+  "openTurnCleanupStrategy",
+  "corrections",
+]);
 
 interface CapturedAudio {
   wav: Uint8Array | null;
@@ -123,6 +139,13 @@ interface LiveCapture {
   state: "listening" | "finalizing" | "processing";
   /** Stable text through this capture, latched before the turn buffer changes. */
   latchedText?: string;
+}
+
+interface DirectLiveCapture extends LiveCapture {
+  writer: DirectLiveTextWriter;
+  target: DictationTarget | null;
+  targetReady: Promise<void>;
+  partialRegistered: boolean;
 }
 
 interface TurnDraftDismissal {
@@ -197,6 +220,7 @@ if (!gotLock) {
   }>();
   let nextCaptureId = 1;
   let activeAudioCaptureId: number | null = null;
+  let recordingTimeout: ReturnType<typeof setTimeout> | null = null;
   let shortcutCapture: {
     collector: ShortcutCapture;
     completed: boolean;
@@ -211,6 +235,7 @@ if (!gotLock) {
   const turnBuffer = new TurnBuffer();
   const liveTranscriber = new LiveTranscriber();
   const liveCaptures = new Map<number, LiveCapture>();
+  const directLiveCaptures = new Map<number, DirectLiveCapture>();
   const activeDictationCaptureIds = new Set<number>();
   const autostart = new AutostartManager(process.execPath);
   const windowsHost = new WindowsHost(app.isPackaged ? {
@@ -391,6 +416,7 @@ if (!gotLock) {
     if (overlay === null || overlay.isDestroyed()) return;
     publishTurnDraft();
     const projectedState = isTurnDraftActivity(state.state)
+      && directLiveCaptures.size === 0
       ? { state: "hidden", text: "", tone: "normal" } satisfies OverlayState
       : state;
     if (projectedState.state === "hidden") {
@@ -617,9 +643,12 @@ if (!gotLock) {
   };
 
   const updateTrayTooltip = (): void => {
+    const activeTooltip = directLiveInsertEnabled(config)
+      ? "Undertone - tap to start or stop live dictation"
+      : "Undertone - hold to paste, tap to toggle, Left Alt to keep open";
     tray?.setToolTip(paused
-      ? "Undertone — paused"
-      : "Undertone — hold to paste, tap to toggle, Left Alt to keep open");
+      ? "Undertone - paused"
+      : activeTooltip);
   };
 
   const configureShortcuts = (): void => {
@@ -672,6 +701,10 @@ if (!gotLock) {
   };
 
   const repasteLast = (): void => {
+    if (directLiveCaptures.size > 0) {
+      showFeedback("Finish Live typing before re-pasting", "warning");
+      return;
+    }
     const text = history.latestSuccessText();
     if (text === null) {
       showFeedback("Nothing to re-paste yet", "warning");
@@ -683,6 +716,10 @@ if (!gotLock) {
   };
 
   const commitOpenTurn = (): void => {
+    if (directLiveCaptures.size > 0) {
+      showFeedback("Finish Live typing before committing the open turn", "warning");
+      return;
+    }
     const activePipeline = pipeline;
     if (activePipeline === null) {
       showFeedback("Dictation service is not ready", "error");
@@ -718,31 +755,109 @@ if (!gotLock) {
     }
   };
 
+  const captureLiveTarget = async (): Promise<DictationTarget> => {
+    const foreground = await windowsHost.getForeground();
+    if (foreground.window === "0" || foreground.focus === "0") {
+      throw new Error("No editable text target is focused");
+    }
+    if (foreground.targetState !== "editable" && foreground.targetState !== "unknown") {
+      throw new Error(`The focused control is ${foreground.targetState}`);
+    }
+    const common = {
+      window: foreground.window,
+      focus: foreground.focus,
+      generation: foreground.generation,
+    };
+    return foreground.focusIdentityState === "available"
+      ? { ...common, focusIdentityState: "available", focusIdentity: foreground.focusIdentity }
+      : { ...common, focusIdentityState: "unavailable", focusIdentity: null };
+  };
+
+  const rebaseDirectTarget = async (capture: DirectLiveCapture): Promise<void> => {
+    await capture.targetReady;
+    const expected = capture.target;
+    if (expected === null || capture.writer.snapshot().stopReason !== null) return;
+    try {
+      const foreground = await windowsHost.getForeground();
+      const identityMatches = expected.focusIdentityState !== "available"
+        || foreground.focusIdentityState !== "available"
+        || expected.focusIdentity === foreground.focusIdentity;
+      if (foreground.window !== expected.window
+        || foreground.focus !== expected.focus
+        || !identityMatches) {
+        capture.writer.stop("focus-changed");
+        return;
+      }
+      capture.target = foreground.focusIdentityState === "available"
+        ? {
+          window: foreground.window,
+          focus: foreground.focus,
+          generation: foreground.generation,
+          focusIdentityState: "available",
+          focusIdentity: foreground.focusIdentity,
+        }
+        : {
+          window: foreground.window,
+          focus: foreground.focus,
+          generation: foreground.generation,
+          focusIdentityState: "unavailable",
+          focusIdentity: null,
+        };
+      capture.writer.resume();
+    } catch {
+      capture.writer.stop("focus-unavailable");
+    }
+  };
+
+  const registerDirectPartial = (capture: DirectLiveCapture, reason: string): void => {
+    if (capture.partialRegistered) return;
+    const snapshot = capture.writer.snapshot(capture.text);
+    if (snapshot.finalText.length === 0 && snapshot.insertedText.length === 0) return;
+    capture.partialRegistered = true;
+    history.registerPartial(snapshot.finalText, snapshot.insertedText, reason);
+  };
+
   const discardOpenTurn = (): void => {
+    if (directLiveCaptures.size > 0) {
+      showFeedback("Finish Live typing before discarding the open turn", "warning");
+      return;
+    }
     void pipeline?.enqueueDiscard().catch((error: unknown) => {
       showFeedback(error instanceof Error ? error.message : "Could not discard turn", "error");
     });
   };
 
   const scratchLastFragment = (): void => {
+    if (directLiveCaptures.size > 0) {
+      showFeedback("Finish Live typing before changing the open turn", "warning");
+      return;
+    }
     void pipeline?.enqueueScratch().catch((error: unknown) => {
       showFeedback(error instanceof Error ? error.message : "Could not scratch fragment", "error");
     });
   };
 
   const abandonLiveCapture = (captureId: number): void => {
-    const capture = liveCaptures.get(captureId);
+    const directCapture = directLiveCaptures.get(captureId);
+    const capture = liveCaptures.get(captureId) ?? directCapture;
     if (capture === undefined) return;
     liveCaptures.delete(captureId);
+    directLiveCaptures.delete(captureId);
+    directCapture?.writer.cancel();
     capture.session.cancel();
     publishTurnDraft();
   };
 
   const failLiveCapture = (captureId: number, error: Error): void => {
-    const capture = liveCaptures.get(captureId);
+    const directCapture = directLiveCaptures.get(captureId);
+    const capture = liveCaptures.get(captureId) ?? directCapture;
     if (capture === undefined) return;
     const shouldCancelRecording = activeAudioCaptureId === captureId;
+    if (directCapture !== undefined) registerDirectPartial(directCapture, error.message);
     liveCaptures.delete(captureId);
+    directLiveCaptures.delete(captureId);
+    directCapture?.writer.cancel();
+    capture.session.cancel();
     const pending = pendingAudioFinalizations.get(captureId);
     if (pending !== undefined) pending.liveFailed = true;
     console.warn(`Live ${capture.provider} transcription failed: ${error.message}`);
@@ -762,10 +877,15 @@ if (!gotLock) {
         return false;
       }
       const captureId = nextCaptureId++;
-      const streamLive = liveTranscriptionEnabled(config);
-      if (!turnDraftReady
+      const directInsert = directLiveInsertEnabled(config);
+      const streamLive = directInsert || liveTranscriptionEnabled(config);
+      if (directInsert && pipeline?.busy === true) {
+        showFeedback("Wait for the previous dictation to finish", "warning");
+        return false;
+      }
+      if (!directInsert && (!turnDraftReady
           || turnDraftWindow === null
-          || turnDraftWindow.isDestroyed()) {
+          || turnDraftWindow.isDestroyed())) {
         showFeedback("Turn window unavailable — recording did not start", "error");
         return false;
       }
@@ -776,12 +896,43 @@ if (!gotLock) {
             ? "openai"
             : config.provider === "xai" ? "xai" : "local";
           if (provider === "local") selectedLocalSttRuntime()?.warm();
+          let directTarget: DictationTarget | null = null;
+          let directCaptureRef: DirectLiveCapture | null = null;
+          const targetReady = directInsert
+            ? captureLiveTarget().then((target) => {
+              directTarget = target;
+              if (directCaptureRef !== null) directCaptureRef.target = target;
+            })
+            : Promise.resolve();
+          const writer = directInsert
+            ? new DirectLiveTextWriter(
+              async (text) => {
+                await targetReady;
+                const target = directCaptureRef?.target ?? directTarget;
+                if (target === null) return "focus-unavailable";
+                return await windowsHost.sendGuardedText(target, text);
+              },
+              (error) => failLiveCapture(captureId, error),
+              () => showFeedback("Insertion stopped - tap Dictate to finish", "warning"),
+            )
+            : null;
           const callbacks: LiveTranscriptionCallbacks = {
             partial: (text) => {
+              if (writer !== null) {
+                const active = directLiveCaptures.get(captureId);
+                if (active !== undefined) active.text = text;
+                if (provider === "local") writer.updateHypothesis(text);
+                return;
+              }
               const active = liveCaptures.get(captureId);
               if (active === undefined) return;
               active.text = text;
               publishTurnDraft();
+            },
+            stable: (text) => {
+              if (writer !== null && provider !== "local" && directLiveCaptures.has(captureId)) {
+                writer.append(text);
+              }
             },
             failed: (error) => failLiveCapture(captureId, error),
           };
@@ -791,6 +942,7 @@ if (!gotLock) {
               provider,
               apiKey: providerKey(config, provider),
               language: config.language,
+              interimResults: !directInsert,
             }, callbacks);
           if (session === undefined) throw new Error("Local transcription service is not ready.");
           const liveCapture: LiveCapture = {
@@ -800,7 +952,24 @@ if (!gotLock) {
             text: "",
             state: "listening",
           };
-          liveCaptures.set(captureId, liveCapture);
+          if (writer === null) {
+            liveCaptures.set(captureId, liveCapture);
+          } else {
+            directCaptureRef = {
+              ...liveCapture,
+              writer,
+              target: directTarget,
+              targetReady,
+              partialRegistered: false,
+            };
+            directLiveCaptures.set(captureId, directCaptureRef);
+            void targetReady.catch((error: unknown) => {
+              failLiveCapture(
+                captureId,
+                error instanceof Error ? error : new Error(String(error)),
+              );
+            });
+          }
         } catch (error) {
           showFeedback(
             `Live transcription failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -810,7 +979,21 @@ if (!gotLock) {
         }
       }
       activeAudioCaptureId = captureId;
-      activeDictationCaptureIds.add(captureId);
+      if (config.minutes_recording_before_timeout > 0) {
+        recordingTimeout = setTimeout(() => {
+          recordingTimeout = null;
+          const liveMode = directLiveInsertEnabled(config);
+          if (gestures.timeout()) {
+            showFeedback(
+              liveMode
+                ? "Recording limit reached - recovery saved in History"
+                : "Recording limit reached - saved to the open turn",
+              "warning",
+            );
+          }
+        }, config.minutes_recording_before_timeout * 60_000);
+      }
+      if (!directInsert) activeDictationCaptureIds.add(captureId);
       anchorOverlayToCursor();
       audioWindow.webContents.send("audio:command", {
         type: "start",
@@ -826,12 +1009,19 @@ if (!gotLock) {
     onFinish: (completion) => {
       const captureId = activeAudioCaptureId;
       activeAudioCaptureId = null;
+      if (recordingTimeout !== null) clearTimeout(recordingTimeout);
+      recordingTimeout = null;
       if (captureId === null) return;
       const activePipeline = pipeline;
-      const target = completion === "commit"
+      const directCapture = directLiveCaptures.get(captureId);
+      if (completion === "timeout") directCapture?.writer.stop("timeout");
+      const directRebase = directCapture === undefined || completion !== "commit"
+        ? Promise.resolve()
+        : rebaseDirectTarget(directCapture);
+      const target = completion === "commit" && directCapture === undefined
         ? captureForegroundTarget()
         : Promise.resolve(null);
-      const liveCapture = liveCaptures.get(captureId);
+      const liveCapture = liveCaptures.get(captureId) ?? directCapture;
       if (liveCapture !== undefined) liveCapture.state = "finalizing";
       const overlayRevision = overlayController.transcribing();
       if (activePipeline !== null) {
@@ -850,13 +1040,14 @@ if (!gotLock) {
           streamed: liveCapture !== undefined,
           liveFailed: false,
         });
-        const pending = Promise.all([audio, target]).then<PendingDictation | null>(
+        const pending = Promise.all([audio, target, directRebase]).then<PendingDictation | null>(
           async ([captured, capturedTarget]) => {
             if (captured === null) {
               abandonLiveCapture(captureId);
               return null;
             }
-            const activeLive = liveCaptures.get(captureId);
+            const activeDirect = directLiveCaptures.get(captureId);
+            const activeLive = liveCaptures.get(captureId) ?? activeDirect;
             let input: DictationInput;
             if (activeLive !== undefined) {
               try {
@@ -871,10 +1062,28 @@ if (!gotLock) {
                 console.log(
                   `Live ${activeLive.provider} transcription finalized (${text.length} characters)`,
                 );
+                if (activeDirect !== undefined) {
+                  const result = await activeDirect.writer.finish(text, {
+                    appendFinal: completion === "commit",
+                    trailingSpace: completion === "commit",
+                  });
+                  directLiveCaptures.delete(captureId);
+                  if (result.complete && completion === "commit") {
+                    history.registerSuccess(text);
+                    showFeedback("Text inserted");
+                  } else {
+                    registerDirectPartial(
+                      activeDirect,
+                      result.stopReason ?? "Live insertion was incomplete",
+                    );
+                    showFeedback("Insertion stopped - recovery saved in History", "warning");
+                  }
+                  return null;
+                }
                 publishTurnDraft();
                 input = { type: "transcript", text, previewId: captureId };
               } catch (error) {
-                if (liveCaptures.has(captureId)) {
+                if (liveCaptures.has(captureId) || directLiveCaptures.has(captureId)) {
                   failLiveCapture(
                     captureId,
                     error instanceof Error ? error : new Error(String(error)),
@@ -925,8 +1134,15 @@ if (!gotLock) {
     onDiscard: () => {
       const captureId = activeAudioCaptureId;
       activeAudioCaptureId = null;
+      if (recordingTimeout !== null) clearTimeout(recordingTimeout);
+      recordingTimeout = null;
       if (captureId !== null) {
         activeDictationCaptureIds.delete(captureId);
+        const directCapture = directLiveCaptures.get(captureId);
+        if (directCapture !== undefined) {
+          directCapture.writer.stop("cancelled");
+          registerDirectPartial(directCapture, "Dictation cancelled");
+        }
         abandonLiveCapture(captureId);
       }
       audioWindow?.webContents.send("audio:command", { type: "cancel" });
@@ -935,9 +1151,15 @@ if (!gotLock) {
       overlayController.hide();
     },
     onLock: () => {
-      playCue("lock");
+      if (!directLiveInsertEnabled(config)) playCue("lock");
       overlayController.locked();
     },
+    onStopRequested: () => {
+      if (activeAudioCaptureId === null) return;
+      directLiveCaptures.get(activeAudioCaptureId)?.writer.pause();
+    },
+  }, {
+    toggleOnly: () => directLiveInsertEnabled(config),
   });
 
   const createOverlay = async (): Promise<void> => {
@@ -1356,7 +1578,12 @@ if (!gotLock) {
     }
     pendingAudioFinalizations.clear();
     for (const capture of liveCaptures.values()) capture.session.cancel();
+    for (const capture of directLiveCaptures.values()) {
+      capture.writer.cancel();
+      capture.session.cancel();
+    }
     liveCaptures.clear();
+    directLiveCaptures.clear();
     if (microphoneTest !== null) {
       clearTimeout(microphoneTest.timer);
       microphoneTest.reject(new Error("Undertone is shutting down"));
@@ -1441,7 +1668,7 @@ if (!gotLock) {
     return settingsSnapshot(config, app.getVersion(), {
       stt,
       cleanup,
-    }, microphones, startWithWindows);
+    }, microphones, startWithWindows, gestures.state !== GestureState.idle);
   }
 
   async function persistSettingsPatch(value: unknown): Promise<ReturnType<typeof settingsSnapshot>> {
@@ -1449,6 +1676,11 @@ if (!gotLock) {
     const operation = settingsUpdateChain.then(async () => {
       const store = configStore;
       if (store === null) throw new Error("Settings store is not ready");
+      if (gestures.state !== GestureState.idle
+        && isRecord(value)
+        && Object.keys(value).some((key) => RECORDING_LOCKED_SETTINGS.has(key))) {
+        throw new Error("Finish the current recording before changing this setting");
+      }
       const previousHotkey = config.hotkey;
       const previousRepaste = config.repaste_hotkey;
       const previousCommit = config.commit_hotkey;
@@ -1457,14 +1689,51 @@ if (!gotLock) {
       const previousProvider = config.provider;
       const previousLocalSttEngine = config.local_stt_engine;
       const previousLiveTranscription = config.live_transcription;
+      const previousDirectLiveInsert = config.direct_live_insert;
       const next = applySettingsPatch(config, value);
+      if (!previousDirectLiveInsert
+        && next.direct_live_insert
+        && turnBuffer.snapshot() !== null) {
+        const options: MessageBoxOptions = {
+          type: "warning",
+          buttons: ["Discard", "Cancel"],
+          defaultId: 1,
+          cancelId: 1,
+          title: "Switch to Live typing?",
+          message: "Discard the open turn and switch to Live typing?",
+          detail: "Live typing cannot use text already saved in the formatted turn.",
+        };
+        const choice = settingsWindow === null
+          ? await dialog.showMessageBox(options)
+          : await dialog.showMessageBox(settingsWindow, options);
+        if (choice.response === 1) {
+          result = await currentSettingsSnapshot();
+          return;
+        }
+        turnBuffer.clear();
+        publishTurnDraft();
+      }
       await store.save(next);
       config = next;
+      if (previousDirectLiveInsert && !config.direct_live_insert
+        && (config.provider === "openrouter"
+          || (config.provider === "local" && config.local_stt_engine === "whisper"))) {
+        const options: MessageBoxOptions = {
+          type: "info",
+          buttons: ["OK"],
+          title: "Switched to Formatted mode",
+          message: "Live typing is unavailable with this transcription engine.",
+        };
+        void (settingsWindow === null
+          ? dialog.showMessageBox(options)
+          : dialog.showMessageBox(settingsWindow, options));
+      }
       await settleTranscriptionRuntimeChange({
         previous: {
           provider: previousProvider,
           local_stt_engine: previousLocalSttEngine,
           live_transcription: previousLiveTranscription,
+          direct_live_insert: previousDirectLiveInsert,
         },
         next: config,
         recordingActive: gestures.state !== GestureState.idle,
@@ -1682,6 +1951,10 @@ if (!gotLock) {
       error: null,
       timestamp: entry.timestamp,
       retryable: false,
+      partial: entry.partial,
+      repasteable: !entry.partial,
+      insertedText: entry.partial ? entry.insertedText : entry.text,
+      reason: entry.partial ? entry.reason : null,
     } : {
       id: entry.id,
       ok: false,
@@ -1689,6 +1962,10 @@ if (!gotLock) {
       error: entry.error,
       timestamp: entry.timestamp,
       retryable: entry.retryable,
+      partial: false,
+      repasteable: false,
+      insertedText: "",
+      reason: null,
     });
   });
   ipcMain.handle("history:action", async (event, value: unknown) => {
@@ -1713,7 +1990,9 @@ if (!gotLock) {
     settingsWindow?.minimize();
     await delay(600);
     if (value.action === "repaste") {
-      if (!entry.ok) throw new Error("Only successful dictations can be re-pasted");
+      if (!entry.ok || entry.partial) {
+        throw new Error("Partial dictations cannot be re-pasted automatically");
+      }
       await activePipeline!.enqueueRepaste(entry.text);
       return;
     }
@@ -1868,7 +2147,7 @@ if (!gotLock) {
       }
     } else if (payload.type === "chunk") {
       const captureId = typeof payload.captureId === "number" ? payload.captureId : -1;
-      const live = liveCaptures.get(captureId);
+      const live = liveCaptures.get(captureId) ?? directLiveCaptures.get(captureId);
       const samples = toFloat32Array(payload.samples);
       const sampleRate = typeof payload.sampleRate === "number" ? payload.sampleRate : 0;
       if (live === undefined || samples === null) return;
@@ -2155,6 +2434,13 @@ function toFloat32Array(value: unknown): Float32Array | null {
 
 function liveTranscriptionEnabled(config: UndertoneConfig): boolean {
   return config.live_transcription
+    && (config.provider === "openai"
+      || config.provider === "xai"
+      || (config.provider === "local" && config.local_stt_engine === "nemotron"));
+}
+
+function directLiveInsertEnabled(config: UndertoneConfig): boolean {
+  return config.direct_live_insert
     && (config.provider === "openai"
       || config.provider === "xai"
       || (config.provider === "local" && config.local_stt_engine === "nemotron"));
