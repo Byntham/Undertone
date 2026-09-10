@@ -12,12 +12,7 @@ export type GuardedPasteResult = "pasted" | "focus-changed" | "focus-unavailable
 
 export type PasteTarget = {
   window: string;
-  focus: string;
-  generation: string;
-} & (
-  | { focusIdentityState: "available"; focusIdentity: string }
-  | { focusIdentityState: "unavailable"; focusIdentity: null }
-);
+};
 
 type Scheduler = (callback: () => Promise<void>, delayMs: number) => void;
 

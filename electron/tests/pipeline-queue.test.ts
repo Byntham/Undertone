@@ -62,10 +62,6 @@ describe("dictation pipeline queue", () => {
             state: "captured",
             value: {
               window: "42",
-              focus: "0",
-              focusIdentityState: "unavailable",
-              focusIdentity: null,
-              generation: "7",
             },
           },
         },
@@ -144,10 +140,6 @@ describe("dictation pipeline queue", () => {
           state: "captured",
           value: {
             window: "42",
-            focus: "0",
-            focusIdentityState: "unavailable",
-            focusIdentity: null,
-            generation: "7",
           },
         },
       },

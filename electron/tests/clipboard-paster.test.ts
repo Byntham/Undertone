@@ -109,10 +109,6 @@ describe("clipboard paster", () => {
     let sent = false;
     const target = {
       window: "42",
-      focus: "420",
-      focusIdentityState: "available" as const,
-      focusIdentity: "uia:1",
-      generation: "7",
     };
     const paster = new ClipboardPaster(
       clipboard,
@@ -145,10 +141,6 @@ describe("clipboard paster", () => {
     );
     await expect(paster.paste("dictated text", true, {
       window: "42",
-      focus: "0",
-      focusIdentityState: "unavailable",
-      focusIdentity: null,
-      generation: "7",
     })).resolves.toBe("focus-unavailable");
     expect(clipboard.value).toBe("user copied this");
   });

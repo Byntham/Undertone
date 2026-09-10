@@ -1,13 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
 
-internal sealed class ForegroundInfo
-{
-    public string Window;
-    public string Focus;
-    public FocusIdentityResult FocusIdentity;
-}
-
 internal static class Desktop
 {
     private const uint InputKeyboard = 1;
@@ -15,28 +8,9 @@ internal static class Desktop
     private const ushort VkV = 0x56;
     private const uint KeyEventKeyUp = 0x0002;
 
-    public static ForegroundInfo GetForeground(FocusIdentityResult focusIdentity)
+    public static string ForegroundWindow()
     {
-        var window = GetForegroundWindow();
-        var focus = GetFocusedWindow(window);
-        return new ForegroundInfo
-        {
-            Window = window.ToInt64().ToString(),
-            Focus = focus.ToInt64().ToString(),
-            FocusIdentity = focusIdentity
-        };
-    }
-
-    private static IntPtr GetFocusedWindow(IntPtr foreground)
-    {
-        if (foreground == IntPtr.Zero)
-            return IntPtr.Zero;
-        uint ignored;
-        var threadId = GetWindowThreadProcessId(foreground, out ignored);
-        var info = new GuiThreadInfo { Size = Marshal.SizeOf(typeof(GuiThreadInfo)) };
-        return threadId != 0 && GetGUIThreadInfo(threadId, ref info)
-            ? info.Focus
-            : IntPtr.Zero;
+        return GetForegroundWindow().ToInt64().ToString();
     }
 
     public static bool SendPaste()
@@ -69,29 +43,6 @@ internal static class Desktop
                 }
             }
         };
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct GuiThreadInfo
-    {
-        public int Size;
-        public uint Flags;
-        public IntPtr Active;
-        public IntPtr Focus;
-        public IntPtr Capture;
-        public IntPtr MenuOwner;
-        public IntPtr MoveSize;
-        public IntPtr Caret;
-        public Rect CaretRect;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -134,12 +85,6 @@ internal static class Desktop
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] inputs, int size);

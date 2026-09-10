@@ -232,8 +232,8 @@ export class DictationJobRunner {
   private focusChanged(config: UndertoneConfig, feedback: DictationFeedback): void {
     const shortcut = config.commit_hotkey;
     const message = shortcut.length > 0
-      ? `Focus changed — press ${shortcut} to paste`
-      : "Focus changed — commit the open turn manually";
+      ? `Window changed — press ${shortcut} to paste`
+      : "Window changed — commit the open turn manually";
     feedback.message({ text: message, tone: "error" });
   }
 

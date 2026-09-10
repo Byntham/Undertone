@@ -27,7 +27,7 @@ Root: `run.bat` launches from source; `build.bat` writes the NSIS installer to
 
 Opt-in tests (idle desktop only; they steal focus or the mouse):
 
-- `UNDERTONE_HOST_DESKTOP_E2E=1` — focus identity and guarded paste
+- `UNDERTONE_HOST_DESKTOP_E2E=1` — window validation and guarded paste
 - `UNDERTONE_LOCAL_RUNTIME_E2E=1` — installed local engines
 - `UNDERTONE_LOCAL_INSTALLER_E2E=1` — pinned download artifacts
 - `npm run test:turn-draft-native` — open-turn draft window interactions
@@ -63,8 +63,11 @@ buffer text only (no caret). `stack_cleanup_strategy` is `live-full` (default)
 or `commit-full`, fixed for the open turn. External typing does not clear the
 turn. Clear on commit success, discard, or quit; transcription, focus, or paste
 failure keeps it. Manual commit pastes into current focus. Auto-commit captures
-the foreground target at completion and validates it again immediately before
-native paste injection; it never steals focus.
+only the foreground top-level window at completion and checks that window again
+immediately before native paste injection; it never steals focus. Changes to
+fields, tabs, UIA identities, and keyboard/mouse activity within that window do
+not block paste. Reliability takes priority over detecting same-window focus
+changes. Do not restore UIA or input-generation paste guards.
 
 Native-host messages are versioned JSON over local pipes.
 

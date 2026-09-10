@@ -10,20 +10,12 @@ using System.Web.Script.Serialization;
 
 internal static class Program
 {
-    private const int ProtocolVersion = 9;
-    private const int FocusReadAttempts = 3;
-    private const int FocusReadTimeoutMs = 150;
-    private const int FocusRetryDelayMs = 50;
+    private const int ProtocolVersion = 10;
     private const int WhKeyboardLl = 13;
-    private const int WhMouseLl = 14;
     private const int WmKeyDown = 0x0100;
     private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
-    private const int WmLButtonDown = 0x0201;
-    private const int WmRButtonDown = 0x0204;
-    private const int WmMButtonDown = 0x0207;
-    private const int WmXButtonDown = 0x020B;
     private const uint WmQuit = 0x0012;
     private const uint LlkhfInjected = 0x10;
 
@@ -31,17 +23,12 @@ internal static class Program
     private static readonly BlockingCollection<string> Output =
         new BlockingCollection<string>(new ConcurrentQueue<string>());
     private static readonly HookProc KeyboardProc = OnKeyboard;
-    private static readonly HookProc MouseProc = OnMouse;
-    private static readonly object InputGate = new object();
 
     private static volatile bool _captureInput;
     private static volatile bool _suppressKeyboard;
     private static uint _mainThreadId;
     private static IntPtr _keyboardHook;
-    private static IntPtr _mouseHook;
-    private static FocusReader _focusReader;
     private static ProcessSupervisor _supervisor;
-    private static long _inputGeneration;
 
     public static int Main(string[] args)
     {
@@ -100,10 +87,8 @@ internal static class Program
 
         try
         {
-            _focusReader = new FocusReader();
             _supervisor = new ProcessSupervisor();
             _keyboardHook = InstallHook(WhKeyboardLl, KeyboardProc);
-            _mouseHook = InstallHook(WhMouseLl, MouseProc);
 
             var reader = new Thread(ReadCommands) { IsBackground = true, Name = "stdin" };
             reader.Start();
@@ -112,8 +97,7 @@ internal static class Program
             {
                 { "protocol", ProtocolVersion },
                 { "type", "ready" },
-                { "keyboardHook", _keyboardHook != IntPtr.Zero },
-                { "mouseHook", _mouseHook != IntPtr.Zero }
+                { "keyboardHook", _keyboardHook != IntPtr.Zero }
             });
 
             Message message;
@@ -133,12 +117,8 @@ internal static class Program
         {
             if (_keyboardHook != IntPtr.Zero)
                 UnhookWindowsHookEx(_keyboardHook);
-            if (_mouseHook != IntPtr.Zero)
-                UnhookWindowsHookEx(_mouseHook);
             if (_supervisor != null)
                 _supervisor.Dispose();
-            if (_focusReader != null)
-                _focusReader.Dispose();
             Output.CompleteAdding();
             writer.Join(1000);
         }
@@ -208,15 +188,9 @@ internal static class Program
             }
             else if (type == "getForeground")
             {
-                string generation;
-                var foreground = CaptureForeground(out generation);
                 Respond(requestId, "foreground", new Dictionary<string, object>
                 {
-                    { "window", foreground.Window },
-                    { "focus", foreground.Focus },
-                    { "focusIdentityState", FocusIdentityStateName(foreground.FocusIdentity.State) },
-                    { "focusIdentity", foreground.FocusIdentity.Value },
-                    { "generation", generation }
+                    { "window", Desktop.ForegroundWindow() }
                 });
             }
             else if (type == "sendPaste")
@@ -228,33 +202,27 @@ internal static class Program
             }
             else if (type == "guardedPaste")
             {
-                var expected = GuardedPasteTarget(command);
-                string focusGeneration;
-                var foreground = CaptureForeground(out focusGeneration);
+                var expectedWindow = RequiredString(command, "window");
+                // Only a change of top-level window blocks automatic paste.
+                // Child controls, UIA identities, and intervening input are
+                // intentionally ignored so ordinary editor updates can paste.
+                var currentWindow = Desktop.ForegroundWindow();
                 string reason;
                 string status;
-                lock (InputGate)
+                if (expectedWindow == "0" || currentWindow == "0")
                 {
-                    var currentHandles = Desktop.GetForeground(foreground.FocusIdentity);
-                    if (expected.Generation != focusGeneration
-                        || focusGeneration != Interlocked.Read(ref _inputGeneration).ToString())
-                        reason = "input-race";
-                    else if (foreground.Window != currentHandles.Window
-                        || foreground.Focus != currentHandles.Focus)
-                        reason = HandlesChangedReason(expected, currentHandles);
-                    else
-                        reason = FocusMismatchReason(expected, foreground);
-                    if (reason == null)
-                    {
-                        status = Desktop.SendPaste() ? "pasted" : "paste-failed";
-                        reason = status == "pasted" ? "none" : "send-input";
-                    }
-                    else
-                    {
-                        status = IsConfirmedFocusChange(reason)
-                            ? "focus-changed"
-                            : "focus-unavailable";
-                    }
+                    status = "focus-unavailable";
+                    reason = "window-unavailable";
+                }
+                else if (expectedWindow != currentWindow)
+                {
+                    status = "focus-changed";
+                    reason = "window-changed";
+                }
+                else
+                {
+                    status = Desktop.SendPaste() ? "pasted" : "paste-failed";
+                    reason = status == "pasted" ? "none" : "send-input";
                 }
                 Respond(requestId, "guardedPasteResult", new Dictionary<string, object>
                 {
@@ -351,33 +319,6 @@ internal static class Program
         Emit(response);
     }
 
-    private static ForegroundInfo CaptureForeground(out string generation)
-    {
-        var samples = new FocusSampleAccumulator();
-        for (var attempt = 0; attempt < FocusReadAttempts; attempt += 1)
-        {
-            var before = Interlocked.Read(ref _inputGeneration);
-            var handlesBefore = Desktop.GetForeground(FocusIdentityResult.Degraded());
-            var focusIdentity = _focusReader.QueryIdentity(FocusReadTimeoutMs);
-            var foreground = Desktop.GetForeground(focusIdentity);
-            var after = Interlocked.Read(ref _inputGeneration);
-            var stable = samples.Observe(
-                handlesBefore,
-                foreground,
-                before,
-                after);
-            if (stable != null)
-            {
-                generation = after.ToString();
-                return stable;
-            }
-            if (attempt + 1 < FocusReadAttempts)
-                Thread.Sleep(FocusRetryDelayMs);
-        }
-        generation = Interlocked.Read(ref _inputGeneration).ToString();
-        return Desktop.GetForeground(FocusIdentityResult.Degraded());
-    }
-
     private static void SetInputMode(string mode)
     {
         if (mode == "off")
@@ -399,97 +340,6 @@ internal static class Program
         {
             throw new InvalidOperationException("Input mode is invalid");
         }
-    }
-
-    private static GuardedTarget GuardedPasteTarget(Dictionary<string, object> values)
-    {
-        var state = RequiredString(values, "focusIdentityState");
-        object rawIdentity;
-        if (!values.TryGetValue("focusIdentity", out rawIdentity))
-            throw new InvalidOperationException("focusIdentity is required");
-
-        string identity = null;
-        if (state == "available")
-        {
-            identity = rawIdentity as string;
-            if (string.IsNullOrEmpty(identity))
-                throw new InvalidOperationException("Available focus identity is invalid");
-        }
-        else if (state == "unavailable")
-        {
-            if (rawIdentity != null)
-                throw new InvalidOperationException("Unavailable focus identity must be null");
-        }
-        else
-        {
-            throw new InvalidOperationException("Focus identity state is invalid");
-        }
-
-        return new GuardedTarget
-        {
-            Window = RequiredString(values, "window"),
-            Focus = RequiredString(values, "focus"),
-            FocusIdentityState = state,
-            FocusIdentity = identity,
-            Generation = RequiredString(values, "generation")
-        };
-    }
-
-    private static string HandlesChangedReason(
-        GuardedTarget expected,
-        ForegroundInfo actual)
-    {
-        if (expected.Window == "0" || actual.Window == "0")
-            return "window-unavailable";
-        if (expected.Window != actual.Window)
-            return "window-changed";
-        if (expected.Focus == "0" || actual.Focus == "0")
-            return "focus-unavailable";
-        return expected.Focus != actual.Focus ? "control-changed" : "snapshot-unstable";
-    }
-
-    private static string FocusMismatchReason(
-        GuardedTarget expected,
-        ForegroundInfo actual)
-    {
-        if (expected.Window == "0" || actual.Window == "0")
-            return "window-unavailable";
-        if (expected.Window != actual.Window)
-            return "window-changed";
-        if (expected.Focus == "0" || actual.Focus == "0")
-            return "focus-unavailable";
-        if (expected.Focus != actual.Focus)
-            return "control-changed";
-        if (actual.FocusIdentity.State == FocusIdentityState.Degraded)
-            return "identity-unavailable";
-        if (expected.FocusIdentityState == "available")
-        {
-            if (actual.FocusIdentity.State != FocusIdentityState.Available)
-                return "identity-unavailable";
-            var comparison = actual.FocusIdentity.Compare(expected.FocusIdentity);
-            if (comparison == FocusIdentityComparison.Match)
-                return null;
-            return comparison == FocusIdentityComparison.Changed
-                ? "identity-changed"
-                : "identity-unavailable";
-        }
-        return actual.FocusIdentity.State == FocusIdentityState.Unavailable
-            ? null
-            : "identity-unavailable";
-    }
-
-    private static bool IsConfirmedFocusChange(string reason)
-    {
-        return reason == "window-changed"
-            || reason == "control-changed"
-            || reason == "identity-changed";
-    }
-
-    private static string FocusIdentityStateName(FocusIdentityState state)
-    {
-        if (state == FocusIdentityState.Available) return "available";
-        if (state == FocusIdentityState.Unavailable) return "unavailable";
-        return "degraded";
     }
 
     private static string RequiredString(Dictionary<string, object> values, string key)
@@ -556,11 +406,6 @@ internal static class Program
             {
                 var data = (KeyboardData)Marshal.PtrToStructure(
                     lParam, typeof(KeyboardData));
-                if (eventType == "down" && (data.Flags & LlkhfInjected) == 0)
-                {
-                    lock (InputGate)
-                        Interlocked.Increment(ref _inputGeneration);
-                }
                 Emit(new Dictionary<string, object>
                 {
                     { "protocol", ProtocolVersion },
@@ -574,23 +419,6 @@ internal static class Program
         return code >= 0 && _suppressKeyboard
             ? new IntPtr(1)
             : CallNextHookEx(_keyboardHook, code, wParam, lParam);
-    }
-
-    private static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam)
-    {
-        if (code >= 0 && _captureInput)
-        {
-            var message = wParam.ToInt32();
-            if (message == WmLButtonDown
-                || message == WmRButtonDown
-                || message == WmMButtonDown
-                || message == WmXButtonDown)
-            {
-                lock (InputGate)
-                    Interlocked.Increment(ref _inputGeneration);
-            }
-        }
-        return CallNextHookEx(_mouseHook, code, wParam, lParam);
     }
 
     private static void EmitError(string code, string message, object requestId = null)
@@ -619,15 +447,6 @@ internal static class Program
             foreach (var line in Output.GetConsumingEnumerable())
                 output.WriteLine(line);
         }
-    }
-
-    private sealed class GuardedTarget
-    {
-        public string Window;
-        public string Focus;
-        public string FocusIdentityState;
-        public string FocusIdentity;
-        public string Generation;
     }
 
     private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
