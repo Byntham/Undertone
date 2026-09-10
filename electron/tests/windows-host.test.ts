@@ -32,17 +32,10 @@ describe("Windows host", () => {
     const host = new WindowsHost();
     try {
       const ready = await host.start();
-      expect(ready.protocol).toBe(9);
+      expect(ready.protocol).toBe(10);
       expect(ready.keyboardHook).toBe(true);
-      expect(ready.mouseHook).toBe(true);
       const foreground = await host.getForeground();
-      expect(typeof foreground.window).toBe("string");
-      expect(typeof foreground.focus).toBe("string");
-      expect(foreground.focusIdentityState).toMatch(/^(available|unavailable|degraded)$/u);
-      expect(foreground.focusIdentityState === "available"
-        ? typeof foreground.focusIdentity === "string"
-        : foreground.focusIdentity === null).toBe(true);
-      expect(typeof foreground.generation).toBe("string");
+      expect(foreground).toEqual({ window: expect.any(String) });
       const protectedValue = await host.protectSecret("test-only-secret");
       expect(protectedValue).toMatch(/^dpapi:/);
       expect(await host.unprotectSecret(protectedValue)).toBe("test-only-secret");
@@ -61,7 +54,7 @@ describe("Windows host", () => {
     }
   }, 10_000);
 
-  it("requires guarded target identity fields and accepts only explicit input modes", async () => {
+  it("requires only the guarded window and accepts only explicit input modes", async () => {
     const child = spawn(resolveWindowsHost(), [], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
@@ -75,7 +68,7 @@ describe("Windows host", () => {
       const id = String(++requestId);
       child.stdin.write(`${JSON.stringify({
         ...values,
-        protocol: 9,
+        protocol: 10,
         type,
         requestId: id,
       })}\n`);
@@ -89,28 +82,24 @@ describe("Windows host", () => {
 
       const required = {
         window: "not-current",
-        focus: "0",
-        focusIdentityState: "unavailable",
-        focusIdentity: null,
-        generation: "0",
       };
       await expect(command("guardedPaste", required)).resolves.toMatchObject({
         type: "guardedPasteResult",
         status: "focus-changed",
+        reason: "window-changed",
       });
       for (const invalid of [
-        { ...required, focus: undefined },
-        { ...required, generation: undefined },
-        { ...required, focusIdentityState: undefined },
-        { ...required, window: 42 },
-        { ...required, focus: 0 },
-        { ...required, generation: 0 },
-        { ...required, focusIdentityState: "available", focusIdentity: null },
-        { ...required, focusIdentityState: "unavailable", focusIdentity: "uia:1" },
-        { ...required, focusIdentityState: "degraded" },
+        {},
+        { window: null },
+        { window: 42 },
       ]) {
         await expect(command("guardedPaste", invalid)).resolves.toMatchObject({ type: "error" });
       }
+      await expect(command("guardedPaste", { window: "0" })).resolves.toMatchObject({
+        type: "guardedPasteResult",
+        status: "focus-unavailable",
+        reason: "window-unavailable",
+      });
     } finally {
       await stopChild(child, true);
     }
@@ -198,7 +187,7 @@ describe("Windows host", () => {
       child.stdout.resume();
       child.stderr.resume();
       child.stdin.write(`${JSON.stringify({
-        protocol: 9,
+        protocol: 10,
         zipFiles: [archive],
         patterns: ["large-model.bin"],
         targetDirectory: disconnectedTarget,
@@ -303,7 +292,7 @@ describe("Windows host", () => {
       const responsePromise = nextLine(lines);
       const windows = process.env.SystemRoot ?? "C:\\Windows";
       child.stdin.write(`${JSON.stringify({
-        protocol: 9,
+        protocol: 10,
         type: "spawnSupervised",
         requestId: "forced-exit",
         file: path.join(windows, "System32", "ping.exe"),
@@ -327,7 +316,7 @@ describe("Windows host", () => {
   });
 
   it.skipIf(process.env.UNDERTONE_HOST_DESKTOP_E2E !== "1")(
-    "validates focused controls and pastes through SendInput",
+    "pastes into a changed textbox in the same window and refuses a different window",
     async () => {
       const temporary = await mkdtemp(path.join(os.tmpdir(), "undertone-host-e2e-"));
       const scriptPath = path.join(temporary, "target.ps1");
@@ -361,32 +350,41 @@ describe("Windows host", () => {
         await activateTarget(thief);
         await waitForForeground(host, (foreground) => foreground.window === thiefWindow);
         await activateTarget(target);
-        const textTarget = await waitForAvailableForeground(
+        const textTarget = await waitForForeground(
           host,
           (foreground) => foreground.window === targetWindow,
         );
 
         await writeFile(target.focusOther, "", "utf8");
-        await waitForAvailableForeground(host, (foreground) => (
-          foreground.window === targetWindow
-          && foreground.focusIdentity !== textTarget.focusIdentity
-        ));
+        await waitForTextFile(target.focused, "other");
+        expect(await host.getForeground()).toEqual(textTarget);
+        setClipboardText("second field");
+        expect(await host.sendGuardedPaste(textTarget)).toBe("pasted");
+        await delay(300);
+
+        await activateTarget(thief);
+        await waitForForeground(host, (foreground) => foreground.window === thiefWindow);
         setClipboardText("should not paste");
         expect(await host.sendGuardedPaste(textTarget)).toBe("focus-changed");
 
-        await writeFile(target.focusText, "", "utf8");
-        const freshTarget = await waitForAvailableForeground(host, (foreground) => (
-          foreground.window === targetWindow
-          && foreground.focusIdentity === textTarget.focusIdentity
-        ));
+        await activateTarget(target);
+        await waitForTextFile(target.focused, "text");
+        await waitForForeground(host, (foreground) => foreground.window === targetWindow);
         setClipboardText("hello ");
-        expect(await host.sendGuardedPaste(freshTarget)).toBe("pasted");
+        expect(await host.sendGuardedPaste(textTarget)).toBe("pasted");
         await delay(300);
         await writeFile(target.stop, "", "utf8");
         await writeFile(thief.stop, "", "utf8");
         await waitForChildExit(targetProcess, 5_000);
         await waitForChildExit(thiefProcess, 5_000);
-        expect(await readFile(target.result, "utf8")).toBe("I like hello apples.");
+        expect(JSON.parse(await readFile(target.result, "utf8"))).toEqual({
+          text: "I like hello apples.",
+          other: "second field",
+        });
+        expect(JSON.parse(await readFile(thief.result, "utf8"))).toEqual({
+          text: "",
+          other: "",
+        });
       } finally {
         try {
           await host.stop();
@@ -411,7 +409,7 @@ interface DesktopTargetPaths {
   stop: string;
   activate: string;
   focusOther: string;
-  focusText: string;
+  focused: string;
 }
 
 const WPF_TARGET_SCRIPT = String.raw`param(
@@ -421,7 +419,7 @@ const WPF_TARGET_SCRIPT = String.raw`param(
   [string]$StopPath,
   [string]$ActivatePath,
   [string]$FocusOtherPath,
-  [string]$FocusTextPath,
+  [string]$FocusedPath,
   [string]$InitialText,
   [int]$InsertionIndex
 )
@@ -468,8 +466,7 @@ $window.Topmost = $true
 $textBox = New-Object System.Windows.Controls.TextBox
 $textBox.Text = $InitialText
 $textBox.CaretIndex = [Math]::Min($InsertionIndex, $textBox.Text.Length)
-$other = New-Object System.Windows.Controls.Button
-$other.Content = "Other control"
+$other = New-Object System.Windows.Controls.TextBox
 $panel = New-Object System.Windows.Controls.StackPanel
 [void]$panel.Children.Add($textBox)
 [void]$panel.Children.Add($other)
@@ -487,17 +484,19 @@ $timer.Add_Tick({
     Remove-Item -LiteralPath $ActivatePath
     [TestFocus]::Activate($script:windowHandle)
     $textBox.Focus() | Out-Null
+    if ($textBox.IsKeyboardFocused) {
+      [IO.File]::WriteAllText($FocusedPath, "text")
+    }
   }
   if (Test-Path -LiteralPath $FocusOtherPath) {
     Remove-Item -LiteralPath $FocusOtherPath
     $other.Focus() | Out-Null
-  }
-  if (Test-Path -LiteralPath $FocusTextPath) {
-    Remove-Item -LiteralPath $FocusTextPath
-    $textBox.Focus() | Out-Null
+    if ($other.IsKeyboardFocused) {
+      [IO.File]::WriteAllText($FocusedPath, "other")
+    }
   }
   if (Test-Path -LiteralPath $StopPath) {
-    [IO.File]::WriteAllText($ResultPath, $textBox.Text)
+    [IO.File]::WriteAllText($ResultPath, (@{ text = $textBox.Text; other = $other.Text } | ConvertTo-Json -Compress))
     $timer.Stop()
     $window.Close()
   }
@@ -513,7 +512,7 @@ function desktopTargetPaths(directory: string, name: string): DesktopTargetPaths
     stop: path.join(directory, `${name}.stop`),
     activate: path.join(directory, `${name}.activate`),
     focusOther: path.join(directory, `${name}.focus-other`),
-    focusText: path.join(directory, `${name}.focus-text`),
+    focused: path.join(directory, `${name}.focused`),
   };
 }
 
@@ -536,7 +535,7 @@ function startDesktopTarget(
     "-StopPath", files.stop,
     "-ActivatePath", files.activate,
     "-FocusOtherPath", files.focusOther,
-    "-FocusTextPath", files.focusText,
+    "-FocusedPath", files.focused,
     "-InitialText", initialText,
     "-InsertionIndex", String(insertionIndex),
   ];
@@ -560,28 +559,12 @@ async function waitForForeground(
   throw new Error("Foreground target did not reach the expected state");
 }
 
-type ForegroundInfo = Awaited<ReturnType<WindowsHost["getForeground"]>>;
-type AvailableForeground = Extract<ForegroundInfo, { focusIdentityState: "available" }>;
-
-async function waitForAvailableForeground(
-  host: WindowsHost,
-  matches: (foreground: AvailableForeground) => boolean,
-): Promise<AvailableForeground> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const foreground = await host.getForeground();
-    if (foreground.focusIdentityState === "available" && matches(foreground)) return foreground;
-    await delay(25);
-  }
-  throw new Error("Foreground target did not reach the expected state");
-}
-
-async function waitForTextFile(file: string): Promise<string> {
+async function waitForTextFile(file: string, expected?: string): Promise<string> {
   const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
     try {
       const value = (await readFile(file, "utf8")).trim();
-      if (value.length > 0) return value;
+      if (value.length > 0 && (expected === undefined || value === expected)) return value;
     } catch {
       // The WPF window has not finished rendering yet.
     }

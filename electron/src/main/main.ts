@@ -695,24 +695,7 @@ if (!gotLock) {
 
   const captureForegroundTarget = async (): Promise<DictationTarget | null> => {
     try {
-      const foreground = await windowsHost.getForeground();
-      if (foreground.focusIdentityState === "degraded") return null;
-      const common = {
-        window: foreground.window,
-        focus: foreground.focus,
-        generation: foreground.generation,
-      };
-      return foreground.focusIdentityState === "available"
-        ? {
-          ...common,
-          focusIdentityState: "available",
-          focusIdentity: foreground.focusIdentity,
-        }
-        : {
-          ...common,
-          focusIdentityState: "unavailable",
-          focusIdentity: null,
-        };
+      return await windowsHost.getForeground();
     } catch {
       return null;
     }

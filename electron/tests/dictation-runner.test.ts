@@ -17,10 +17,6 @@ import { prepareText } from "../src/core/textPreparation";
 const WAV = Uint8Array.of(1, 2, 3);
 const TARGET: DictationTarget = {
   window: "42",
-  focus: "420",
-  focusIdentityState: "unavailable",
-  focusIdentity: null,
-  generation: "7",
 };
 const OPEN_TURN: DictationDestination = { completion: "open-turn" };
 
@@ -121,7 +117,7 @@ describe("dictation job runner", () => {
     expect(state.pasted.at(-1)?.text).toBe("First second");
   });
 
-  it("keeps the complete turn when focus changed before auto-commit", async () => {
+  it("keeps the complete turn when the window changed before auto-commit", async () => {
     const { dependencies, state } = harness();
     state.foreground = "99";
     await new DictationJobRunner(dependencies).runTranscript(
@@ -134,7 +130,7 @@ describe("dictation job runner", () => {
     expect(state.fallback).toBeNull();
     expect(dependencies.turnBuffer.peekText()).toBe("Keep me");
     expect(state.messages.at(-1)).toEqual({
-      text: "Focus changed — press ctrl+alt to paste",
+      text: "Window changed — press ctrl+alt to paste",
       kind: "error",
     });
   });
@@ -156,42 +152,12 @@ describe("dictation job runner", () => {
     });
   });
 
-  it("revalidates focus immediately before paste injection", async () => {
+  it("revalidates the foreground window immediately before paste injection", async () => {
     const { dependencies, state } = harness();
     state.changeFocusBeforeSend = true;
     await new DictationJobRunner(dependencies).runTranscript(
       "keep me",
       autoCommit(),
-      normalizeConfig(undefined),
-    );
-    expect(state.pasted).toEqual([]);
-    expect(dependencies.turnBuffer.peekText()).toBe("Keep me");
-    expect(state.messages.at(-1)?.kind).toBe("error");
-  });
-
-  it("detects focus moving to another control in the same window", async () => {
-    const { dependencies, state } = harness();
-    state.foregroundFocus = "421";
-    await new DictationJobRunner(dependencies).runTranscript(
-      "keep me",
-      autoCommit(),
-      normalizeConfig(undefined),
-    );
-    expect(state.pasted).toEqual([]);
-    expect(dependencies.turnBuffer.peekText()).toBe("Keep me");
-    expect(state.messages.at(-1)?.kind).toBe("error");
-  });
-
-  it("detects UI Automation focus moving when the window handles stay the same", async () => {
-    const { dependencies, state } = harness();
-    state.foregroundFocusIdentity = "uia:2";
-    await new DictationJobRunner(dependencies).runTranscript(
-      "keep me",
-      autoCommit({
-        ...TARGET,
-        focusIdentityState: "available",
-        focusIdentity: "uia:1",
-      }),
       normalizeConfig(undefined),
     );
     expect(state.pasted).toEqual([]);
@@ -294,8 +260,6 @@ function harness(): {
   dependencies: DictationRunnerDependencies;
   state: {
     foreground: string;
-    foregroundFocus: string;
-    foregroundFocusIdentity: string | null;
     changeFocusBeforeSend: boolean;
     pasted: Array<{ text: string; restore: boolean }>;
     fallback: string | null;
@@ -311,8 +275,6 @@ function harness(): {
 } {
   const state = {
     foreground: "42",
-    foregroundFocus: "420",
-    foregroundFocusIdentity: null as string | null,
     changeFocusBeforeSend: false,
     pasted: [] as Array<{ text: string; restore: boolean }>,
     fallback: null as string | null,
@@ -342,13 +304,7 @@ function harness(): {
     paster: {
       async paste(text, restore, target) {
         if (state.changeFocusBeforeSend) state.foreground = "99";
-        if (target !== undefined && (
-          target.window !== state.foreground
-          || target.focus !== state.foregroundFocus
-          || (target.focusIdentityState === "available"
-            ? target.focusIdentity !== state.foregroundFocusIdentity
-            : state.foregroundFocusIdentity !== null)
-        )) return "focus-changed";
+        if (target !== undefined && target.window !== state.foreground) return "focus-changed";
         state.pasted.push({ text, restore });
         return "pasted";
       },

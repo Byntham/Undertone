@@ -5,7 +5,7 @@ import readline from "node:readline";
 
 import type { GuardedPasteResult, PasteTarget } from "../core/clipboardPaster";
 
-const PROTOCOL_VERSION = 9;
+const PROTOCOL_VERSION = 10;
 const HOST_NAME = "Undertone.WinHost.exe";
 const EXTRACTION_TIMEOUT_MS = 300_000;
 
@@ -13,7 +13,6 @@ interface HostReady {
   protocol: number;
   type: "ready";
   keyboardHook: boolean;
-  mouseHook: boolean;
 }
 
 export interface KeyboardEvent {
@@ -45,16 +44,6 @@ export const NO_CUDA_STATUS: Readonly<CudaStatus> = {
   driverApiVersion: 0,
   deviceCount: 0,
 };
-
-type ForegroundInfo = {
-  window: string;
-  focus: string;
-  generation: string;
-} & (
-  | { focusIdentityState: "available"; focusIdentity: string }
-  | { focusIdentityState: "unavailable"; focusIdentity: null }
-  | { focusIdentityState: "degraded"; focusIdentity: null }
-);
 
 interface PendingRequest {
   expectedType: string;
@@ -137,30 +126,12 @@ export class WindowsHost {
     }
   }
 
-  async getForeground(): Promise<ForegroundInfo> {
+  async getForeground(): Promise<PasteTarget> {
     const response = await this.request("getForeground", "foreground");
-    if (typeof response.window !== "string"
-      || typeof response.focus !== "string"
-      || !isFocusIdentity(response.focusIdentityState, response.focusIdentity)
-      || typeof response.generation !== "string") {
+    if (typeof response.window !== "string" || response.window.length === 0) {
       throw new Error("Windows host returned an invalid foreground window");
     }
-    const common = {
-      window: response.window,
-      focus: response.focus,
-      generation: response.generation,
-    };
-    return response.focusIdentityState === "available"
-      ? {
-        ...common,
-        focusIdentityState: "available",
-        focusIdentity: response.focusIdentity as string,
-      }
-      : {
-        ...common,
-        focusIdentityState: response.focusIdentityState,
-        focusIdentity: null,
-      };
+    return { window: response.window };
   }
 
   async sendPaste(): Promise<boolean> {
@@ -396,7 +367,7 @@ export class WindowsHost {
         this.child?.kill();
         return;
       }
-      if (!message.keyboardHook || !message.mouseHook) {
+      if (!message.keyboardHook) {
         this.failStart(new Error("Windows host could not install its input hooks"));
         this.child?.kill();
         return;
@@ -477,8 +448,7 @@ function isReady(value: unknown): value is HostReady {
   return isRecord(value)
     && value.type === "ready"
     && typeof value.protocol === "number"
-    && typeof value.keyboardHook === "boolean"
-    && typeof value.mouseHook === "boolean";
+    && typeof value.keyboardHook === "boolean";
 }
 
 function isKeyboard(
@@ -490,15 +460,6 @@ function isKeyboard(
     && typeof value.injected === "boolean";
 }
 
-function isFocusIdentity(
-  state: unknown,
-  value: unknown,
-): state is ForegroundInfo["focusIdentityState"] {
-  return state === "available"
-    ? typeof value === "string" && value.length > 0
-    : (state === "unavailable" || state === "degraded") && value === null;
-}
-
 function isGuardedPasteResponse(
   status: unknown,
   reason: unknown,
@@ -506,16 +467,10 @@ function isGuardedPasteResponse(
   if (status === "pasted") return reason === "none";
   if (status === "paste-failed") return reason === "send-input";
   if (status === "focus-changed") {
-    return reason === "window-changed"
-      || reason === "control-changed"
-      || reason === "identity-changed";
+    return reason === "window-changed";
   }
   if (status !== "focus-unavailable") return false;
-  return reason === "window-unavailable"
-    || reason === "focus-unavailable"
-    || reason === "identity-unavailable"
-    || reason === "input-race"
-    || reason === "snapshot-unstable";
+  return reason === "window-unavailable";
 }
 
 function parseOneShotResponse(output: string): Record<string, unknown> | null {

@@ -32,8 +32,11 @@ to the open turn instead.
 | Re-paste last commit | Left Alt+V |
 | Cancel recording | Esc |
 
-A held release or second toggle tap captures the current paste target. If focus
-changes before injection, Undertone keeps the turn open for manual commit.
+A held release or second toggle tap captures the current app window. Automatic
+paste goes to the currently focused field in that window, even if you click,
+type, or the editor rebuilds while transcription finishes. Switching fields or
+tabs within the same window does not cancel paste. If a different window is
+active when paste is ready, Undertone keeps the turn open for manual commit.
 Use the tray menu for Settings, pause, or quit.
 
 ## Settings
